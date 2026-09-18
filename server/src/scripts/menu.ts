@@ -14,7 +14,7 @@ import { spawnSync } from 'node:child_process';
 import mysql from 'mysql2/promise';
 import type { RowDataPacket } from 'mysql2';
 import { config } from '../config.js';
-import { panelPool, radiusPool, closePools } from '../db/pools.js';
+import { assertPanelSchema, panelPool, radiusPool, closePools } from '../db/pools.js';
 import { createUser, deleteUser, listUsers } from '../services/radiusUsers.js';
 import { createAdmin, listAdmins, updateAdmin } from '../services/admins.js';
 
@@ -35,13 +35,24 @@ async function pause(): Promise<void> {
 
 /* --------------------------- Esquema / migraciones --------------------------- */
 
-async function runSqlFile(file: string, db: typeof config.panelDb): Promise<void> {
+/**
+ * `selectDatabase` es necesario para los ficheros de migracion que no hacen su
+ * propio `CREATE DATABASE` / `USE` (dan por hecho que la base ya existe), como
+ * panel-schema-security.sql. panel-schema.sql y freeradius-schema.sql si crean
+ * su base, asi que conectan sin seleccionar ninguna.
+ */
+async function runSqlFile(
+  file: string,
+  db: typeof config.panelDb,
+  selectDatabase = false,
+): Promise<void> {
   const sql = await readFile(join(SQL_DIR, file), 'utf8');
   const conn = await mysql.createConnection({
     host: db.host,
     port: db.port,
     user: db.user,
     password: db.password,
+    database: selectDatabase ? db.database : undefined,
     multipleStatements: true,
   });
   try {
@@ -49,6 +60,16 @@ async function runSqlFile(file: string, db: typeof config.panelDb): Promise<void
     console.log(`\x1b[32m✔\x1b[0m ${file} aplicado`);
   } finally {
     await conn.end();
+  }
+}
+
+/** Comprueba si faltan las tablas/columnas de la migracion de seguridad. */
+async function securityMigrationStatus(): Promise<void> {
+  try {
+    await assertPanelSchema();
+    console.log('\x1b[32m✔\x1b[0m migracion de seguridad aplicada (refresh tokens, 2FA, bloqueo)');
+  } catch (err) {
+    console.log(`\x1b[33m!\x1b[0m ${(err as Error).message}`);
   }
 }
 
@@ -81,7 +102,9 @@ async function schemaMenu(): Promise<void> {
     console.log(
       ` 1) Aplicar sql/panel-schema.sql (tablas del panel)\n` +
         ` 2) Aplicar sql/freeradius-schema.sql (esquema FreeRADIUS)\n` +
-        ` 3) Estado de las tablas\n` +
+        ` 3) Aplicar sql/panel-schema-security.sql (refresh tokens, 2FA, bloqueo de cuenta)\n` +
+        ` 4) Estado de las tablas\n` +
+        ` 5) Estado de la migracion de seguridad\n` +
         ` 0) Volver`,
     );
     const c = (await ask('> ')).trim();
@@ -90,12 +113,19 @@ async function schemaMenu(): Promise<void> {
       else if (c === '2') {
         const ok = await askDefault('Esto crea/actualiza el esquema RADIUS. Continuar? (s/n)', 'n');
         if (ok.toLowerCase() === 's') await runSqlFile('freeradius-schema.sql', config.radiusDb);
-      } else if (c === '3') await schemaStatus();
+      } else if (c === '3') {
+        console.log(
+          'Idempotente: se puede ejecutar varias veces sin romper nada. Requiere que\n' +
+            `"${config.panelDb.database}" ya exista (aplica antes panel-schema.sql si es una instalacion nueva).`,
+        );
+        await runSqlFile('panel-schema-security.sql', config.panelDb, true);
+      } else if (c === '4') await schemaStatus();
+      else if (c === '5') await securityMigrationStatus();
       else if (c === '0') return;
     } catch (err) {
       console.log(`\x1b[31merror:\x1b[0m ${(err as Error).message}`);
     }
-    if (c === '1' || c === '2' || c === '3') await pause();
+    if (['1', '2', '3', '4', '5'].includes(c)) await pause();
   }
 }
 
@@ -263,6 +293,13 @@ function runTests(): void {
 /* ----------------------------------- Main -------------------------------- */
 
 async function main(): Promise<void> {
+  try {
+    await assertPanelSchema();
+  } catch (err) {
+    console.log(`\x1b[33m!\x1b[0m ${(err as Error).message}`);
+    console.log('(puedes aplicarla desde "1) Esquema / migraciones" -> "3)")\n');
+  }
+
   for (;;) {
     heading('Radius Panel · menu');
     console.log(
