@@ -42,8 +42,10 @@ import type {
   Nas,
   Overview,
   Paged,
+  PanelSession,
   Session,
   TopUser,
+  TotpEnrollment,
   UserDetail,
   UserGroup,
   UserSummary,
@@ -406,6 +408,69 @@ export function useAuditLog(params: {
   return useQuery({
     queryKey: ['audit', params],
     queryFn: async () => (await api.get<Paged<AuditEntry>>('/audit', { params })).data,
+  });
+}
+
+/* -------------------------- Cuenta y seguridad --------------------- */
+
+export function usePanelSessions() {
+  return useQuery({
+    queryKey: ['panel-sessions'],
+    queryFn: async () => (await api.get<{ items: PanelSession[] }>('/auth/sessions')).data.items,
+  });
+}
+
+export function useRevokePanelSession() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: number) => {
+      await api.delete(`/auth/sessions/${id}`);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['panel-sessions'] }),
+  });
+}
+
+export function useRevokeAllPanelSessions() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async () => (await api.delete<{ revoked: number }>('/auth/sessions')).data,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['panel-sessions'] }),
+  });
+}
+
+export function useChangeOwnPassword() {
+  return useMutation({
+    mutationFn: async (input: { currentPassword: string; newPassword: string }) =>
+      (await api.post<{ ok: boolean }>('/auth/password', input)).data,
+  });
+}
+
+export function useStartTotpSetup() {
+  return useMutation({
+    mutationFn: async () => (await api.post<TotpEnrollment>('/auth/2fa/setup')).data,
+  });
+}
+
+export function useConfirmTotp() {
+  return useMutation({
+    mutationFn: async (code: string) =>
+      (await api.post<{ enabled: boolean }>('/auth/2fa/confirm', { code })).data,
+  });
+}
+
+export function useDisableTotp() {
+  return useMutation({
+    mutationFn: async (password: string) =>
+      (await api.delete<{ enabled: boolean }>('/auth/2fa', { data: { password } })).data,
+  });
+}
+
+export function useUnlockAdmin() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: number) =>
+      (await api.post<{ ok: boolean }>(`/admins/${id}/unlock`)).data,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['admins'] }),
   });
 }
 

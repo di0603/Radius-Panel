@@ -17,10 +17,16 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { modals } from '@mantine/modals';
-import { IconKey, IconPlus, IconTrash } from '@tabler/icons-react';
+import { IconKey, IconLockOpen, IconPlus, IconTrash } from '@tabler/icons-react';
 import { PageHeader } from '../components/PageHeader';
 import { SectionCard } from '../components/SectionCard';
-import { useAdmins, useCreateAdmin, useDeleteAdmin, useUpdateAdmin } from '../api/hooks';
+import {
+  useAdmins,
+  useCreateAdmin,
+  useDeleteAdmin,
+  useUnlockAdmin,
+  useUpdateAdmin,
+} from '../api/hooks';
 import { useAuth } from '../auth/AuthContext';
 import { formatDateTime } from '../lib/format';
 import { notifyError, notifyOk } from '../lib/notify';
@@ -85,10 +91,18 @@ function CreateModal({ opened, onClose }: { opened: boolean; onClose: () => void
   );
 }
 
+/** `locked_until` en el futuro significa cuenta bloqueada por intentos fallidos. */
+function isLocked(lockedUntil: string | null): boolean {
+  if (!lockedUntil) return false;
+  const until = new Date(lockedUntil.replace(' ', 'T')).getTime();
+  return !Number.isNaN(until) && until > Date.now();
+}
+
 export function AdminsPage() {
   const list = useAdmins();
   const update = useUpdateAdmin();
   const del = useDeleteAdmin();
+  const unlock = useUnlockAdmin();
   const { user } = useAuth();
   const [createOpen, setCreateOpen] = useState(false);
 
@@ -142,6 +156,8 @@ export function AdminsPage() {
                 <Table.Th>Usuario</Table.Th>
                 <Table.Th>Rol</Table.Th>
                 <Table.Th>Activo</Table.Th>
+                <Table.Th>2FA</Table.Th>
+                <Table.Th>Estado</Table.Th>
                 <Table.Th>Ultimo acceso</Table.Th>
                 <Table.Th />
               </Table.Tr>
@@ -149,7 +165,7 @@ export function AdminsPage() {
             <Table.Tbody>
               {list.isLoading && (
                 <Table.Tr>
-                  <Table.Td colSpan={5}>
+                  <Table.Td colSpan={7}>
                     <Center h={120}>
                       <Loader />
                     </Center>
@@ -204,9 +220,43 @@ export function AdminsPage() {
                         }}
                       />
                     </Table.Td>
+                    <Table.Td>
+                      <Badge size="sm" variant="light" color={a.totp_enabled ? 'teal' : 'gray'}>
+                        {a.totp_enabled ? 'si' : 'no'}
+                      </Badge>
+                    </Table.Td>
+                    <Table.Td>
+                      {isLocked(a.locked_until) ? (
+                        <Badge size="sm" variant="light" color="orange">
+                          bloqueada
+                        </Badge>
+                      ) : (
+                        <Text size="xs" c="dimmed">
+                          —
+                        </Text>
+                      )}
+                    </Table.Td>
                     <Table.Td>{formatDateTime(a.last_login_at)}</Table.Td>
                     <Table.Td>
                       <Group gap={2} justify="flex-end" wrap="nowrap">
+                        {isLocked(a.locked_until) && (
+                          <Tooltip label="Desbloquear cuenta">
+                            <ActionIcon
+                              variant="subtle"
+                              color="orange"
+                              onClick={async () => {
+                                try {
+                                  await unlock.mutateAsync(a.id);
+                                  notifyOk('Cuenta desbloqueada');
+                                } catch (err) {
+                                  notifyError(err);
+                                }
+                              }}
+                            >
+                              <IconLockOpen size={16} />
+                            </ActionIcon>
+                          </Tooltip>
+                        )}
                         <Tooltip label="Cambiar contrasena">
                           <ActionIcon
                             variant="subtle"

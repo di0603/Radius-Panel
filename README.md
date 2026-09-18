@@ -17,8 +17,10 @@ Dashboard web para administrar un **FreeRADIUS** que usa el modulo `rlm_sql` sob
 | Sesiones | Activas (auto-refresco configurable + pausa) e historial con **paginacion por keyset** desde `radacct`, consumo, **Disconnect-Request (RFC 5176)**, exportacion CSV. |
 | NAS | CRUD de la tabla `nas`. Revelar/copiar secret, **probar conectividad** (CoA) y generar el bloque **`clients.conf`**. |
 | Reportes | Autenticaciones/dia, trafico/dia, top usuarios, fallos de auth, motivos de cierre, top NAS, usuarios inactivos. |
-| Administradores | Cuentas del panel con hash bcrypt, JWT y roles `admin` / `operator`. |
+| Administradores | Cuentas del panel con hash bcrypt, JWT y roles `admin` / `operator`. Aviso de cuenta bloqueada y desbloqueo manual. |
+| Seguridad | Access token corto + **refresh token en cookie HttpOnly** (nada en `localStorage`), renovacion silenciosa con deteccion de reuso, **2FA TOTP**, bloqueo tras N intentos, **sesiones del panel revocables** y CSP estricta. |
 | Auditoria | Toda escritura del panel queda en `panel_audit_log` (solo rol `admin`). |
+| Observabilidad | Logs estructurados con pino, `/health` y metricas Prometheus en `/metrics`. |
 
 ## Requisitos
 
@@ -43,6 +45,14 @@ Crea las tablas del panel (siempre):
 ```bash
 mysql -u root -p < sql/panel-schema.sql
 ```
+
+> **Si actualizas desde una version anterior del panel**, aplica ademas la
+> ampliacion de seguridad (refresh tokens, bloqueo de cuenta y 2FA). Es
+> idempotente y el servidor se niega a arrancar sin ella:
+>
+> ```bash
+> mysql -u root -p radius_panel < sql/panel-schema-security.sql
+> ```
 
 Da permisos a un usuario MySQL sobre ambas bases, por ejemplo:
 

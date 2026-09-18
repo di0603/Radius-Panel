@@ -21,6 +21,7 @@ import {
   IconRadar2,
   IconRouter,
   IconShieldLock,
+  IconUserCog,
   IconUsers,
   IconUsersGroup,
 } from '@tabler/icons-react';
@@ -134,10 +135,17 @@ export function AppLayout() {
                   </Group>
                 </Menu.Label>
                 <Menu.Item
+                  leftSection={<IconUserCog style={{ width: rem(16), height: rem(16) }} />}
+                  onClick={() => navigate('/account')}
+                >
+                  Mi cuenta y seguridad
+                </Menu.Item>
+                <Menu.Divider />
+                <Menu.Item
                   color="red"
                   leftSection={<IconLogout style={{ width: rem(16), height: rem(16) }} />}
-                  onClick={() => {
-                    logout();
+                  onClick={async () => {
+                    await logout();
                     navigate('/login');
                   }}
                 >

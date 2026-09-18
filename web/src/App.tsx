@@ -9,6 +9,7 @@ import { SessionsPage } from './pages/Sessions';
 import { NasPage } from './pages/Nas';
 import { AdminsPage } from './pages/Admins';
 import { AuditPage } from './pages/Audit';
+import { AccountPage } from './pages/Account';
 import { NotFoundPage } from './pages/NotFound';
 
 export function App() {
@@ -43,6 +44,7 @@ export function App() {
             </RequireAuth>
           }
         />
+        <Route path="/account" element={<AccountPage />} />
         <Route path="/dashboard" element={<Navigate to="/" replace />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>

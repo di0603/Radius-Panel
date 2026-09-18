@@ -5,6 +5,23 @@ export interface AuthUser {
   sub?: number;
   username: string;
   role: Role;
+  totpEnabled?: boolean;
+}
+
+/** Sesion abierta del panel (un refresh token vivo). */
+export interface PanelSession {
+  id: number;
+  created_at: string;
+  last_used_at: string | null;
+  expires_at: string;
+  ip: string;
+  user_agent: string;
+}
+
+export interface TotpEnrollment {
+  secret: string;
+  otpauthUrl: string;
+  qrDataUrl: string;
 }
 
 export interface AttrRow {
@@ -116,6 +133,9 @@ export interface Admin {
   active: boolean;
   created_at: string;
   last_login_at: string | null;
+  /** Fecha hasta la que la cuenta esta bloqueada por intentos fallidos. */
+  locked_until: string | null;
+  totp_enabled: boolean;
 }
 
 export interface AuditEntry {

@@ -25,3 +25,6 @@ Thumbs.db
 .eslintcache
 *.tsbuildinfo
 coverage/
+
+# Claude Code (config local, no compartida)
+.claude/settings.local.json

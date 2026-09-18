@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { asyncHandler } from '../lib/http.js';
+import { asyncHandler, badRequest } from '../lib/http.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { writeAudit } from '../middleware/audit.js';
 import { createAdmin, deleteAdmin, listAdmins, updateAdmin } from '../services/admins.js';
+import { unlockAdmin } from '../services/auth.js';
 
 export const adminsRouter = Router();
 adminsRouter.use(requireAuth, requireRole('admin'));
@@ -47,6 +48,17 @@ adminsRouter.put(
     const admin = await updateAdmin(Number(req.params.id), input, req.auth!.sub);
     await writeAudit(req, 'update', 'admin', admin.id, { role: admin.role, active: admin.active });
     res.json(admin);
+  }),
+);
+
+adminsRouter.post(
+  '/:id/unlock',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) throw badRequest('Id invalido');
+    await unlockAdmin(id);
+    await writeAudit(req, 'update', 'admin', id, { unlocked: true });
+    res.json({ ok: true });
   }),
 );
 

@@ -16,6 +16,9 @@ export const unauthorized = (msg = 'No autenticado') => new ApiError(401, msg);
 export const forbidden = (msg = 'Sin permisos') => new ApiError(403, msg);
 export const notFound = (msg = 'No encontrado') => new ApiError(404, msg);
 export const conflict = (msg: string) => new ApiError(409, msg);
+/** 423 Locked: cuenta bloqueada temporalmente por intentos fallidos. */
+export const locked = (msg: string) => new ApiError(423, msg);
+export const tooManyRequests = (msg: string) => new ApiError(429, msg);
 
 /** Envuelve un handler async para que los rejects lleguen a next(). */
 export function asyncHandler<T extends Request>(

@@ -3,6 +3,7 @@ import { panelPool } from '../db/pools.js';
 import { hashPassword } from '../lib/password.js';
 import { conflict, notFound, badRequest } from '../lib/http.js';
 import type { Role } from '../lib/jwt.js';
+import { revokeAllSessions } from './auth.js';
 
 export interface Admin {
   id: number;
@@ -11,7 +12,11 @@ export interface Admin {
   active: boolean;
   created_at: string;
   last_login_at: string | null;
+  locked_until: string | null;
+  totp_enabled: boolean;
 }
+
+const COLS = `id, username, role, active, created_at, last_login_at, locked_until, totp_enabled`;
 
 function mapAdmin(r: RowDataPacket): Admin {
   return {
@@ -21,12 +26,14 @@ function mapAdmin(r: RowDataPacket): Admin {
     active: Boolean(r.active),
     created_at: String(r.created_at),
     last_login_at: r.last_login_at ? String(r.last_login_at) : null,
+    locked_until: r.locked_until ? String(r.locked_until) : null,
+    totp_enabled: Boolean(r.totp_enabled),
   };
 }
 
 export async function listAdmins(): Promise<Admin[]> {
   const [rows] = await panelPool.query<RowDataPacket[]>(
-    `SELECT id, username, role, active, created_at, last_login_at FROM panel_admins ORDER BY username`,
+    `SELECT ${COLS} FROM panel_admins ORDER BY username`,
   );
   return rows.map(mapAdmin);
 }
@@ -47,7 +54,7 @@ export async function createAdmin(input: {
     { u: input.username, h: hash, r: input.role },
   );
   const [rows] = await panelPool.query<RowDataPacket[]>(
-    `SELECT id, username, role, active, created_at, last_login_at FROM panel_admins WHERE id = :id`,
+    `SELECT ${COLS} FROM panel_admins WHERE id = :id`,
     { id: res.insertId },
   );
   return mapAdmin(rows[0]);
@@ -92,8 +99,12 @@ export async function updateAdmin(
     `UPDATE panel_admins SET ${sets.join(', ')} WHERE id = :id`,
     params as Record<string, string | number>,
   );
+
+  // Cambiarle la contrasena o desactivar la cuenta debe echar sus sesiones abiertas.
+  if (input.password || input.active === false) await revokeAllSessions(id);
+
   const [updated] = await panelPool.query<RowDataPacket[]>(
-    `SELECT id, username, role, active, created_at, last_login_at FROM panel_admins WHERE id = :id`,
+    `SELECT ${COLS} FROM panel_admins WHERE id = :id`,
     { id },
   );
   return mapAdmin(updated[0]);
