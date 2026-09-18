@@ -1,0 +1,395 @@
+:root {
+  color-scheme: light dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--app-page-bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: var(--mantine-color-brand-6);
+  color: #fff;
+}
+
+/* ------------------------------ Scrollbars ------------------------------ */
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--app-scrollbar-thumb) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: var(--app-scrollbar-thumb);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--app-border-strong);
+}
+
+/* ------------------------------ Superficies ----------------------------- */
+
+.mantine-Paper-root,
+.mantine-Card-root {
+  background-color: var(--app-surface);
+  border-color: var(--app-border);
+}
+
+.mantine-Card-root {
+  box-shadow: var(--app-shadow-card);
+  transition:
+    box-shadow var(--app-transition),
+    border-color var(--app-transition),
+    transform var(--app-transition);
+}
+
+.mantine-Modal-content,
+.mantine-Menu-dropdown,
+.mantine-Popover-dropdown {
+  box-shadow: var(--app-shadow-raised);
+  border: 1px solid var(--app-border);
+}
+
+/* Tarjeta que responde al puntero (KPIs, accesos directos). */
+.card-interactive {
+  cursor: pointer;
+}
+
+.card-interactive:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--app-shadow-raised);
+  border-color: var(--app-border-strong);
+}
+
+/* ------------------------- Chrome: header y navbar ---------------------- */
+
+.mantine-AppShell-header {
+  background-color: var(--app-chrome-bg);
+  backdrop-filter: saturate(180%) blur(14px);
+  -webkit-backdrop-filter: saturate(180%) blur(14px);
+  border-bottom: 1px solid var(--app-border);
+}
+
+.mantine-AppShell-navbar {
+  background-color: var(--app-surface-muted);
+  border-right: 1px solid var(--app-border);
+}
+
+.mantine-AppShell-main {
+  background-color: var(--app-page-bg);
+}
+
+/* Marca del header: cuadro con degradado. */
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  color: #fff;
+  background: linear-gradient(135deg, var(--mantine-color-brand-5), var(--app-accent-2));
+  box-shadow: 0 6px 16px -8px var(--mantine-color-brand-6);
+  flex: none;
+}
+
+.brand-name {
+  font-weight: 700;
+  letter-spacing: -0.015em;
+}
+
+/* Enlaces de navegacion: pastilla activa con barra lateral. */
+.mantine-NavLink-root {
+  border-radius: var(--mantine-radius-md);
+  margin-bottom: 2px;
+  font-weight: 500;
+  transition:
+    background-color var(--app-transition),
+    color var(--app-transition);
+}
+
+.mantine-NavLink-root:hover {
+  background-color: var(--app-hover);
+}
+
+.mantine-NavLink-root[data-active] {
+  background-color: var(--mantine-color-brand-light);
+  color: var(--mantine-color-brand-light-color);
+  font-weight: 600;
+}
+
+.mantine-NavLink-root[data-active]::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 18px;
+  border-radius: 0 3px 3px 0;
+  background: currentColor;
+}
+
+.mantine-NavLink-root {
+  position: relative;
+}
+
+.nav-section-label {
+  padding: var(--mantine-spacing-xs) var(--mantine-spacing-sm) 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--mantine-color-dimmed);
+}
+
+/* Indicador de estado (BD / servicio). */
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background-color: var(--mantine-color-gray-5);
+}
+
+.status-dot[data-state='ok'] {
+  background-color: var(--mantine-color-teal-6);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--mantine-color-teal-6) 22%, transparent);
+}
+
+.status-dot[data-state='error'] {
+  background-color: var(--mantine-color-red-6);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--mantine-color-red-6) 22%, transparent);
+  animation: status-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes status-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* ------------------------------- Tablas --------------------------------- */
+
+.mantine-Table-table {
+  font-variant-numeric: tabular-nums;
+}
+
+.mantine-Table-thead .mantine-Table-th {
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--mantine-color-dimmed);
+  background-color: var(--app-surface-muted);
+  white-space: nowrap;
+}
+
+.mantine-Table-tbody .mantine-Table-tr {
+  transition: background-color var(--app-transition);
+}
+
+/* La tabla ocupa todo el ancho de la tarjeta que la contiene. */
+.table-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.table-card > .table-card-header {
+  padding: var(--mantine-spacing-md) var(--mantine-spacing-lg);
+  border-bottom: 1px solid var(--app-border);
+}
+
+.table-card > .table-card-footer {
+  padding: var(--mantine-spacing-sm) var(--mantine-spacing-lg);
+  border-top: 1px solid var(--app-border);
+  background-color: var(--app-surface-muted);
+}
+
+/* Fila de tabla clicable */
+.row-clickable {
+  cursor: pointer;
+}
+
+/* Texto monoespaciado para secretos / ids */
+.mono {
+  font-family: var(--mantine-font-family-monospace);
+  font-size: var(--mantine-font-size-sm);
+}
+
+/* ------------------------------- Badges --------------------------------- */
+
+.mantine-Badge-root {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 600;
+}
+
+/* --------------------------- Transicion de pagina ----------------------- */
+
+.page-enter {
+  animation: page-in 220ms cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+
+@keyframes page-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+/* ------------------------------- Login ---------------------------------- */
+
+.login-shell {
+  position: relative;
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: var(--mantine-spacing-md);
+  overflow: hidden;
+  background-color: var(--app-page-bg);
+}
+
+/* Auroras de fondo: dos manchas de color que respiran lentamente. */
+.login-shell::before,
+.login-shell::after {
+  content: '';
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(90px);
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.login-shell::before {
+  width: 46rem;
+  height: 46rem;
+  top: -18rem;
+  left: -12rem;
+  background: radial-gradient(circle, var(--mantine-color-brand-5), transparent 65%);
+  animation: aurora-a 18s ease-in-out infinite alternate;
+}
+
+.login-shell::after {
+  width: 40rem;
+  height: 40rem;
+  bottom: -16rem;
+  right: -10rem;
+  background: radial-gradient(circle, var(--app-accent-2), transparent 65%);
+  animation: aurora-b 22s ease-in-out infinite alternate;
+}
+
+@keyframes aurora-a {
+  to {
+    transform: translate3d(6rem, 4rem, 0) scale(1.15);
+  }
+}
+
+@keyframes aurora-b {
+  to {
+    transform: translate3d(-5rem, -3rem, 0) scale(1.1);
+  }
+}
+
+.login-card {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 410px;
+  box-shadow: var(--app-shadow-raised);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  background-color: color-mix(in srgb, var(--app-surface) 88%, transparent);
+  animation: page-in 320ms cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+
+.login-logo {
+  width: 46px;
+  height: 46px;
+  border-radius: 14px;
+}
+
+/* ------------------------------- Graficas -------------------------------- */
+
+.recharts-cartesian-axis-tick text {
+  fill: var(--mantine-color-dimmed);
+  font-size: 11px;
+}
+
+.recharts-cartesian-grid line {
+  stroke: var(--app-border);
+}
+
+.recharts-surface:focus,
+.recharts-wrapper:focus {
+  outline: none;
+}
+
+.chart-tooltip {
+  border-radius: var(--mantine-radius-md);
+  border: 1px solid var(--app-border);
+  background-color: var(--app-surface);
+  box-shadow: var(--app-shadow-raised);
+  padding: 10px 12px;
+  font-size: var(--mantine-font-size-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------ Accesibilidad ---------------------------- */
+
+:focus-visible {
+  outline: 2px solid var(--mantine-color-brand-5);
+  outline-offset: 2px;
+  border-radius: var(--mantine-radius-xs);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .card-interactive:hover {
+    transform: none;
+  }
+}
+
+@media print {
+  .mantine-AppShell-header,
+  .mantine-AppShell-navbar {
+    display: none !important;
+  }
+
+  .mantine-AppShell-main {
+    padding: 0 !important;
+  }
+
+  .mantine-Card-root {
+    box-shadow: none;
+    break-inside: avoid;
+  }
+}

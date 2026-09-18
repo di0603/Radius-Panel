@@ -1,0 +1,27 @@
+# Dependencias
+node_modules/
+
+# Builds
+dist/
+build/
+
+# Entorno y secretos (nunca subir: credenciales de BD, JWT_SECRET, secrets de NAS)
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editores / sistema
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Cache de herramientas
+.eslintcache
+*.tsbuildinfo
+coverage/

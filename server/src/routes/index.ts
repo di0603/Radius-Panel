@@ -1,0 +1,22 @@
+import { Router } from 'express';
+import { metaRouter } from './meta.js';
+import { authRouter } from './auth.js';
+import { usersRouter } from './users.js';
+import { groupsRouter } from './groups.js';
+import { sessionsRouter } from './sessions.js';
+import { nasRouter } from './nas.js';
+import { reportsRouter } from './reports.js';
+import { adminsRouter } from './admins.js';
+import { auditRouter } from './audit.js';
+
+export const apiRouter = Router();
+
+apiRouter.use('/meta', metaRouter);
+apiRouter.use('/auth', authRouter);
+apiRouter.use('/users', usersRouter);
+apiRouter.use('/groups', groupsRouter);
+apiRouter.use('/sessions', sessionsRouter);
+apiRouter.use('/nas', nasRouter);
+apiRouter.use('/reports', reportsRouter);
+apiRouter.use('/admins', adminsRouter);
+apiRouter.use('/audit', auditRouter);
