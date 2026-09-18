@@ -88,6 +88,19 @@ export async function assertGoogleAuthSchema(): Promise<void> {
   }
 }
 
+/**
+ * A diferencia de assertPanelSchema/assertGoogleAuthSchema, esta no lanza: la
+ * tabla es opcional (userMeta.ts se degrada solo sin ella), asi que solo sirve
+ * para informar en el menu de administracion si esta o no.
+ */
+export async function userMetaTableExists(): Promise<boolean> {
+  const [rows] = await panelPool.query<RowDataPacket[]>(
+    `SELECT 1 FROM information_schema.TABLES
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'panel_user_meta'`,
+  );
+  return rows.length > 0;
+}
+
 export async function closePools(): Promise<void> {
   await Promise.allSettled([radiusPool.end(), panelPool.end()]);
 }

@@ -106,6 +106,24 @@ export function UserDrawer({ username, onClose, onEdit }: Props) {
         </Center>
       ) : (
         <Stack gap="md">
+          {(detail.data?.email || detail.data?.notes) && (
+            <Card padding="sm">
+              {detail.data?.email && (
+                <Text size="sm">
+                  <Text span fw={600}>
+                    Email:{' '}
+                  </Text>
+                  {detail.data.email}
+                </Text>
+              )}
+              {detail.data?.notes && (
+                <Text size="sm" c="dimmed" style={{ whiteSpace: 'pre-wrap' }}>
+                  {detail.data.notes}
+                </Text>
+              )}
+            </Card>
+          )}
+
           <SimpleGrid cols={{ base: 2, sm: 4 }} spacing="xs">
             <Metric label="Sesiones" value={formatNumber(totals?.sessions ?? 0)} />
             <Metric label="Trafico" value={formatBytes(totals?.bytes ?? 0)} />

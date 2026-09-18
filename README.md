@@ -12,7 +12,7 @@ Dashboard web para administrar un **FreeRADIUS** que usa el modulo `rlm_sql` sob
 
 | Area | Que hace |
 |------|----------|
-| Usuarios | Alta/edicion/baja sobre `radcheck` / `radreply` / `radusergroup`. Contrasena `Cleartext-Password` o `NT-Password`. Activar/desactivar sin borrar. Caducidad (`Expiration`). Editor de atributos con **validacion por diccionario**. **Probar autenticacion** (Access-Request PAP). **Importar** (CSV pegado) y **exportar** CSV. Cortar todas las sesiones del usuario. |
+| Usuarios | Alta/edicion/baja sobre `radcheck` / `radreply` / `radusergroup`. Contrasena `Cleartext-Password` o `NT-Password`. Activar/desactivar sin borrar. Caducidad (`Expiration`). Editor de atributos con **validacion por diccionario**. **Probar autenticacion** (Access-Request PAP). **Importar** (CSV pegado) y **exportar** CSV. Cortar todas las sesiones del usuario. **Email/notas de contacto** (opcional, tabla propia del panel, no toca RADIUS). |
 | Grupos y perfiles | Atributos de grupo (`radgroupcheck` / `radgroupreply`), recuento de miembros, **clonar grupo**. |
 | Sesiones | Activas (auto-refresco configurable + pausa) e historial con **paginacion por keyset** desde `radacct`, consumo, **Disconnect-Request (RFC 5176)**, exportacion CSV. |
 | NAS | CRUD de la tabla `nas`. Revelar/copiar secret, **probar conectividad** (CoA) y generar el bloque **`clients.conf`**. |
@@ -59,6 +59,13 @@ mysql -u root -p < sql/panel-schema.sql
 >
 > ```bash
 > mysql -u root -p radius_panel < sql/panel-schema-google.sql
+> ```
+>
+> Y si quieres poder guardar un **email/notas por usuario RADIUS** (opcional,
+> por si hay que escribirles), aplica ademas:
+>
+> ```bash
+> mysql -u root -p radius_panel < sql/panel-schema-user-meta.sql
 > ```
 
 Da permisos a un usuario MySQL sobre ambas bases, por ejemplo:
@@ -127,9 +134,9 @@ npm run menu          # (desde la raiz)  -> menu interactivo por consola
 Opciones:
 
 - **Esquema / migraciones** — aplicar `sql/panel-schema.sql`, `sql/freeradius-schema.sql`,
-  `sql/panel-schema-security.sql` (refresh tokens, 2FA, bloqueo) o `sql/panel-schema-google.sql`
-  (login con Google) contra tu MySQL sin salir del proceso; ver que tablas existen en cada base
-  y si la migracion de seguridad esta al dia.
+  `sql/panel-schema-security.sql` (refresh tokens, 2FA, bloqueo), `sql/panel-schema-google.sql`
+  (login con Google) o `sql/panel-schema-user-meta.sql` (email/notas por usuario RADIUS) contra tu
+  MySQL sin salir del proceso; ver que tablas existen en cada base y el estado de cada migracion.
 - **Administradores del panel** — listar, crear, cambiar contrasena, activar/desactivar.
 - **Usuarios RADIUS** — listar (con filtro), crear (usuario + contrasena + tipo + grupo), borrar.
 - **Registros y diagnostico** — ultimas autenticaciones (`radpostauth`), sesiones activas

@@ -79,7 +79,8 @@ Backlog completo. `[x]` = ya hecho · `[ ]` = pendiente · 🔥 = alta prioridad
 - [ ] Cuotas de datos/tiempo (integración con `sqlcounter` / `dailycounter` / `monthlycounter`).
 - [ ] Reset de contadores de cuota desde el panel.
 - [x] Ver y forzar cierre de todas las sesiones de un usuario (multi-CoA): `POST /api/users/:u/disconnect` + acción en la tabla.
-- [ ] Campo "notas" / metadatos por usuario (tabla propia `panel_user_meta`, sin tocar el esquema RADIUS).
+- [x] Campo "notas" / metadatos por usuario (tabla propia `panel_user_meta`, sin tocar el esquema RADIUS):
+  email de contacto y notas libres, editables desde la ficha del usuario, visibles en la tabla y en el export CSV.
 - [ ] Import/export de un usuario como JSON.
 - [ ] Soporte de realms (`user@realm`) y sufijos.
 - [ ] Detección de contraseñas débiles / duplicadas.

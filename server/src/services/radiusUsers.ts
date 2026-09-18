@@ -2,6 +2,7 @@ import type { RowDataPacket } from 'mysql2';
 import { radiusPool } from '../db/pools.js';
 import { ntPasswordHash } from '../lib/ntHash.js';
 import { conflict, notFound } from '../lib/http.js';
+import { deleteUserMeta, getUserMeta, getUserMetaBulk, upsertUserMeta } from './userMeta.js';
 
 export interface AttrRow {
   attribute: string;
@@ -19,6 +20,8 @@ export interface UserDetail {
   checks: AttrRow[];
   replies: AttrRow[];
   groups: UserGroup[];
+  email: string | null;
+  notes: string | null;
 }
 
 export interface UserSummary {
@@ -28,6 +31,7 @@ export interface UserSummary {
   disabled: boolean;
   replyCount: number;
   groups: string[];
+  email: string | null;
 }
 
 export interface UserWriteInput {
@@ -37,6 +41,9 @@ export interface UserWriteInput {
   checks: AttrRow[];
   replies: AttrRow[];
   groups: UserGroup[];
+  /** Contacto, opcional. No vive en radcheck/radreply: se guarda en panel_user_meta. */
+  email?: string | null;
+  notes?: string | null;
 }
 
 const PASSWORD_ATTRS = ['Cleartext-Password', 'NT-Password'];
@@ -101,6 +108,8 @@ export async function listUsers(opts: {
     { search, like, limit: opts.limit, offset: opts.offset },
   );
 
+  const metaByUser = await getUserMetaBulk(rows.map((r) => String(r.username)));
+
   const items: UserSummary[] = rows.map((r) => {
     const pwAttr = r.pw_attr as string | null;
     let passwordType: UserSummary['passwordType'] = null;
@@ -113,6 +122,7 @@ export async function listUsers(opts: {
       disabled: Number(r.disabled ?? 0) > 0,
       replyCount: Number(r.reply_count ?? 0),
       groups: r.groups ? String(r.groups).split(',') : [],
+      email: metaByUser.get(String(r.username))?.email ?? null,
     };
   });
 
@@ -135,11 +145,14 @@ export async function getUser(username: string): Promise<UserDetail> {
   if (!checks.length && !replies.length && !groups.length) {
     throw notFound(`El usuario "${username}" no existe`);
   }
+  const meta = await getUserMeta(username);
   return {
     username,
     checks: checks as AttrRow[],
     replies: replies as AttrRow[],
     groups: groups as UserGroup[],
+    email: meta.email,
+    notes: meta.notes,
   };
 }
 
@@ -184,6 +197,7 @@ export async function createUser(input: UserWriteInput): Promise<UserDetail> {
     throw conflict(`El usuario "${input.username}" ya existe`);
   }
   await replaceUserRows(input.username, input);
+  await upsertUserMeta(input.username, { email: input.email ?? null, notes: input.notes ?? null });
   return getUser(input.username);
 }
 
@@ -234,6 +248,12 @@ export async function updateUser(username: string, input: UserWriteInput): Promi
     throw notFound(`El usuario "${username}" no existe`);
   }
   await replaceUserRows(username, { ...input, username });
+  // Igual que con checks/replies/groups: si el llamante manda email o notas, se
+  // reemplazan enteros. Si no manda ninguno de los dos, se dejan como estaban
+  // (evita que un cliente que aun no conozca estos campos los borre sin querer).
+  if (input.email !== undefined || input.notes !== undefined) {
+    await upsertUserMeta(username, { email: input.email ?? null, notes: input.notes ?? null });
+  }
   return getUser(username);
 }
 
@@ -254,6 +274,8 @@ export async function deleteUser(username: string): Promise<void> {
   } finally {
     conn.release();
   }
+  // panel_user_meta vive en otra base: se borra aparte, fuera de la transaccion RADIUS.
+  await deleteUserMeta(username);
 }
 
 export async function setUserGroups(username: string, groups: UserGroup[]): Promise<UserGroup[]> {

@@ -44,6 +44,7 @@ export interface UserSummary {
   disabled: boolean;
   replyCount: number;
   groups: string[];
+  email: string | null;
 }
 
 export interface UserDetail {
@@ -51,6 +52,8 @@ export interface UserDetail {
   checks: AttrRow[];
   replies: AttrRow[];
   groups: UserGroup[];
+  email: string | null;
+  notes: string | null;
 }
 
 export interface UserWriteInput {
@@ -60,6 +63,8 @@ export interface UserWriteInput {
   checks: AttrRow[];
   replies: AttrRow[];
   groups: UserGroup[];
+  email?: string | null;
+  notes?: string | null;
 }
 
 export interface GroupSummary {

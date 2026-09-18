@@ -86,6 +86,8 @@ function UserEditor({ state, onClose }: { state: EditorState; onClose: () => voi
   const [replies, setReplies] = useState<AttrRow[]>([]);
   const [memberOf, setMemberOf] = useState<string[]>([]);
   const [expiration, setExpiration] = useState<Date | null>(null);
+  const [email, setEmail] = useState('');
+  const [notes, setNotes] = useState('');
   const [loaded, setLoaded] = useState(!isEdit);
   const [dirty, setDirty] = useState(false);
 
@@ -99,6 +101,8 @@ function UserEditor({ state, onClose }: { state: EditorState; onClose: () => voi
       );
       setReplies(detail.data.replies);
       setMemberOf(detail.data.groups.map((g) => g.groupname));
+      setEmail(detail.data.email ?? '');
+      setNotes(detail.data.notes ?? '');
       setPasswordType(
         detail.data.checks.some((c) => c.attribute === 'NT-Password') ? 'nt' : 'cleartext',
       );
@@ -134,6 +138,8 @@ function UserEditor({ state, onClose }: { state: EditorState; onClose: () => voi
       checks: finalChecks,
       replies,
       groups: memberOf.map((groupname, i) => ({ groupname, priority: i + 1 })),
+      email: email.trim() || null,
+      notes: notes.trim() || null,
     };
     try {
       const res = await save.mutateAsync(input);
@@ -210,6 +216,26 @@ function UserEditor({ state, onClose }: { state: EditorState; onClose: () => voi
           clearable
           value={expiration}
           onChange={touched(setExpiration)}
+        />
+      </Group>
+
+      <Group grow align="flex-start">
+        <TextInput
+          label="Email de contacto"
+          description="No va a RADIUS: solo para poder escribirle al usuario"
+          type="email"
+          placeholder="cliente@ejemplo.com"
+          value={email}
+          onChange={(e) => touched(setEmail)(e.currentTarget.value)}
+        />
+        <Textarea
+          label="Notas"
+          placeholder="Direccion, telefono, plan contratado..."
+          autosize
+          minRows={1}
+          maxRows={4}
+          value={notes}
+          onChange={(e) => touched(setNotes)(e.currentTarget.value)}
         />
       </Group>
 
@@ -462,6 +488,7 @@ export function UsersPage() {
         password: u.passwordType ?? (u.hasPassword ? 'set' : ''),
         grupos: u.groups.join('|'),
         reply_attrs: u.replyCount,
+        email: u.email ?? '',
       })),
     );
   };
@@ -578,12 +605,13 @@ export function UsersPage() {
                 <Table.Th>Activo</Table.Th>
                 <Table.Th>Contrasena</Table.Th>
                 <Table.Th>Grupos</Table.Th>
+                <Table.Th>Email</Table.Th>
                 <Table.Th ta="right">Reply attrs</Table.Th>
                 <Table.Th />
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
-              {list.isLoading && <TableSkeleton rows={8} cols={7} />}
+              {list.isLoading && <TableSkeleton rows={8} cols={8} />}
               {list.data?.items.map((u) => (
                 <Table.Tr
                   key={u.username}
@@ -648,6 +676,17 @@ export function UsersPage() {
                       )}
                     </Group>
                   </Table.Td>
+                  <Table.Td>
+                    {u.email ? (
+                      <Text size="sm" lineClamp={1} maw={180}>
+                        {u.email}
+                      </Text>
+                    ) : (
+                      <Text size="xs" c="dimmed">
+                        —
+                      </Text>
+                    )}
+                  </Table.Td>
                   <Table.Td ta="right">{u.replyCount}</Table.Td>
                   <Table.Td>
                     <Group gap={2} justify="flex-end" wrap="nowrap">
@@ -693,7 +732,7 @@ export function UsersPage() {
               ))}
               {list.data && !list.data.items.length && (
                 <Table.Tr>
-                  <Table.Td colSpan={7}>
+                  <Table.Td colSpan={8}>
                     <EmptyState
                       icon={<IconUsers size={22} />}
                       title={search ? 'Sin resultados' : 'Aun no hay usuarios'}

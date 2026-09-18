@@ -23,6 +23,13 @@ Este proyecto usa versionado semantico.
     el vinculo real se guarda por `google_sub` (no por email, que se puede
     reciclar). Sin alta libre: solo funciona para cuentas de administrador que
     ya existian.
+  - `GOOGLE_ENABLED` apaga el boton de Google sin borrar las credenciales.
+- **Email/notas por usuario RADIUS** (opcional): campo de contacto y notas
+  libres en la ficha de cada usuario, para poder escribirle o dejar constancia
+  de algo sin tocar `radcheck`/`radreply`. Vive en una tabla propia del panel
+  (`panel_user_meta`), unida por username en la aplicacion, no con un JOIN SQL
+  (la base de FreeRADIUS puede estar en otro servidor). Visible en la tabla,
+  la ficha lateral y el export CSV.
 - **Reportes**: comparativa entre periodos, mapa de calor por hora y dia, pico de
   sesiones simultaneas, reparto por duracion de sesion, actividad por NAS y
   deteccion de anomalias.
@@ -54,14 +61,24 @@ Si vas a activar el login con Google, aplica ademas:
 mysql -u root -p radius_panel < sql/panel-schema-google.sql
 ```
 
-El servidor comprueba el esquema al arrancar y se niega a levantar si falta
-(la de Google solo se exige si `GOOGLE_CLIENT_ID` esta configurado).
+Y si quieres el email/notas por usuario RADIUS (opcional, se degrada solo sin
+romper nada si no la aplicas):
+
+```bash
+mysql -u root -p radius_panel < sql/panel-schema-user-meta.sql
+```
+
+El servidor comprueba al arrancar la de seguridad (obligatoria) y la de Google
+(solo si `GOOGLE_CLIENT_ID` esta configurado); la de email/notas es la unica
+que no bloquea el arranque si falta.
 
 ### Verificacion
 
-Ambas migraciones se aplicaron y se re-ejecutaron (comprobando idempotencia) contra
-una base MariaDB 10.11 real, no solo contra tipos de TypeScript. Tambien se arranco
-el servidor completo contra esa base y se probaron en caliente `/health`, `/api/meta`
-y `/api/auth/google` con un token invalido (401 controlado, no un 500). El resto de
-funcionalidad de escritura (crear usuarios, grupos, NAS...) sigue sin probarse
-contra la base real de este entorno.
+Las tres migraciones se aplicaron y se re-ejecutaron (comprobando idempotencia)
+contra una base MariaDB 10.11 real, no solo contra tipos de TypeScript. Tambien
+se arranco el servidor completo contra esa base y se probaron en caliente
+`/health`, `/api/meta`, `/api/auth/google` con un token invalido (401 controlado)
+y un ciclo completo real por HTTP de crear/leer/listar/borrar un usuario RADIUS
+con email y notas (`POST` → `GET` → `GET` listado → `DELETE` → `GET` 404),
+limpiando despues los datos de prueba. El resto de funcionalidad de escritura
+(grupos, NAS...) sigue sin probarse contra la base real de este entorno.

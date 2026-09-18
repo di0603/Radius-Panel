@@ -39,6 +39,9 @@ const writeSchema = z.object({
   checks: z.array(attrSchema).default([]),
   replies: z.array(attrSchema).default([]),
   groups: z.array(groupSchema).default([]),
+  // Contacto opcional, no vive en RADIUS: ver server/src/services/userMeta.ts.
+  email: z.string().trim().email('Email invalido').max(255).optional().nullable(),
+  notes: z.string().max(2000).optional().nullable(),
 });
 
 /** Rechaza si hay errores de tipo/valor; deja pasar los warnings. */
