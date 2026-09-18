@@ -52,6 +52,7 @@ import type {
   Session,
   TopUser,
   TotpEnrollment,
+  UserActivity,
   UserDetail,
   UserGroup,
   UserSummary,
@@ -528,5 +529,14 @@ export function useAnomalies(params: { days: number; limit: number }) {
   return useQuery({
     queryKey: ['anomalies', params],
     queryFn: async () => (await api.get<Anomaly[]>('/reports/anomalies', { params })).data,
+  });
+}
+
+export function useUserActivity(username: string | null) {
+  return useQuery({
+    queryKey: ['user-activity', username],
+    enabled: !!username,
+    queryFn: async () =>
+      (await api.get<UserActivity>(`/users/${encodeURIComponent(username!)}/activity`)).data,
   });
 }

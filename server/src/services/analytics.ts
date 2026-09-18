@@ -295,3 +295,81 @@ export async function getAnomalies(days: number, limit = 10): Promise<Anomaly[]>
     })),
   ];
 }
+
+/* ---------------------------- Actividad de un usuario ------------------------- */
+
+export interface UserActivity {
+  sessions: {
+    acctuniqueid: string;
+    nasipaddress: string;
+    framedipaddress: string;
+    acctstarttime: string | null;
+    acctstoptime: string | null;
+    acctsessiontime: number | null;
+    bytes: number;
+    acctterminatecause: string;
+  }[];
+  auths: { reply: string; authdate: string; accepted: boolean }[];
+  totals: { sessions: number; bytes: number; seconds: number; accepts: number; rejects: number };
+}
+
+/** Ultimas sesiones e intentos de autenticacion de un usuario, para su ficha. */
+export async function getUserActivity(username: string, limit = 10): Promise<UserActivity> {
+  const [sessionRows] = await radiusPool.query<RowDataPacket[]>(
+    `SELECT acctuniqueid, nasipaddress, framedipaddress, acctstarttime, acctstoptime,
+            acctsessiontime, (acctinputoctets + acctoutputoctets) AS bytes, acctterminatecause
+       FROM radacct
+      WHERE username = :u
+      ORDER BY acctstarttime DESC
+      LIMIT :limit`,
+    { u: username, limit },
+  );
+
+  const [authRows] = await radiusPool.query<RowDataPacket[]>(
+    `SELECT reply, authdate FROM radpostauth
+      WHERE username = :u
+      ORDER BY authdate DESC
+      LIMIT :limit`,
+    { u: username, limit },
+  );
+
+  const [totalRows] = await radiusPool.query<RowDataPacket[]>(
+    `SELECT COUNT(*) AS sessions,
+            COALESCE(SUM(acctinputoctets + acctoutputoctets), 0) AS bytes,
+            COALESCE(SUM(acctsessiontime), 0) AS seconds
+       FROM radacct WHERE username = :u`,
+    { u: username },
+  );
+
+  const [authTotals] = await radiusPool.query<RowDataPacket[]>(
+    `SELECT SUM(reply = 'Access-Accept') AS accepts,
+            SUM(reply <> 'Access-Accept') AS rejects
+       FROM radpostauth WHERE username = :u`,
+    { u: username },
+  );
+
+  return {
+    sessions: sessionRows.map((r) => ({
+      acctuniqueid: String(r.acctuniqueid),
+      nasipaddress: String(r.nasipaddress ?? ''),
+      framedipaddress: String(r.framedipaddress ?? ''),
+      acctstarttime: r.acctstarttime ? String(r.acctstarttime) : null,
+      acctstoptime: r.acctstoptime ? String(r.acctstoptime) : null,
+      acctsessiontime: r.acctsessiontime === null ? null : Number(r.acctsessiontime),
+      bytes: Number(r.bytes ?? 0),
+      acctterminatecause: String(r.acctterminatecause ?? ''),
+    })),
+    auths: authRows.map((r) => ({
+      reply: String(r.reply),
+      authdate: String(r.authdate),
+      accepted: String(r.reply) === 'Access-Accept',
+    })),
+    totals: {
+      sessions: Number(totalRows[0]?.sessions ?? 0),
+      bytes: Number(totalRows[0]?.bytes ?? 0),
+      seconds: Number(totalRows[0]?.seconds ?? 0),
+      accepts: Number(authTotals[0]?.accepts ?? 0),
+      rejects: Number(authTotals[0]?.rejects ?? 0),
+    },
+  };
+}

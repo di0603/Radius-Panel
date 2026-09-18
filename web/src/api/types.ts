@@ -200,3 +200,18 @@ export interface Anomaly {
   value: number;
   at: string | null;
 }
+
+export interface UserActivity {
+  sessions: {
+    acctuniqueid: string;
+    nasipaddress: string;
+    framedipaddress: string;
+    acctstarttime: string | null;
+    acctstoptime: string | null;
+    acctsessiontime: number | null;
+    bytes: number;
+    acctterminatecause: string;
+  }[];
+  auths: { reply: string; authdate: string; accepted: boolean }[];
+  totals: { sessions: number; bytes: number; seconds: number; accepts: number; rejects: number };
+}

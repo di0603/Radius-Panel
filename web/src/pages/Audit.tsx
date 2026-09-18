@@ -2,10 +2,8 @@ import { useState } from 'react';
 import {
   Badge,
   Button,
-  Center,
   Code,
   Group,
-  Loader,
   Pagination,
   Select,
   Stack,
@@ -21,6 +19,8 @@ import { SectionCard } from '../components/SectionCard';
 import { EmptyState } from '../components/EmptyState';
 import { downloadCsv } from '../lib/csv';
 import { formatDateTime } from '../lib/format';
+import { useUrlState } from '../lib/useUrlState';
+import { TableSkeleton } from '../components/TableSkeleton';
 
 const PAGE = 50;
 
@@ -33,14 +33,14 @@ const ACTION_COLOR: Record<string, string> = {
 };
 
 export function AuditPage() {
-  const [entity, setEntity] = useState<string | null>(null);
-  const [action, setAction] = useState<string | null>(null);
-  const [admin, setAdmin] = useState('');
+  const [entity, setEntity] = useUrlState('entity');
+  const [action, setAction] = useUrlState('action');
+  const [admin, setAdmin] = useUrlState('admin');
   const [page, setPage] = useState(1);
 
   const q = useAuditLog({
-    entity: entity ?? undefined,
-    action: action ?? undefined,
+    entity: entity || undefined,
+    action: action || undefined,
     admin: admin || undefined,
     limit: PAGE,
     offset: (page - 1) * PAGE,
@@ -88,9 +88,9 @@ export function AuditPage() {
               size="xs"
               w={150}
               data={['user', 'user-groups', 'group', 'nas', 'session', 'admin']}
-              value={entity}
+              value={entity || null}
               onChange={(v) => {
-                setEntity(v);
+                setEntity(v ?? '');
                 setPage(1);
               }}
             />
@@ -100,9 +100,9 @@ export function AuditPage() {
               size="xs"
               w={140}
               data={['create', 'update', 'delete', 'disconnect', 'login']}
-              value={action}
+              value={action || null}
               onChange={(v) => {
-                setAction(v);
+                setAction(v ?? '');
                 setPage(1);
               }}
             />
@@ -142,15 +142,7 @@ export function AuditPage() {
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
-              {q.isLoading && (
-                <Table.Tr>
-                  <Table.Td colSpan={6}>
-                    <Center h={120}>
-                      <Loader />
-                    </Center>
-                  </Table.Td>
-                </Table.Tr>
-              )}
+              {q.isLoading && <TableSkeleton rows={8} cols={6} />}
               {q.data?.items.map((e) => (
                 <Table.Tr key={e.id}>
                   <Table.Td style={{ whiteSpace: 'nowrap' }}>

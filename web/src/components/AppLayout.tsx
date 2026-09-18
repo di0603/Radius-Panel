@@ -30,6 +30,7 @@ import { NavLink as RouterNavLink, Outlet, useLocation, useNavigate } from 'reac
 import { useAuth } from '../auth/AuthContext';
 import { useMeta } from '../api/hooks';
 import { ThemeSwitcher } from './ThemeSwitcher';
+import { GlobalSearch } from './GlobalSearch';
 
 interface NavItem {
   to: string;
@@ -99,6 +100,7 @@ export function AppLayout() {
           </Group>
 
           <Group gap="xs" wrap="nowrap">
+            <GlobalSearch />
             <ThemeSwitcher />
             <Menu shadow="md" width={220} position="bottom-end" withinPortal>
               <Menu.Target>

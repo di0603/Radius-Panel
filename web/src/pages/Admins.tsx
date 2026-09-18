@@ -3,9 +3,7 @@ import {
   ActionIcon,
   Badge,
   Button,
-  Center,
   Group,
-  Loader,
   Modal,
   PasswordInput,
   Select,
@@ -20,6 +18,7 @@ import { modals } from '@mantine/modals';
 import { IconKey, IconLockOpen, IconPlus, IconTrash } from '@tabler/icons-react';
 import { PageHeader } from '../components/PageHeader';
 import { SectionCard } from '../components/SectionCard';
+import { TableSkeleton } from '../components/TableSkeleton';
 import {
   useAdmins,
   useCreateAdmin,
@@ -163,15 +162,7 @@ export function AdminsPage() {
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
-              {list.isLoading && (
-                <Table.Tr>
-                  <Table.Td colSpan={7}>
-                    <Center h={120}>
-                      <Loader />
-                    </Center>
-                  </Table.Td>
-                </Table.Tr>
-              )}
+              {list.isLoading && <TableSkeleton rows={4} cols={7} />}
               {list.data?.map((a) => {
                 const isSelf = a.id === (user?.id ?? user?.sub);
                 return (

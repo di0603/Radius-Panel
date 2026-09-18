@@ -3,10 +3,8 @@ import {
   ActionIcon,
   Badge,
   Button,
-  Center,
   Code,
   Group,
-  Loader,
   Modal,
   Stack,
   Table,
@@ -30,6 +28,7 @@ import {
 import { PageHeader } from '../components/PageHeader';
 import { SectionCard } from '../components/SectionCard';
 import { EmptyState } from '../components/EmptyState';
+import { TableSkeleton } from '../components/TableSkeleton';
 import { fetchClientsConf, useDeleteNas, useNasList, useNasProbe, useSaveNas } from '../api/hooks';
 import type { Nas } from '../api/types';
 import { notifyError, notifyOk } from '../lib/notify';
@@ -224,15 +223,7 @@ export function NasPage() {
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
-              {list.isLoading && (
-                <Table.Tr>
-                  <Table.Td colSpan={6}>
-                    <Center h={120}>
-                      <Loader />
-                    </Center>
-                  </Table.Td>
-                </Table.Tr>
-              )}
+              {list.isLoading && <TableSkeleton rows={5} cols={6} />}
               {list.data?.map((nas) => (
                 <Table.Tr key={nas.id}>
                   <Table.Td fw={550} className="mono">

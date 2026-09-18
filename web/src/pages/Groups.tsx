@@ -19,6 +19,7 @@ import { IconCopy, IconEdit, IconPlus, IconTrash, IconUsersGroup } from '@tabler
 import { PageHeader } from '../components/PageHeader';
 import { SectionCard } from '../components/SectionCard';
 import { EmptyState } from '../components/EmptyState';
+import { TableSkeleton } from '../components/TableSkeleton';
 import { useDeleteGroup, useGroup, useGroups, useSaveGroup } from '../api/hooks';
 import type { AttrRow } from '../api/types';
 import { AttributeEditor } from '../components/AttributeEditor';
@@ -166,15 +167,7 @@ export function GroupsPage() {
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
-              {list.isLoading && (
-                <Table.Tr>
-                  <Table.Td colSpan={5}>
-                    <Center h={120}>
-                      <Loader />
-                    </Center>
-                  </Table.Td>
-                </Table.Tr>
-              )}
+              {list.isLoading && <TableSkeleton rows={5} cols={5} />}
               {list.data?.map((g) => (
                 <Table.Tr key={g.groupname}>
                   <Table.Td fw={550}>{g.groupname}</Table.Td>

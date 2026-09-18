@@ -16,6 +16,7 @@ import {
 } from '../services/radiusUsers.js';
 import { disconnectUserSessions } from '../services/coa.js';
 import { testAuthentication } from '../services/testAuth.js';
+import { getUserActivity } from '../services/analytics.js';
 
 export const usersRouter = Router();
 usersRouter.use(requireAuth);
@@ -71,6 +72,13 @@ usersRouter.get(
   '/:username',
   asyncHandler(async (req, res) => {
     res.json(await getUser(req.params.username));
+  }),
+);
+
+usersRouter.get(
+  '/:username/activity',
+  asyncHandler(async (req, res) => {
+    res.json(await getUserActivity(req.params.username));
   }),
 );
 

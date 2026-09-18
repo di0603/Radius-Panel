@@ -3,6 +3,7 @@ import {
   ActionIcon,
   Badge,
   Button,
+  Checkbox,
   Code,
   Group,
   Loader,
@@ -31,6 +32,7 @@ import {
   IconPlayerPlay,
   IconPlugConnectedX,
   IconPlus,
+  IconEye,
   IconSearch,
   IconTrash,
   IconUpload,
@@ -38,7 +40,9 @@ import {
 } from '@tabler/icons-react';
 import { PageHeader } from '../components/PageHeader';
 import { SectionCard } from '../components/SectionCard';
+import { UserDrawer } from '../components/UserDrawer';
 import { EmptyState } from '../components/EmptyState';
+import { TableSkeleton } from '../components/TableSkeleton';
 import { AttributeEditor } from '../components/AttributeEditor';
 import {
   useBulkCreateUsers,
@@ -367,7 +371,9 @@ export function UsersPage() {
   const [page, setPage] = useState(1);
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [testUser, setTestUser] = useState<string | null>(null);
+  const [detailUser, setDetailUser] = useState<string | null>(null);
   const [bulkOpen, setBulkOpen] = useState(false);
+  const [selected, setSelected] = useState<string[]>([]);
 
   const list = useUsers({ search: debouncedSearch, limit: PAGE, offset: (page - 1) * PAGE });
   const del = useDeleteUser();
@@ -410,6 +416,40 @@ export function UsersPage() {
           notifyError(err);
         }
       },
+    });
+
+  const pageUsers = list.data?.items ?? [];
+  const allSelected = pageUsers.length > 0 && selected.length === pageUsers.length;
+  const someSelected = selected.length > 0 && !allSelected;
+
+  const toggleAll = () => setSelected(allSelected ? [] : pageUsers.map((u) => u.username));
+
+  const toggleOne = (username: string) =>
+    setSelected((prev) =>
+      prev.includes(username) ? prev.filter((u) => u !== username) : [...prev, username],
+    );
+
+  /** Aplica una accion a todos los seleccionados y resume el resultado. */
+  const runBulk = async (action: (username: string) => Promise<unknown>, verb: string) => {
+    const results = await Promise.allSettled(selected.map(action));
+    const ok = results.filter((r) => r.status === 'fulfilled').length;
+    const failed = results.length - ok;
+    if (ok) notifyOk(`${ok} usuario(s) ${verb}`);
+    if (failed) notifyError(new Error(`${failed} fallaron`), 'Accion en bloque');
+    setSelected([]);
+  };
+
+  const confirmBulkDelete = () =>
+    modals.openConfirmModal({
+      title: `Borrar ${selected.length} usuario(s)`,
+      children: (
+        <Text size="sm">
+          Se eliminaran de radcheck, radreply y radusergroup. El accounting se conserva.
+        </Text>
+      ),
+      labels: { confirm: 'Borrar todos', cancel: 'Cancelar' },
+      confirmProps: { color: 'red' },
+      onConfirm: () => runBulk((u) => del.mutateAsync(u), 'borrados'),
     });
 
   const exportCsv = () => {
@@ -462,16 +502,55 @@ export function UsersPage() {
         title="Listado"
         subtitle="Cuentas de radcheck / radreply"
         actions={
-          <TextInput
-            placeholder="Buscar por nombre de usuario"
-            leftSection={<IconSearch size={16} />}
-            value={search}
-            onChange={(e) => {
-              setSearch(e.currentTarget.value);
-              setPage(1);
-            }}
-            w={280}
-          />
+          selected.length ? (
+            <Group gap="xs" wrap="wrap">
+              <Text size="sm" fw={600}>
+                {selected.length} seleccionado(s)
+              </Text>
+              <Button
+                size="xs"
+                variant="light"
+                onClick={() =>
+                  runBulk(
+                    (u) => setEnabled.mutateAsync({ username: u, enabled: true }),
+                    'activados',
+                  )
+                }
+              >
+                Activar
+              </Button>
+              <Button
+                size="xs"
+                variant="light"
+                color="orange"
+                onClick={() =>
+                  runBulk(
+                    (u) => setEnabled.mutateAsync({ username: u, enabled: false }),
+                    'desactivados',
+                  )
+                }
+              >
+                Desactivar
+              </Button>
+              <Button size="xs" variant="light" color="red" onClick={confirmBulkDelete}>
+                Borrar
+              </Button>
+              <Button size="xs" variant="subtle" onClick={() => setSelected([])}>
+                Cancelar
+              </Button>
+            </Group>
+          ) : (
+            <TextInput
+              placeholder="Buscar por nombre de usuario"
+              leftSection={<IconSearch size={16} />}
+              value={search}
+              onChange={(e) => {
+                setSearch(e.currentTarget.value);
+                setPage(1);
+              }}
+              w={280}
+            />
+          )
         }
         bodyPadding={false}
         footer={
@@ -487,6 +566,14 @@ export function UsersPage() {
           <Table>
             <Table.Thead>
               <Table.Tr>
+                <Table.Th w={40}>
+                  <Checkbox
+                    aria-label="Seleccionar todos"
+                    checked={allSelected}
+                    indeterminate={someSelected}
+                    onChange={toggleAll}
+                  />
+                </Table.Th>
                 <Table.Th>Usuario</Table.Th>
                 <Table.Th>Activo</Table.Th>
                 <Table.Th>Contrasena</Table.Th>
@@ -496,18 +583,27 @@ export function UsersPage() {
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
-              {list.isLoading && (
-                <Table.Tr>
-                  <Table.Td colSpan={6}>
-                    <Center h={120}>
-                      <Loader />
-                    </Center>
-                  </Table.Td>
-                </Table.Tr>
-              )}
+              {list.isLoading && <TableSkeleton rows={8} cols={7} />}
               {list.data?.items.map((u) => (
-                <Table.Tr key={u.username} style={{ opacity: u.disabled ? 0.55 : 1 }}>
-                  <Table.Td fw={550}>{u.username}</Table.Td>
+                <Table.Tr
+                  key={u.username}
+                  style={{ opacity: u.disabled ? 0.55 : 1 }}
+                  bg={selected.includes(u.username) ? 'var(--app-hover)' : undefined}
+                >
+                  <Table.Td>
+                    <Checkbox
+                      aria-label={`Seleccionar ${u.username}`}
+                      checked={selected.includes(u.username)}
+                      onChange={() => toggleOne(u.username)}
+                    />
+                  </Table.Td>
+                  <Table.Td
+                    fw={550}
+                    className="row-clickable"
+                    onClick={() => setDetailUser(u.username)}
+                  >
+                    {u.username}
+                  </Table.Td>
                   <Table.Td>
                     <Switch
                       size="sm"
@@ -555,6 +651,11 @@ export function UsersPage() {
                   <Table.Td ta="right">{u.replyCount}</Table.Td>
                   <Table.Td>
                     <Group gap={2} justify="flex-end" wrap="nowrap">
+                      <Tooltip label="Ver ficha">
+                        <ActionIcon variant="subtle" onClick={() => setDetailUser(u.username)}>
+                          <IconEye size={16} />
+                        </ActionIcon>
+                      </Tooltip>
                       <Tooltip label="Probar autenticacion">
                         <ActionIcon variant="subtle" onClick={() => setTestUser(u.username)}>
                           <IconPlayerPlay size={16} />
@@ -592,7 +693,7 @@ export function UsersPage() {
               ))}
               {list.data && !list.data.items.length && (
                 <Table.Tr>
-                  <Table.Td colSpan={6}>
+                  <Table.Td colSpan={7}>
                     <EmptyState
                       icon={<IconUsers size={22} />}
                       title={search ? 'Sin resultados' : 'Aun no hay usuarios'}
@@ -635,6 +736,15 @@ export function UsersPage() {
       <Modal opened={!!testUser} onClose={() => setTestUser(null)} title="Probar autenticacion">
         {testUser && <TestForm username={testUser} />}
       </Modal>
+
+      <UserDrawer
+        username={detailUser}
+        onClose={() => setDetailUser(null)}
+        onEdit={(username) => {
+          setDetailUser(null);
+          setEditor({ mode: 'edit', username });
+        }}
+      />
 
       <Modal
         opened={bulkOpen}

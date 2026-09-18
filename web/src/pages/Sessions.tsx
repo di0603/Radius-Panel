@@ -3,9 +3,7 @@ import {
   ActionIcon,
   Button,
   Card,
-  Center,
   Group,
-  Loader,
   Pagination,
   SegmentedControl,
   Stack,
@@ -35,6 +33,8 @@ import { EmptyState } from '../components/EmptyState';
 import { downloadCsv } from '../lib/csv';
 import { formatBytes, formatDateTime, formatDuration } from '../lib/format';
 import { notifyError, notifyOk } from '../lib/notify';
+import { useUrlState } from '../lib/useUrlState';
+import { TableSkeleton } from '../components/TableSkeleton';
 
 const PAGE = 25;
 
@@ -204,15 +204,7 @@ function ActiveTab() {
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
-            {q.isLoading && (
-              <Table.Tr>
-                <Table.Td colSpan={8}>
-                  <Center h={120}>
-                    <Loader />
-                  </Center>
-                </Table.Td>
-              </Table.Tr>
-            )}
+            {q.isLoading && <TableSkeleton rows={6} cols={8} />}
             {q.data?.items.map((s) => (
               <Table.Tr key={s.acctuniqueid}>
                 <Table.Td fw={550}>{s.username}</Table.Td>
@@ -261,10 +253,10 @@ function ActiveTab() {
 /* ------------------------------ Historial ------------------------- */
 
 function HistoryTab() {
-  const [username, setUsername] = useState('');
-  const [nas, setNas] = useState('');
-  const [from, setFrom] = useState('');
-  const [to, setTo] = useState('');
+  const [username, setUsername] = useUrlState('u');
+  const [nas, setNas] = useUrlState('nas');
+  const [from, setFrom] = useUrlState('desde');
+  const [to, setTo] = useUrlState('hasta');
   const [cursor, setCursor] = useState<number | undefined>(undefined);
   const [acc, setAcc] = useState<Session[]>([]);
 
@@ -387,15 +379,7 @@ function HistoryTab() {
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
-              {q.isLoading && !items.length && (
-                <Table.Tr>
-                  <Table.Td colSpan={7}>
-                    <Center h={120}>
-                      <Loader />
-                    </Center>
-                  </Table.Td>
-                </Table.Tr>
-              )}
+              {q.isLoading && !items.length && <TableSkeleton rows={6} cols={7} />}
               <SessionRows items={items} />
               {!q.isLoading && !items.length && (
                 <Table.Tr>
