@@ -9,7 +9,7 @@ export function downloadCsv(filename: string, rows: Record<string, unknown>[]): 
   if (!rows.length) return;
   const headers = Object.keys(rows[0]);
   const body = rows.map((r) => headers.map((h) => cell(r[h])).join(';')).join('\r\n');
-  const csv = `﻿${headers.join(';')}\r\n${body}`;
+  const csv = `\uFEFF${headers.join(';')}\r\n${body}`;
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');

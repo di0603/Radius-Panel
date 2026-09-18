@@ -14,10 +14,20 @@
     "typecheck": "npm --prefix server run typecheck && npm --prefix web run typecheck",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "install:all": "npm install && npm --prefix server install && npm --prefix web install"
+    "install:all": "npm install && npm --prefix server install && npm --prefix web install",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm test"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "concurrently": "^9.1.0",
-    "prettier": "^3.3.3"
-  }
+    "eslint": "^9.39.5",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "eslint-plugin-react-refresh": "^0.5.7",
+    "prettier": "^3.3.3",
+    "typescript-eslint": "^8.70.0"
+  },
+  "type": "module"
 }

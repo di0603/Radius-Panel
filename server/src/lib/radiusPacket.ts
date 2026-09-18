@@ -100,7 +100,7 @@ function buildPacket(
   header.writeUInt16BE(length, 2);
 
   const zeroAuth = Buffer.alloc(16);
-  let packet = Buffer.concat([header, zeroAuth, attrs]);
+  const packet = Buffer.concat([header, zeroAuth, attrs]);
 
   // Message-Authenticator = HMAC-MD5(secret, paquete completo con MA a cero)
   const ma = crypto.createHmac('md5', secret).update(packet).digest();
@@ -261,7 +261,7 @@ export async function sendAccessRequest(p: AccessRequestParams): Promise<AccessR
   header.writeUInt8(id, 1);
   header.writeUInt16BE(20 + attrs.length, 2);
 
-  let packet = Buffer.concat([header, reqAuth, attrs]);
+  const packet = Buffer.concat([header, reqAuth, attrs]);
   const ma = crypto.createHmac('md5', p.secret).update(packet).digest();
   ma.copy(packet, packet.length - 16);
 
@@ -306,7 +306,7 @@ export async function probe(
   header.writeUInt8(CODE_STATUS_SERVER, 0);
   header.writeUInt8(id, 1);
   header.writeUInt16BE(20 + attrs.length, 2);
-  let packet = Buffer.concat([header, reqAuth, attrs]);
+  const packet = Buffer.concat([header, reqAuth, attrs]);
   const ma = crypto.createHmac('md5', secret).update(packet).digest();
   ma.copy(packet, packet.length - 16);
   try {

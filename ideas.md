@@ -23,19 +23,25 @@ Backlog completo. `[x]` = ya hecho · `[ ]` = pendiente · 🔥 = alta prioridad
   probar auth (Access-Request PAP), import/export CSV, keyset en el historial, multi-CoA por
   usuario, `seed:demo`, probe de NAS + `clients.conf`, clonar grupo, tarjetas de reportes
   (motivos de cierre, top NAS, inactivos), request-id, CI, Prettier
+- [x] **Oleada 2**: rediseno completo de la interfaz con sistema de temas (claro / oscuro /
+  sistema + 7 acentos), seguridad del panel (refresh tokens en cookie HttpOnly, 2FA TOTP,
+  bloqueo de cuenta, sesiones revocables, CSP), analitica nueva (heatmap, concurrencia,
+  anomalias, comparativa de periodos, stats por NAS), buscador global Ctrl+K, ficha de
+  usuario, acciones en bloque, filtros en la URL, pino, metricas Prometheus, ESLint y
+  CHANGELOG
 
 ---
 
 ## 1. Quick wins / alta prioridad 🔥
 
-- [ ] 🔥 **Refresh token** + expiración corta del access token; renovación silenciosa.
+- [x] 🔥 **Refresh token** + expiración corta del access token; renovación silenciosa. Rotación con detección de reuso; el access token vive en memoria y el refresh en cookie HttpOnly.
 - [x] 🔥 **Endpoint `/api/meta`** (`{ version, coaEnabled, dbOk }`) y footer del panel con versión + estado. `/health` ahora comprueba ambas BDs (503 si fallan).
 - [x] 🔥 **Validar atributos RADIUS** contra un diccionario (`server/src/lib/radiusDict.ts`): bloquea errores de tipo/enum al guardar y avisa de atributos no reconocidos. El editor sugiere valores.
 - [x] 🔥 **Test de un usuario** desde el panel: botón "Probar" que hace un Access-Request PAP y muestra Accept/Reject + atributos. Cliente RADIUS auth en Node puro.
 - [x] 🔥 **Paginación por keyset** en el historial de `radacct` (cursor por `radacctid`, botón "cargar más", el COUNT solo en la 1ª página).
 - [ ] 🔥 **Índices** recomendados en `radpostauth(authdate)` y `radacct(acctstarttime)` — ya incluidos en `sql/freeradius-schema.sql`; falta guía para bases existentes.
 - [x] 🔥 **Confirmar antes de salir** de un formulario con cambios sin guardar (editor de usuarios).
-- [ ] 🔥 **Rate-limit por usuario** además de por IP en el login; bloqueo temporal tras N fallos.
+- [x] 🔥 **Rate-limit por usuario** además de por IP en el login; bloqueo temporal tras N fallos (`panel_login_attempts` + `locked_until`, con desbloqueo manual desde Administradores).
 - [x] 🔥 **Semilla de datos demo** (`npm run seed:demo`): 15 usuarios, 3 grupos, 2 NAS, 90 días de accounting y postauth.
 - [x] 🔥 **Request-id** por petición (`x-request-id`) y en los logs de error.
 - [x] 🔥 **CI** (GitHub Actions): format + typecheck + tests + build en Node 20/22.
@@ -45,21 +51,21 @@ Backlog completo. `[x]` = ya hecho · `[ ]` = pendiente · 🔥 = alta prioridad
 
 ## 2. UX / UI
 
-- [ ] Vista de detalle de usuario (drawer) con pestañas: atributos, grupos, últimas sesiones, últimos intentos de auth.
-- [~] Acciones en bloque: hecho el **import CSV** y el **export CSV** de usuarios; falta selección múltiple para desactivar/borrar/mover.
-- [~] Filtros persistentes en la URL (querystring): hecho en Usuarios (`?q=`); falta en Sesiones y Auditoría.
+- [x] Vista de detalle de usuario (drawer) con pestañas: atributos, grupos, últimas sesiones, últimos intentos de auth y totales históricos (`GET /api/users/:u/activity`).
+- [~] Acciones en bloque: hechos import/export CSV y **selección múltiple** para activar, desactivar y borrar. Falta mover usuarios de grupo en bloque.
+- [x] Filtros persistentes en la URL (querystring): Usuarios, Sesiones (historial) y Auditoría.
 - [x] Tabla de sesiones activas con auto-refresco configurable (5/15/30/60 s) y opción de pausa.
-- [ ] Skeletons en vez de spinners; estados vacíos con ilustración y CTA.
+- [x] Skeletons en vez de spinners; estados vacíos con icono, explicación y acción.
 - [ ] Formato de tráfico/tiempo consistente y con tooltip del valor exacto en bytes.
 - [ ] Densidad de tabla (compacta / cómoda) y recordar preferencia.
-- [ ] Búsqueda global (Cmd/Ctrl-K): saltar a usuario, grupo o NAS.
+- [x] Búsqueda global (Cmd/Ctrl-K): salta a páginas y busca usuarios, grupos y NAS en vivo.
 - [x] Título de pestaña dinámico (`document.title`) por página. Faltan breadcrumbs.
 - [x] Exportar tablas a CSV: Usuarios, Sesiones (activas e historial) y Auditoría.
 - [ ] Modo "solo lectura" visual para el rol `operator` donde no aplique.
 - [~] Copia rápida de valores: hecho para el secret de NAS (revelar + copiar) y `clients.conf`.
 - [ ] Gráficas: rango de fechas personalizado (date range picker) además de 7/30/90.
 - [x] Exportar tablas a CSV / Excel (separador `;`, BOM UTF-8).
-- [ ] PWA installable + favicon/manifest propios.
+- [~] Favicon y manifest propios hechos; falta un **service worker** para que sea instalable de verdad.
 - [ ] Atajos de teclado (nuevo usuario, buscar, cerrar modal).
 
 ## 3. Usuarios
@@ -95,7 +101,7 @@ Backlog completo. `[x]` = ya hecho · `[ ]` = pendiente · 🔥 = alta prioridad
 - [ ] Detección de "stale sessions" (sin update en X min) y limpieza asistida.
 - [ ] Línea de tiempo de una sesión (start / interims / stop) con gráfica de consumo.
 - [ ] Mapa / listado de sesiones por NAS y por pool de IP.
-- [ ] Alertas: pico de rechazos, NAS sin accounting, sesión anómala (muy larga / mucho tráfico).
+- [~] Detección de sesiones anómalas (muy largas, mucho tráfico, reconexiones en bucle) en Reportes. Falta convertirlo en **alertas** que avisen solas.
 - [x] Exportar accounting de un rango para facturación (CSV del historial filtrado).
 - [ ] Vista "en vivo" con WebSocket/SSE en vez de polling.
 - [ ] Geolocalización aproximada por IP de `callingstationid` / framed IP.
@@ -107,56 +113,56 @@ Backlog completo. `[x]` = ya hecho · `[ ]` = pendiente · 🔥 = alta prioridad
 - [ ] Agrupar NAS por sede / zona; etiquetas.
 - [ ] Rotación de secrets con recordatorio.
 - [ ] Validar rangos CIDR además de IP única (`nasname` puede ser red).
-- [ ] Estadísticas por NAS (usuarios, sesiones, rechazos, tráfico).
+- [x] Estadísticas por NAS (sesiones, usuarios, activas ahora, tráfico, duración media). Los rechazos por NAS no se pueden sacar: `radpostauth` no guarda `nasipaddress`.
 
 ## 7. Reportes / analítica
 
 - [ ] Informe programado por email (PDF/CSV) diario/semanal.
-- [ ] Comparativa de periodos (esta semana vs anterior).
-- [ ] Uso por franja horaria (heatmap hora × día).
+- [x] Comparativa de periodos: los últimos N días frente a los N anteriores, con variación porcentual.
+- [x] Uso por franja horaria (heatmap hora × día de la semana).
 - [x] Top NAS y top motivos de `acctterminatecause` (tarjetas en el dashboard). Falta el cruce causa × NAS.
 - [x] Usuarios inactivos (sin auth en N días) → tarjeta en el dashboard.
-- [ ] Concurrencia máxima por día (pico de sesiones simultáneas).
+- [x] Concurrencia máxima por día (pico de sesiones simultáneas, calculado hora a hora).
 - [ ] KPI de disponibilidad del servicio RADIUS (gaps en accounting).
 - [ ] Panel configurable (widgets que el admin coloca).
 
 ## 8. Seguridad / autenticación del panel
 
-- [ ] 2FA (TOTP) para administradores.
+- [x] 2FA (TOTP) para administradores, con QR y secreto cifrado en reposo (AES-256-GCM).
 - [ ] Política de contraseñas + caducidad + historial.
-- [ ] Bloqueo de cuenta tras N intentos; desbloqueo manual.
+- [x] Bloqueo de cuenta tras N intentos; desbloqueo manual desde la página de Administradores.
 - [ ] Login vía OIDC / SAML / LDAP (SSO corporativo) como alternativa al login local.
-- [ ] Sesiones activas del panel: listarlas y revocarlas (lista de tokens / jti).
+- [x] Sesiones activas del panel: listarlas y revocarlas una a una o todas de golpe.
 - [ ] Permisos granulares (RBAC por recurso: solo-lectura de usuarios, gestión de NAS…).
 - [ ] Ámbito por grupo/NAS: un operador solo ve "sus" usuarios.
-- [ ] Cabeceras de seguridad afinadas (CSP estricta) y cookies `HttpOnly` en vez de token en `localStorage`.
-- [ ] Registro de accesos fallidos y alertas.
+- [x] Cabeceras de seguridad afinadas (CSP estricta) y cookie `HttpOnly`: ya no hay token en `localStorage`.
+- [~] Registro de accesos fallidos en `panel_login_attempts`; faltan las **alertas**.
 - [ ] Firmar/rotar `JWT_SECRET` sin invalidar todo (kid + set de claves).
 - [ ] Exportar el log de auditoría firmado / a SIEM (syslog, webhook).
-- [ ] Cifrado en reposo de los secrets de NAS (o al menos ocultarlos al rol operator).
+- [~] Cifrado en reposo hecho para los secretos TOTP; falta para los **secrets de NAS**.
 
 ## 9. Operaciones / infra / despliegue
 
 - [ ] Sistema de migraciones versionadas (p.ej. `node-pg-migrate` equivalente para MySQL, o `umzug`) en vez de `.sql` sueltos.
 - [ ] `npm run migrate` / `migrate:status` / `migrate:down` y ejecución automática al arrancar (opcional).
 - [x] Healthcheck `/health` que comprueba ambas BDs y devuelve 503 si fallan (+ `/api/meta`).
-- [~] Logs: request-id por petición y en errores; falta pino / niveles / rotación.
-- [ ] Métricas Prometheus (`/metrics`): latencia, errores, queries lentas.
+- [x] Logs estructurados con **pino** (niveles, request-id y redacción de cabeceras sensibles). La rotación se delega en systemd/journald.
+- [x] Métricas Prometheus en `/metrics`: latencia y volumen por ruta, más contadores propios.
 - [ ] Dockerfile + docker-compose *opcional* (el usuario no lo quiere ahora, pero dejarlo listo).
 - [ ] Servicio systemd de ejemplo + guía nginx/caddy (TLS + servir `web/dist`).
 - [ ] Modo "un solo proceso": que Express sirva también el build de la SPA.
 - [ ] Backups: script de dump de `radius_panel` (los admins) y aviso de backup de `radius`.
-- [ ] Config por fichero `config.yaml` además de `.env`; validación con zod al arrancar.
-- [ ] Variables de entorno documentadas y verificadas (fail-fast con mensaje claro). *(parcial)*
+- [x] Validación de la configuración con **zod** al arrancar (falla con mensaje claro). Lo del `config.yaml` sigue pendiente y probablemente no haga falta.
+- [x] Variables de entorno documentadas en `.env.example` y verificadas al arrancar (fail-fast).
 - [x] CI (GitHub Actions): format + typecheck + tests + build en Node 20/22.
-- [ ] Versionado semántico + CHANGELOG.
+- [~] `CHANGELOG.md` creado; falta automatizar el versionado semántico.
 
 ## 10. Calidad de código / testing
 
 - [ ] Tests de integración de la API contra una MySQL efímera (testcontainers / mysql-memory).
 - [x] Tests del cliente RADIUS con un socket UDP falso (Access-Accept / Reject / Disconnect-ACK / timeout).
 - [ ] Tests E2E de la SPA (Playwright): login, crear usuario, desconectar sesión.
-- [~] Prettier + EditorConfig hechos; falta ESLint + `lint-staged` + hook de pre-commit.
+- [~] Prettier, EditorConfig y **ESLint** (en el CI) hechos; falta `lint-staged` + hook de pre-commit.
 - [ ] Cobertura mínima en CI.
 - [ ] Tipos compartidos server↔web en un paquete `shared/` (hoy están duplicados).
 - [ ] OpenAPI/Swagger generado desde los esquemas zod; página `/api/docs`.

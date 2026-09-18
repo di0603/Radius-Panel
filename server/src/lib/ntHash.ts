@@ -19,7 +19,7 @@ function md4(input: Buffer): Buffer {
   const msgLenBits = input.length * 8;
   // padding
   const withOne = Buffer.concat([input, Buffer.from([0x80])]);
-  let padLen = (56 - (withOne.length % 64) + 64) % 64;
+  const padLen = (56 - (withOne.length % 64) + 64) % 64;
   const padded = Buffer.concat([withOne, Buffer.alloc(padLen), Buffer.alloc(8)]);
   padded.writeUInt32LE(msgLenBits >>> 0, padded.length - 8);
   padded.writeUInt32LE(Math.floor(msgLenBits / 0x100000000), padded.length - 4);
