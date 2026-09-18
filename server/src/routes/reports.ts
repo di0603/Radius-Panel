@@ -10,6 +10,14 @@ import {
   getTopNas,
   getTopUsers,
 } from '../services/reports.js';
+import {
+  getAnomalies,
+  getHourlyHeatmap,
+  getNasStats,
+  getPeakConcurrency,
+  getPeriodComparison,
+  getSessionDurations,
+} from '../services/analytics.js';
 
 export const reportsRouter = Router();
 reportsRouter.use(requireAuth);
@@ -75,5 +83,57 @@ reportsRouter.get(
       })
       .parse(req.query);
     res.json(await getAuthFailures(q));
+  }),
+);
+
+/* ------------------------------ Analitica ------------------------------ */
+
+reportsRouter.get(
+  '/heatmap',
+  asyncHandler(async (req, res) => {
+    res.json(await getHourlyHeatmap(daysSchema.parse(req.query.days)));
+  }),
+);
+
+reportsRouter.get(
+  '/concurrency',
+  asyncHandler(async (req, res) => {
+    // El calculo cruza cada dia con 24 horas: se limita el rango a proposito.
+    const days = z.coerce.number().int().min(1).max(90).default(30).parse(req.query.days);
+    res.json(await getPeakConcurrency(days));
+  }),
+);
+
+reportsRouter.get(
+  '/nas-stats',
+  asyncHandler(async (req, res) => {
+    res.json(await getNasStats(daysSchema.parse(req.query.days)));
+  }),
+);
+
+reportsRouter.get(
+  '/session-durations',
+  asyncHandler(async (req, res) => {
+    res.json(await getSessionDurations(daysSchema.parse(req.query.days)));
+  }),
+);
+
+reportsRouter.get(
+  '/period-comparison',
+  asyncHandler(async (req, res) => {
+    res.json(await getPeriodComparison(daysSchema.parse(req.query.days)));
+  }),
+);
+
+reportsRouter.get(
+  '/anomalies',
+  asyncHandler(async (req, res) => {
+    const q = z
+      .object({
+        days: daysSchema,
+        limit: z.coerce.number().int().min(1).max(50).default(10),
+      })
+      .parse(req.query);
+    res.json(await getAnomalies(q.days, q.limit));
   }),
 );

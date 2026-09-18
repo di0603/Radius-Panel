@@ -19,6 +19,7 @@ import {
   IconLogout,
   IconPlugConnected,
   IconRadar2,
+  IconReportAnalytics,
   IconRouter,
   IconShieldLock,
   IconUserCog,
@@ -40,7 +41,10 @@ interface NavItem {
 const NAV_SECTIONS: { label: string; adminOnly?: boolean; items: NavItem[] }[] = [
   {
     label: 'General',
-    items: [{ to: '/', label: 'Panel', icon: IconChartBar, end: true }],
+    items: [
+      { to: '/', label: 'Panel', icon: IconChartBar, end: true },
+      { to: '/reports', label: 'Reportes', icon: IconReportAnalytics },
+    ],
   },
   {
     label: 'RADIUS',

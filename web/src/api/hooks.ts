@@ -35,6 +35,12 @@ export function useDictionary() {
 }
 import type {
   Admin,
+  Anomaly,
+  ConcurrencyPoint,
+  DurationBucket,
+  HeatmapCell,
+  NasStats,
+  PeriodMetric,
   AuditEntry,
   AuthFailure,
   GroupDetail,
@@ -475,3 +481,52 @@ export function useUnlockAdmin() {
 }
 
 export type { UserGroup };
+
+/* ------------------------------ Analitica ------------------------------ */
+
+export function useHeatmap(days: number) {
+  return useQuery({
+    queryKey: ['heatmap', days],
+    queryFn: async () =>
+      (await api.get<HeatmapCell[]>('/reports/heatmap', { params: { days } })).data,
+  });
+}
+
+export function useConcurrency(days: number) {
+  return useQuery({
+    queryKey: ['concurrency', days],
+    queryFn: async () =>
+      (await api.get<ConcurrencyPoint[]>('/reports/concurrency', { params: { days } })).data,
+  });
+}
+
+export function useNasStats(days: number) {
+  return useQuery({
+    queryKey: ['nas-stats', days],
+    queryFn: async () =>
+      (await api.get<NasStats[]>('/reports/nas-stats', { params: { days } })).data,
+  });
+}
+
+export function useSessionDurations(days: number) {
+  return useQuery({
+    queryKey: ['session-durations', days],
+    queryFn: async () =>
+      (await api.get<DurationBucket[]>('/reports/session-durations', { params: { days } })).data,
+  });
+}
+
+export function usePeriodComparison(days: number) {
+  return useQuery({
+    queryKey: ['period-comparison', days],
+    queryFn: async () =>
+      (await api.get<PeriodMetric[]>('/reports/period-comparison', { params: { days } })).data,
+  });
+}
+
+export function useAnomalies(params: { days: number; limit: number }) {
+  return useQuery({
+    queryKey: ['anomalies', params],
+    queryFn: async () => (await api.get<Anomaly[]>('/reports/anomalies', { params })).data,
+  });
+}

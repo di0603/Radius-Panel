@@ -153,3 +153,50 @@ export interface Paged<T> {
   items: T[];
   total: number;
 }
+
+/* ------------------------------ Analitica ------------------------------ */
+
+export interface HeatmapCell {
+  /** 1 = domingo ... 7 = sabado. */
+  weekday: number;
+  hour: number;
+  accepts: number;
+  rejects: number;
+}
+
+export interface ConcurrencyPoint {
+  date: string;
+  peak: number;
+  peakHour: number;
+}
+
+export interface NasStats {
+  nasipaddress: string;
+  sessions: number;
+  users: number;
+  activeNow: number;
+  gb: number;
+  avgSessionMinutes: number;
+  lastSeen: string | null;
+}
+
+export interface DurationBucket {
+  label: string;
+  sessions: number;
+}
+
+export interface PeriodMetric {
+  label: string;
+  current: number;
+  previous: number;
+  changePct: number | null;
+}
+
+export interface Anomaly {
+  kind: 'long-session' | 'heavy-traffic' | 'flapping';
+  username: string;
+  nasipaddress: string;
+  detail: string;
+  value: number;
+  at: string | null;
+}
