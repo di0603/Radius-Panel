@@ -1,12 +1,5 @@
 import { MantineProvider } from '@mantine/core';
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useMemo,
-  useState,
-  type ReactNode,
-} from 'react';
+import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react';
 import { DEFAULT_ACCENT, createPanelTheme, cssVariablesResolver, findAccent } from '../theme';
 
 const STORAGE_KEY = 'radius-panel-accent';

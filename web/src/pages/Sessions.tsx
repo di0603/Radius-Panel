@@ -376,17 +376,17 @@ function HistoryTab() {
         <Table.ScrollContainer minWidth={900}>
           <Table>
             <Table.Thead>
-            <Table.Tr>
-              <Table.Th>Usuario</Table.Th>
-              <Table.Th>IP asignada</Table.Th>
-              <Table.Th>NAS</Table.Th>
-              <Table.Th>MAC / origen</Table.Th>
-              <Table.Th>Inicio</Table.Th>
-              <Table.Th>Duracion</Table.Th>
-              <Table.Th>Trafico</Table.Th>
-            </Table.Tr>
-          </Table.Thead>
-          <Table.Tbody>
+              <Table.Tr>
+                <Table.Th>Usuario</Table.Th>
+                <Table.Th>IP asignada</Table.Th>
+                <Table.Th>NAS</Table.Th>
+                <Table.Th>MAC / origen</Table.Th>
+                <Table.Th>Inicio</Table.Th>
+                <Table.Th>Duracion</Table.Th>
+                <Table.Th>Trafico</Table.Th>
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
               {q.isLoading && !items.length && (
                 <Table.Tr>
                   <Table.Td colSpan={7}>

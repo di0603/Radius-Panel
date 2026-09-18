@@ -208,7 +208,10 @@ export function AdminsPage() {
                     <Table.Td>
                       <Group gap={2} justify="flex-end" wrap="nowrap">
                         <Tooltip label="Cambiar contrasena">
-                          <ActionIcon variant="subtle" onClick={() => resetPassword(a.id, a.username)}>
+                          <ActionIcon
+                            variant="subtle"
+                            onClick={() => resetPassword(a.id, a.username)}
+                          >
                             <IconKey size={16} />
                           </ActionIcon>
                         </Tooltip>

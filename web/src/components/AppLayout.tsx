@@ -124,7 +124,11 @@ export function AppLayout() {
                 <Menu.Label>
                   <Group gap={6}>
                     Sesion
-                    <Badge size="xs" variant="light" color={user?.role === 'admin' ? 'brand' : 'gray'}>
+                    <Badge
+                      size="xs"
+                      variant="light"
+                      color={user?.role === 'admin' ? 'brand' : 'gray'}
+                    >
                       {user?.role}
                     </Badge>
                   </Group>

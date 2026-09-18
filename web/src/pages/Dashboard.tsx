@@ -91,9 +91,7 @@ function StatCard({
 function LegendDot({ color, label }: { color: string; label: string }) {
   return (
     <Group gap={6} wrap="nowrap">
-      <span
-        style={{ width: 8, height: 8, borderRadius: 3, background: color, display: 'block' }}
-      />
+      <span style={{ width: 8, height: 8, borderRadius: 3, background: color, display: 'block' }} />
       <Text size="xs" c="dimmed">
         {label}
       </Text>
@@ -473,7 +471,11 @@ export function DashboardPage() {
           </Table.ScrollContainer>
         </SectionCard>
 
-        <SectionCard title="Usuarios inactivos" subtitle="Sin autenticar en 30+ dias" bodyPadding={false}>
+        <SectionCard
+          title="Usuarios inactivos"
+          subtitle="Sin autenticar en 30+ dias"
+          bodyPadding={false}
+        >
           <Table>
             <Table.Tbody>
               {inactive.data?.map((u) => (

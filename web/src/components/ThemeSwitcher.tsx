@@ -9,13 +9,7 @@ import {
   Tooltip,
   useMantineColorScheme,
 } from '@mantine/core';
-import {
-  IconCheck,
-  IconDeviceDesktop,
-  IconMoon,
-  IconPalette,
-  IconSun,
-} from '@tabler/icons-react';
+import { IconCheck, IconDeviceDesktop, IconMoon, IconPalette, IconSun } from '@tabler/icons-react';
 import { ACCENTS } from '../theme';
 import { useAccent } from './PanelThemeProvider';
 
@@ -40,7 +34,14 @@ export function ThemeSwitcher() {
       </Menu.Target>
 
       <Menu.Dropdown p="sm">
-        <Text size="xs" fw={600} c="dimmed" tt="uppercase" mb={8} style={{ letterSpacing: '0.05em' }}>
+        <Text
+          size="xs"
+          fw={600}
+          c="dimmed"
+          tt="uppercase"
+          mb={8}
+          style={{ letterSpacing: '0.05em' }}
+        >
           Modo
         </Text>
         <SegmentedControl

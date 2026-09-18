@@ -264,7 +264,8 @@ export const cssVariablesResolver: CSSVariablesResolver = (theme) => ({
     '--app-border-strong': 'rgba(15, 23, 42, 0.16)',
     '--app-hover': 'rgba(15, 23, 42, 0.04)',
     '--app-chrome-bg': 'rgba(255, 255, 255, 0.78)',
-    '--app-shadow-card': '0 1px 2px rgba(15, 23, 42, 0.05), 0 8px 24px -16px rgba(15, 23, 42, 0.18)',
+    '--app-shadow-card':
+      '0 1px 2px rgba(15, 23, 42, 0.05), 0 8px 24px -16px rgba(15, 23, 42, 0.18)',
     '--app-shadow-raised':
       '0 2px 6px rgba(15, 23, 42, 0.07), 0 18px 40px -20px rgba(15, 23, 42, 0.28)',
     '--app-scrollbar-thumb': 'rgba(15, 23, 42, 0.18)',
