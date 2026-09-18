@@ -60,7 +60,12 @@ const envSchema = z.object({
   RADIUS_AUTH_SECRET: z.string().default('testing123'),
   RADIUS_AUTH_TIMEOUT_MS: positiveInt.default(3000),
 
-  /** Login con Google, opcional: sin GOOGLE_CLIENT_ID el boton no se ofrece. */
+  /**
+   * Login con Google, opcional: sin GOOGLE_CLIENT_ID el boton no se ofrece.
+   * GOOGLE_ENABLED permite apagarlo sin borrar las credenciales (por ejemplo,
+   * para probarlo rapido sin tener que quitar y volver a poner el client id).
+   */
+  GOOGLE_ENABLED: bool('true'),
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
 });
@@ -130,7 +135,7 @@ export const config = {
   },
 
   google: {
-    enabled: !!env.GOOGLE_CLIENT_ID,
+    enabled: env.GOOGLE_ENABLED && !!env.GOOGLE_CLIENT_ID,
     clientId: env.GOOGLE_CLIENT_ID,
     clientSecret: env.GOOGLE_CLIENT_SECRET,
   },

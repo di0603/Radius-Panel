@@ -154,6 +154,7 @@ npm test              # (desde la raiz)  -> tests del backend (node:test + tsx)
 | `ACCESS_TOKEN_TTL` | Vida del access token, corta a proposito (def. `15m`). Se renueva solo via refresh token. |
 | `REFRESH_TOKEN_DAYS` | Dias que dura la sesion sin volver a escribir la contrasena (def. `7`). |
 | `LOGIN_MAX_ATTEMPTS` / `LOGIN_LOCK_MINUTES` | Intentos fallidos antes de bloquear la cuenta, y minutos de bloqueo. |
+| `GOOGLE_ENABLED` | `false` apaga el login con Google sin tener que borrar las credenciales (def. `true`). |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Opcionales: activan el boton "Iniciar sesion con Google". Ver la seccion dedicada mas abajo. |
 | `RADIUS_DB_*` | Conexion a la base de FreeRADIUS. |
 | `PANEL_DB_*` | Conexion a la base del panel. |
@@ -205,8 +206,8 @@ administrador existente.
    no por el email, asi que reciclar el email despues no rompe el vinculo).
 
 Si `GOOGLE_CLIENT_ID` no esta definido en `server/.env`, el boton no aparece y
-el endpoint `/api/auth/google` responde 400 — no hace falta desactivar nada
-explicitamente.
+el endpoint `/api/auth/google` responde 400. Para apagarlo temporalmente sin
+borrar las credenciales, pon `GOOGLE_ENABLED=false` y reinicia el servidor.
 
 ## Build de produccion
 
