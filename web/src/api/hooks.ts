@@ -8,6 +8,7 @@ export interface Meta {
   version: string;
   coaEnabled: boolean;
   testAuthEnabled: boolean;
+  googleEnabled: boolean;
   dbOk: boolean;
 }
 
@@ -449,6 +450,14 @@ export function useChangeOwnPassword() {
   return useMutation({
     mutationFn: async (input: { currentPassword: string; newPassword: string }) =>
       (await api.post<{ ok: boolean }>('/auth/password', input)).data,
+  });
+}
+
+/** Auto-servicio: fija el propio email para poder vincular el login con Google. */
+export function useSetOwnEmail() {
+  return useMutation({
+    mutationFn: async (email: string) =>
+      (await api.put<{ ok: boolean; email: string }>('/auth/email', { email })).data,
   });
 }
 

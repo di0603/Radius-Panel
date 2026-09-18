@@ -14,7 +14,13 @@ import { spawnSync } from 'node:child_process';
 import mysql from 'mysql2/promise';
 import type { RowDataPacket } from 'mysql2';
 import { config } from '../config.js';
-import { assertPanelSchema, panelPool, radiusPool, closePools } from '../db/pools.js';
+import {
+  assertGoogleAuthSchema,
+  assertPanelSchema,
+  panelPool,
+  radiusPool,
+  closePools,
+} from '../db/pools.js';
 import { createUser, deleteUser, listUsers } from '../services/radiusUsers.js';
 import { createAdmin, listAdmins, updateAdmin } from '../services/admins.js';
 
@@ -73,6 +79,16 @@ async function securityMigrationStatus(): Promise<void> {
   }
 }
 
+/** Comprueba si faltan las columnas del login con Google (email, google_sub). */
+async function googleMigrationStatus(): Promise<void> {
+  try {
+    await assertGoogleAuthSchema();
+    console.log('\x1b[32m✔\x1b[0m migracion de login con Google aplicada');
+  } catch (err) {
+    console.log(`\x1b[33m!\x1b[0m ${(err as Error).message}`);
+  }
+}
+
 async function schemaStatus(): Promise<void> {
   for (const [label, pool, dbName] of [
     ['panel', panelPool, config.panelDb.database],
@@ -103,8 +119,10 @@ async function schemaMenu(): Promise<void> {
       ` 1) Aplicar sql/panel-schema.sql (tablas del panel)\n` +
         ` 2) Aplicar sql/freeradius-schema.sql (esquema FreeRADIUS)\n` +
         ` 3) Aplicar sql/panel-schema-security.sql (refresh tokens, 2FA, bloqueo de cuenta)\n` +
-        ` 4) Estado de las tablas\n` +
-        ` 5) Estado de la migracion de seguridad\n` +
+        ` 4) Aplicar sql/panel-schema-google.sql (login con Google, opcional)\n` +
+        ` 5) Estado de las tablas\n` +
+        ` 6) Estado de la migracion de seguridad\n` +
+        ` 7) Estado de la migracion de Google\n` +
         ` 0) Volver`,
     );
     const c = (await ask('> ')).trim();
@@ -119,13 +137,20 @@ async function schemaMenu(): Promise<void> {
             `"${config.panelDb.database}" ya exista (aplica antes panel-schema.sql si es una instalacion nueva).`,
         );
         await runSqlFile('panel-schema-security.sql', config.panelDb, true);
-      } else if (c === '4') await schemaStatus();
-      else if (c === '5') await securityMigrationStatus();
+      } else if (c === '4') {
+        console.log(
+          'Idempotente. Solo hace falta si vas a activar GOOGLE_CLIENT_ID en server/.env.\n' +
+            `Requiere que "${config.panelDb.database}" ya exista.`,
+        );
+        await runSqlFile('panel-schema-google.sql', config.panelDb, true);
+      } else if (c === '5') await schemaStatus();
+      else if (c === '6') await securityMigrationStatus();
+      else if (c === '7') await googleMigrationStatus();
       else if (c === '0') return;
     } catch (err) {
       console.log(`\x1b[31merror:\x1b[0m ${(err as Error).message}`);
     }
-    if (['1', '2', '3', '4', '5'].includes(c)) await pause();
+    if (['1', '2', '3', '4', '5', '6', '7'].includes(c)) await pause();
   }
 }
 
@@ -298,6 +323,14 @@ async function main(): Promise<void> {
   } catch (err) {
     console.log(`\x1b[33m!\x1b[0m ${(err as Error).message}`);
     console.log('(puedes aplicarla desde "1) Esquema / migraciones" -> "3)")\n');
+  }
+  if (config.google.enabled) {
+    try {
+      await assertGoogleAuthSchema();
+    } catch (err) {
+      console.log(`\x1b[33m!\x1b[0m ${(err as Error).message}`);
+      console.log('(puedes aplicarla desde "1) Esquema / migraciones" -> "4)")\n');
+    }
   }
 
   for (;;) {

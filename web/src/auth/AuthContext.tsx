@@ -17,6 +17,7 @@ interface AuthState {
   loading: boolean;
   login: (username: string, password: string) => Promise<LoginResult>;
   loginWith2fa: (ticket: string, code: string) => Promise<void>;
+  loginWithGoogle: (credential: string) => Promise<LoginResult>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
   hasRole: (...roles: Role[]) => boolean;
@@ -76,6 +77,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(res.data.user ?? null);
   }, []);
 
+  const loginWithGoogle = useCallback(async (credential: string): Promise<LoginResult> => {
+    const res = await api.post<LoginResponse>('/auth/google', { credential });
+    if (res.data.twoFactorRequired && res.data.ticket) {
+      return { status: '2fa', ticket: res.data.ticket };
+    }
+    setToken(res.data.token ?? null);
+    setUser(res.data.user ?? null);
+    return { status: 'ok' };
+  }, []);
+
   const logout = useCallback(async () => {
     try {
       await api.post('/auth/logout');
@@ -97,8 +108,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo(
-    () => ({ user, loading, login, loginWith2fa, logout, refreshUser, hasRole }),
-    [user, loading, login, loginWith2fa, logout, refreshUser, hasRole],
+    () => ({ user, loading, login, loginWith2fa, loginWithGoogle, logout, refreshUser, hasRole }),
+    [user, loading, login, loginWith2fa, loginWithGoogle, logout, refreshUser, hasRole],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

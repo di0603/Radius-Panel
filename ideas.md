@@ -131,7 +131,8 @@ Backlog completo. `[x]` = ya hecho · `[ ]` = pendiente · 🔥 = alta prioridad
 - [x] 2FA (TOTP) para administradores, con QR y secreto cifrado en reposo (AES-256-GCM).
 - [ ] Política de contraseñas + caducidad + historial.
 - [x] Bloqueo de cuenta tras N intentos; desbloqueo manual desde la página de Administradores.
-- [ ] Login vía OIDC / SAML / LDAP (SSO corporativo) como alternativa al login local.
+- [x] Login vía OIDC como alternativa al login local: **Google** implementado (vinculación
+  por email → `google_sub`, sin alta libre). SAML / LDAP siguen pendientes.
 - [x] Sesiones activas del panel: listarlas y revocarlas una a una o todas de golpe.
 - [ ] Permisos granulares (RBAC por recurso: solo-lectura de usuarios, gestión de NAS…).
 - [ ] Ámbito por grupo/NAS: un operador solo ve "sus" usuarios.

@@ -12,6 +12,7 @@ import './styles.css';
 import { App } from './App';
 import { AuthProvider } from './auth/AuthContext';
 import { PanelThemeProvider } from './components/PanelThemeProvider';
+import { GoogleAuthProvider } from './components/GoogleAuthProvider';
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false, staleTime: 10_000 } },
@@ -25,7 +26,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         <BrowserRouter>
           <AuthProvider>
             <ModalsProvider labels={{ confirm: 'Confirmar', cancel: 'Cancelar' }}>
-              <App />
+              <GoogleAuthProvider>
+                <App />
+              </GoogleAuthProvider>
             </ModalsProvider>
           </AuthProvider>
         </BrowserRouter>

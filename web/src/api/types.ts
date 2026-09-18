@@ -6,6 +6,8 @@ export interface AuthUser {
   username: string;
   role: Role;
   totpEnabled?: boolean;
+  email?: string | null;
+  googleLinked?: boolean;
 }
 
 /** Sesion abierta del panel (un refresh token vivo). */

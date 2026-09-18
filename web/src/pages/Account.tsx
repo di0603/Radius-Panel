@@ -14,11 +14,13 @@ import {
   Stack,
   Table,
   Text,
+  TextInput,
   ThemeIcon,
   Tooltip,
 } from '@mantine/core';
 import { modals } from '@mantine/modals';
 import {
+  IconBrandGoogle,
   IconDeviceMobile,
   IconLogout,
   IconShieldCheck,
@@ -32,9 +34,11 @@ import {
   useChangeOwnPassword,
   useConfirmTotp,
   useDisableTotp,
+  useMeta,
   usePanelSessions,
   useRevokeAllPanelSessions,
   useRevokePanelSession,
+  useSetOwnEmail,
   useStartTotpSetup,
 } from '../api/hooks';
 import { useAuth } from '../auth/AuthContext';
@@ -271,6 +275,67 @@ function DisableTotpForm({
   );
 }
 
+/* -------------------------------- Google ---------------------------------- */
+
+function GoogleCard() {
+  const { user, refreshUser } = useAuth();
+  const meta = useMeta();
+  const setEmail = useSetOwnEmail();
+  const [email, setEmailValue] = useState(user?.email ?? '');
+
+  if (!meta.data?.googleEnabled) return null;
+
+  const linked = user?.googleLinked === true;
+  const dirty = email.trim() !== (user?.email ?? '');
+
+  const submit = async () => {
+    try {
+      await setEmail.mutateAsync(email.trim());
+      await refreshUser();
+      notifyOk(
+        'Email guardado. La proxima vez que entres con esa cuenta de Google se vinculara sola.',
+      );
+    } catch (err) {
+      notifyError(err);
+    }
+  };
+
+  return (
+    <SectionCard
+      title="Iniciar sesion con Google"
+      subtitle="El email vincula tu cuenta de Google la primera vez que la uses para entrar"
+      actions={
+        <Badge
+          variant="light"
+          color={linked ? 'teal' : 'gray'}
+          leftSection={<IconBrandGoogle size={12} />}
+        >
+          {linked ? 'vinculada' : 'sin vincular'}
+        </Badge>
+      }
+    >
+      <Stack gap="sm">
+        {linked && (
+          <Alert variant="light" color="teal" icon={<IconShieldCheck size={17} />}>
+            Ya puedes entrar con el boton "Iniciar sesion con Google" de la pantalla de acceso.
+          </Alert>
+        )}
+        <TextInput
+          label="Tu email de Google"
+          placeholder="tu-cuenta@gmail.com"
+          value={email}
+          onChange={(e) => setEmailValue(e.currentTarget.value)}
+        />
+        <Group justify="flex-end">
+          <Button onClick={submit} loading={setEmail.isPending} disabled={!email.trim() || !dirty}>
+            Guardar
+          </Button>
+        </Group>
+      </Stack>
+    </SectionCard>
+  );
+}
+
 /* ------------------------------- Sesiones -------------------------------- */
 
 function SessionsCard() {
@@ -395,10 +460,11 @@ export function AccountPage() {
   return (
     <Stack gap="lg">
       <PageHeader title="Mi cuenta" subtitle={`Seguridad de la cuenta ${user?.username ?? ''}`} />
-      <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="md">
+      <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md">
         <PasswordCard />
         <TotpCard />
       </SimpleGrid>
+      <GoogleCard />
       <SessionsCard />
     </Stack>
   );

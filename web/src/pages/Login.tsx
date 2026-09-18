@@ -20,20 +20,27 @@ import {
   IconShieldLock,
   IconUser,
 } from '@tabler/icons-react';
+import { GoogleLogin, type CredentialResponse } from '@react-oauth/google';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { apiErrorMessage } from '../api/client';
+import { useMeta } from '../api/hooks';
+
+const GOOGLE_READY = !!import.meta.env.VITE_GOOGLE_CLIENT_ID;
 
 export function LoginPage() {
-  const { user, login, loginWith2fa } = useAuth();
+  const { user, login, loginWith2fa, loginWithGoogle } = useAuth();
   const navigate = useNavigate();
   const location = useLocation() as { state?: { from?: { pathname?: string } } };
+  const meta = useMeta();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [ticket, setTicket] = useState<string | null>(null);
   const [code, setCode] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  const showGoogle = GOOGLE_READY && meta.data?.googleEnabled === true;
 
   useEffect(() => {
     document.title = 'Acceder · Radius Panel';
@@ -81,6 +88,24 @@ export function LoginPage() {
     setTicket(null);
     setCode('');
     setError(null);
+  };
+
+  const handleGoogleSuccess = async (credentialResponse: CredentialResponse) => {
+    if (!credentialResponse.credential) {
+      setError('Google no devolvio credenciales');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await loginWithGoogle(credentialResponse.credential);
+      if (result.status === '2fa') setTicket(result.ticket);
+      else goHome();
+    } catch (err) {
+      setError(apiErrorMessage(err));
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -154,42 +179,60 @@ export function LoginPage() {
               </Group>
             </Stack>
           ) : (
-            <form onSubmit={submitCredentials}>
-              <Stack gap="md">
-                <TextInput
-                  label="Usuario"
-                  placeholder="admin"
-                  leftSection={<IconUser size={16} stroke={1.7} />}
-                  value={username}
-                  onChange={(e) => setUsername(e.currentTarget.value)}
-                  required
-                  autoFocus
-                  autoComplete="username"
-                  size="md"
-                />
-                <PasswordInput
-                  label="Contrasena"
-                  placeholder="Tu contrasena"
-                  leftSection={<IconLock size={16} stroke={1.7} />}
-                  value={password}
-                  onChange={(e) => setPassword(e.currentTarget.value)}
-                  required
-                  autoComplete="current-password"
-                  size="md"
-                />
-                <Button
-                  type="submit"
-                  loading={busy}
-                  fullWidth
-                  size="md"
-                  variant="gradient"
-                  mt={4}
-                  disabled={!username.trim() || !password}
-                >
-                  Entrar
-                </Button>
-              </Stack>
-            </form>
+            <Stack gap="md">
+              {showGoogle && (
+                <>
+                  <Group justify="center">
+                    <GoogleLogin
+                      onSuccess={handleGoogleSuccess}
+                      onError={() => setError('No se pudo iniciar sesion con Google')}
+                      theme="outline"
+                      size="large"
+                      shape="rectangular"
+                      text="signin_with"
+                      width={340}
+                    />
+                  </Group>
+                  <Divider label="o con tu cuenta local" labelPosition="center" />
+                </>
+              )}
+              <form onSubmit={submitCredentials}>
+                <Stack gap="md">
+                  <TextInput
+                    label="Usuario"
+                    placeholder="admin"
+                    leftSection={<IconUser size={16} stroke={1.7} />}
+                    value={username}
+                    onChange={(e) => setUsername(e.currentTarget.value)}
+                    required
+                    autoFocus
+                    autoComplete="username"
+                    size="md"
+                  />
+                  <PasswordInput
+                    label="Contrasena"
+                    placeholder="Tu contrasena"
+                    leftSection={<IconLock size={16} stroke={1.7} />}
+                    value={password}
+                    onChange={(e) => setPassword(e.currentTarget.value)}
+                    required
+                    autoComplete="current-password"
+                    size="md"
+                  />
+                  <Button
+                    type="submit"
+                    loading={busy}
+                    fullWidth
+                    size="md"
+                    variant="gradient"
+                    mt={4}
+                    disabled={!username.trim() || !password}
+                  >
+                    Entrar
+                  </Button>
+                </Stack>
+              </form>
+            </Stack>
           )}
         </Stack>
       </Card>

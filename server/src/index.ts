@@ -9,6 +9,7 @@ import { apiRouter } from './routes/index.js';
 import { errorHandler, notFoundHandler } from './middleware/error.js';
 import {
   assertDbConnectivity,
+  assertGoogleAuthSchema,
   assertPanelSchema,
   closePools,
   radiusPool,
@@ -41,12 +42,20 @@ app.use(
         frameAncestors: ["'none'"],
         objectSrc: ["'none'"],
         formAction: ["'self'"],
-        scriptSrc: ["'self'"],
+        // accounts.google.com/gsi/* es el boton de "Iniciar sesion con Google" (GIS).
+        scriptSrc: config.google.enabled
+          ? ["'self'", 'https://accounts.google.com/gsi/client']
+          : ["'self'"],
         // Mantine inyecta variables de tema en un <style>; los QR del 2FA son data:.
         styleSrc: ["'self'", "'unsafe-inline'"],
         imgSrc: ["'self'", 'data:'],
         fontSrc: ["'self'", 'data:'],
-        connectSrc: ["'self'"],
+        connectSrc: config.google.enabled
+          ? ["'self'", 'https://accounts.google.com/gsi/']
+          : ["'self'"],
+        frameSrc: config.google.enabled
+          ? ["'self'", 'https://accounts.google.com/gsi/']
+          : ["'self'"],
         upgradeInsecureRequests: config.isProd ? [] : null,
       },
     },
@@ -109,6 +118,7 @@ async function main(): Promise<void> {
     await assertDbConnectivity();
     logger.info('conexion con MySQL verificada');
     await assertPanelSchema();
+    if (config.google.enabled) await assertGoogleAuthSchema();
   } catch (err) {
     logger.fatal((err as Error).message);
     process.exit(1);

@@ -59,6 +59,10 @@ const envSchema = z.object({
   RADIUS_AUTH_PORT: port.default(1812),
   RADIUS_AUTH_SECRET: z.string().default('testing123'),
   RADIUS_AUTH_TIMEOUT_MS: positiveInt.default(3000),
+
+  /** Login con Google, opcional: sin GOOGLE_CLIENT_ID el boton no se ofrece. */
+  GOOGLE_CLIENT_ID: z.string().optional(),
+  GOOGLE_CLIENT_SECRET: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -123,6 +127,12 @@ export const config = {
     port: env.RADIUS_AUTH_PORT,
     secret: env.RADIUS_AUTH_SECRET,
     timeoutMs: env.RADIUS_AUTH_TIMEOUT_MS,
+  },
+
+  google: {
+    enabled: !!env.GOOGLE_CLIENT_ID,
+    clientId: env.GOOGLE_CLIENT_ID,
+    clientSecret: env.GOOGLE_CLIENT_SECRET,
   },
 };
 

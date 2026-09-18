@@ -4,6 +4,7 @@ import { generateSecret, generateURI, verify as verifyOtp } from 'otplib';
 import { config } from '../config.js';
 import { panelPool } from '../db/pools.js';
 import { decryptSecret, encryptSecret, randomToken, sha256 } from '../lib/crypto.js';
+import { conflict } from '../lib/http.js';
 import type { Role } from '../lib/jwt.js';
 
 export interface AdminRow extends RowDataPacket {
@@ -16,7 +17,12 @@ export interface AdminRow extends RowDataPacket {
   locked_until: string | null;
   totp_secret: string | null;
   totp_enabled: 0 | 1;
+  email: string | null;
+  google_sub: string | null;
 }
+
+const ADMIN_AUTH_COLS = `id, username, password_hash, role, active, failed_attempts, locked_until,
+       totp_secret, totp_enabled, email, google_sub`;
 
 export interface PanelSession {
   id: number;
@@ -31,9 +37,7 @@ export interface PanelSession {
 
 export async function findAdminByUsername(username: string): Promise<AdminRow | undefined> {
   const [rows] = await panelPool.query<AdminRow[]>(
-    `SELECT id, username, password_hash, role, active, failed_attempts, locked_until,
-            totp_secret, totp_enabled
-       FROM panel_admins WHERE username = :u`,
+    `SELECT ${ADMIN_AUTH_COLS} FROM panel_admins WHERE username = :u`,
     { u: username },
   );
   return rows[0];
@@ -41,12 +45,53 @@ export async function findAdminByUsername(username: string): Promise<AdminRow | 
 
 export async function findAdminById(id: number): Promise<AdminRow | undefined> {
   const [rows] = await panelPool.query<AdminRow[]>(
-    `SELECT id, username, password_hash, role, active, failed_attempts, locked_until,
-            totp_secret, totp_enabled
-       FROM panel_admins WHERE id = :id`,
+    `SELECT ${ADMIN_AUTH_COLS} FROM panel_admins WHERE id = :id`,
     { id },
   );
   return rows[0];
+}
+
+export async function findAdminByEmail(email: string): Promise<AdminRow | undefined> {
+  const [rows] = await panelPool.query<AdminRow[]>(
+    `SELECT ${ADMIN_AUTH_COLS} FROM panel_admins WHERE email = :email`,
+    { email },
+  );
+  return rows[0];
+}
+
+export async function findAdminByGoogleSub(sub: string): Promise<AdminRow | undefined> {
+  const [rows] = await panelPool.query<AdminRow[]>(
+    `SELECT ${ADMIN_AUTH_COLS} FROM panel_admins WHERE google_sub = :sub`,
+    { sub },
+  );
+  return rows[0];
+}
+
+/** Vincula una cuenta de Google a un admin existente, tras hacer match por email. */
+export async function linkGoogleAccount(adminId: number, googleSub: string): Promise<void> {
+  await panelPool.query(`UPDATE panel_admins SET google_sub = :sub WHERE id = :id`, {
+    id: adminId,
+    sub: googleSub,
+  });
+}
+
+/**
+ * Fija el email de la propia cuenta (auto-servicio desde "Mi cuenta"), usado
+ * despues para vincular el primer login con Google. `conflict` si ya esta en
+ * uso por otro admin (columna UNIQUE).
+ */
+export async function setOwnEmail(adminId: number, email: string): Promise<void> {
+  try {
+    await panelPool.query(`UPDATE panel_admins SET email = :email WHERE id = :id`, {
+      id: adminId,
+      email,
+    });
+  } catch (err) {
+    if ((err as { code?: string }).code === 'ER_DUP_ENTRY') {
+      throw conflict(`El email "${email}" ya esta en uso por otra cuenta`);
+    }
+    throw err;
+  }
 }
 
 /** Deja constancia del intento. Nunca lanza: no debe tumbar el login. */

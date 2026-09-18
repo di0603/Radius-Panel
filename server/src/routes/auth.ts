@@ -14,9 +14,12 @@ import {
   confirmTotp,
   countRecentFailures,
   disableTotp,
+  findAdminByEmail,
+  findAdminByGoogleSub,
   findAdminById,
   findAdminByUsername,
   issueRefreshToken,
+  linkGoogleAccount,
   listSessions,
   lockRemainingMinutes,
   recordLoginAttempt,
@@ -25,10 +28,12 @@ import {
   revokeRefreshToken,
   revokeSessionById,
   rotateRefreshToken,
+  setOwnEmail,
   startTotpEnrollment,
   verifyTotpCode,
   type AdminRow,
 } from '../services/auth.js';
+import { verifyGoogleCredential } from '../services/googleAuth.js';
 
 export const authRouter = Router();
 
@@ -67,6 +72,8 @@ function publicUser(admin: AdminRow) {
     username: admin.username,
     role: admin.role,
     totpEnabled: Number(admin.totp_enabled) === 1,
+    email: admin.email,
+    googleLinked: !!admin.google_sub,
   };
 }
 
@@ -169,6 +176,53 @@ authRouter.post(
       await registerFailedLogin(adminId);
       await recordLoginAttempt(admin.username, clientIp(req), false, 'bad-totp');
       throw unauthorized('Codigo incorrecto');
+    }
+
+    await completeLogin(req, res, admin);
+  }),
+);
+
+const googleSchema = z.object({ credential: z.string().min(10) });
+
+/**
+ * Login con Google. No hay alta libre: la cuenta de Google tiene que coincidir
+ * (por email) con un admin ya creado. La primera vez que encaja se guarda el
+ * `google_sub` y a partir de ahi se reconoce directamente por ese id, que no
+ * cambia aunque el email se recicle.
+ */
+authRouter.post(
+  '/google',
+  loginLimiter,
+  asyncHandler(async (req, res) => {
+    if (!config.google.enabled) throw badRequest('Login con Google no esta configurado');
+    const { credential } = googleSchema.parse(req.body);
+
+    let profile;
+    try {
+      profile = await verifyGoogleCredential(credential);
+    } catch {
+      throw unauthorized('No se pudo verificar el token de Google');
+    }
+    if (!profile.emailVerified) throw unauthorized('El email de Google no esta verificado');
+
+    let admin = await findAdminByGoogleSub(profile.sub);
+    if (!admin) {
+      admin = await findAdminByEmail(profile.email);
+      if (!admin) {
+        await recordLoginAttempt(profile.email, clientIp(req), false, 'google-unlinked');
+        throw unauthorized(
+          `No hay ninguna cuenta de administrador vinculada a ${profile.email}. ` +
+            `Un administrador existente debe anadir ese email desde "Mi cuenta".`,
+        );
+      }
+      if (!admin.active) throw unauthorized('La cuenta ya no esta activa');
+      await linkGoogleAccount(Number(admin.id), profile.sub);
+    }
+    if (!admin.active) throw unauthorized('La cuenta ya no esta activa');
+
+    if (Number(admin.totp_enabled) === 1) {
+      res.json({ twoFactorRequired: true, ticket: sign2faTicket(Number(admin.id)) });
+      return;
     }
 
     await completeLogin(req, res, admin);
@@ -287,6 +341,29 @@ authRouter.post(
     setRefreshCookie(res, refresh.token, refresh.expiresAt);
     await writeAudit(req, 'update', 'admin', admin.username, { passwordChanged: true });
     res.json({ ok: true });
+  }),
+);
+
+/* ---------------------------------- Email ------------------------------- */
+
+const emailSchema = z.object({ email: z.string().email().max(255) });
+
+/**
+ * Auto-servicio: cada admin fija su propio email, usado unicamente para
+ * vincular su primer login con Google. No hay forma de fijar el email de otra
+ * cuenta desde aqui.
+ */
+authRouter.put(
+  '/email',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { email } = emailSchema.parse(req.body);
+    const admin = await findAdminById(Number(req.auth?.sub));
+    if (!admin) throw unauthorized();
+
+    await setOwnEmail(Number(admin.id), email);
+    await writeAudit(req, 'update', 'admin', admin.username, { email: 'updated' });
+    res.json({ ok: true, email });
   }),
 );
 

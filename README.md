@@ -53,6 +53,13 @@ mysql -u root -p < sql/panel-schema.sql
 > ```bash
 > mysql -u root -p radius_panel < sql/panel-schema-security.sql
 > ```
+>
+> Si vas a activar el **login con Google** (opcional, ver mas abajo), aplica
+> tambien:
+>
+> ```bash
+> mysql -u root -p radius_panel < sql/panel-schema-google.sql
+> ```
 
 Da permisos a un usuario MySQL sobre ambas bases, por ejemplo:
 
@@ -119,8 +126,10 @@ npm run menu          # (desde la raiz)  -> menu interactivo por consola
 
 Opciones:
 
-- **Esquema / migraciones** — aplicar `sql/panel-schema.sql` o `sql/freeradius-schema.sql`
-  contra tu MySQL sin salir del proceso; ver que tablas existen en cada base.
+- **Esquema / migraciones** — aplicar `sql/panel-schema.sql`, `sql/freeradius-schema.sql`,
+  `sql/panel-schema-security.sql` (refresh tokens, 2FA, bloqueo) o `sql/panel-schema-google.sql`
+  (login con Google) contra tu MySQL sin salir del proceso; ver que tablas existen en cada base
+  y si la migracion de seguridad esta al dia.
 - **Administradores del panel** — listar, crear, cambiar contrasena, activar/desactivar.
 - **Usuarios RADIUS** — listar (con filtro), crear (usuario + contrasena + tipo + grupo), borrar.
 - **Registros y diagnostico** — ultimas autenticaciones (`radpostauth`), sesiones activas
@@ -140,9 +149,12 @@ npm test              # (desde la raiz)  -> tests del backend (node:test + tsx)
 | Variable | Descripcion |
 |----------|-------------|
 | `PORT` | Puerto de la API (def. 4000). |
-| `CORS_ORIGIN` | Origen permitido (la SPA). En dev con el proxy de Vite no hace falta tocarlo. |
-| `JWT_SECRET` | **Obligatorio.** Secreto para firmar los tokens. |
-| `JWT_EXPIRES_IN` | Caducidad del token (def. `8h`). |
+| `CORS_ORIGIN` | Origen permitido (la SPA). En dev con el proxy de Vite no hace falta tocarlo. Debe ser exacto: el panel usa cookies con credenciales. |
+| `JWT_SECRET` | **Obligatorio.** Secreto para firmar los tokens y cifrar los secretos TOTP. Minimo 16 caracteres. |
+| `ACCESS_TOKEN_TTL` | Vida del access token, corta a proposito (def. `15m`). Se renueva solo via refresh token. |
+| `REFRESH_TOKEN_DAYS` | Dias que dura la sesion sin volver a escribir la contrasena (def. `7`). |
+| `LOGIN_MAX_ATTEMPTS` / `LOGIN_LOCK_MINUTES` | Intentos fallidos antes de bloquear la cuenta, y minutos de bloqueo. |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Opcionales: activan el boton "Iniciar sesion con Google". Ver la seccion dedicada mas abajo. |
 | `RADIUS_DB_*` | Conexion a la base de FreeRADIUS. |
 | `PANEL_DB_*` | Conexion a la base del panel. |
 | `COA_ENABLED` | `false` desactiva el boton "Desconectar". |
@@ -170,6 +182,31 @@ se toma de la tabla `nas` buscando por la IP del NAS de la sesion, asi que:
 - el NAS debe aceptar CoA en `COA_PORT` desde la IP de la API.
 
 Si no hay NAS registrado con esa IP, el panel lo indica y no envia nada.
+
+## Login con Google (opcional)
+
+Alternativa al usuario/contrasena para los administradores del panel — no crea
+cuentas nuevas, solo permite entrar con una cuenta de Google ya vinculada a un
+administrador existente.
+
+1. Aplica `sql/panel-schema-google.sql` (ver "Puesta en marcha" arriba).
+2. En [Google Cloud Console](https://console.cloud.google.com/): crea un proyecto,
+   configura la pantalla de consentimiento OAuth (en modo *Testing* basta, sin
+   verificacion) y crea unas credenciales **OAuth client ID** de tipo *Web
+   application*. En **Authorized JavaScript origins** pon la URL donde sirvas el
+   panel (`http://localhost:5173` en desarrollo); **Authorized redirect URIs**
+   se deja vacio, este flujo no lo usa.
+3. Copia el **Client ID** y el **Client secret** a:
+   - `server/.env`: `GOOGLE_CLIENT_ID` y `GOOGLE_CLIENT_SECRET`.
+   - `web/.env`: `VITE_GOOGLE_CLIENT_ID` (el mismo Client ID; es publico, no el secret).
+4. Cada administrador vincula su cuenta desde **Mi cuenta y seguridad** →
+   "Iniciar sesion con Google": guarda su email y, la primera vez que entra con
+   ese email de Google, el panel lo vincula automaticamente (por `google_sub`,
+   no por el email, asi que reciclar el email despues no rompe el vinculo).
+
+Si `GOOGLE_CLIENT_ID` no esta definido en `server/.env`, el boton no aparece y
+el endpoint `/api/auth/google` responde 400 — no hace falta desactivar nada
+explicitamente.
 
 ## Build de produccion
 

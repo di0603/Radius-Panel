@@ -22,6 +22,7 @@ metaRouter.get(
       version: APP_VERSION,
       coaEnabled: config.coa.enabled,
       testAuthEnabled: config.testAuth.enabled,
+      googleEnabled: config.google.enabled,
       dbOk,
     });
   }),

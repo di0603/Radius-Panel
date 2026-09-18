@@ -67,6 +67,27 @@ export async function assertPanelSchema(): Promise<void> {
   }
 }
 
+const REQUIRED_GOOGLE_COLUMNS = ['email', 'google_sub'];
+
+/** Solo se llama cuando GOOGLE_CLIENT_ID esta configurado: sin eso, la funcion no hace falta. */
+export async function assertGoogleAuthSchema(): Promise<void> {
+  const [columns] = await panelPool.query<RowDataPacket[]>(
+    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'panel_admins'`,
+  );
+  const missing = REQUIRED_GOOGLE_COLUMNS.filter(
+    (c) => !columns.some((row) => String(row.COLUMN_NAME) === c),
+  );
+  if (missing.length) {
+    throw new Error(
+      `GOOGLE_CLIENT_ID esta configurado pero falta el esquema para el login con Google ` +
+        `(columnas: ${missing.join(', ')}).\n` +
+        `Aplica la migracion antes de arrancar:\n` +
+        `  mysql -u root -p ${config.panelDb.database} < sql/panel-schema-google.sql`,
+    );
+  }
+}
+
 export async function closePools(): Promise<void> {
   await Promise.allSettled([radiusPool.end(), panelPool.end()]);
 }
