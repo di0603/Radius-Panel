@@ -224,6 +224,70 @@ node server/dist/index.js
 # sirve web/dist con nginx/caddy y proxya /api al backend
 ```
 
+## Deploy automatico en el VPS (git pull cada 2 minutos)
+
+Los ficheros de `deploy/` montan un deploy continuo por *polling*: un timer de
+systemd comprueba cada 2 minutos si `origin/main` tiene commits nuevos y, si
+los hay, hace `git pull` + `npm run install:all` + `npm run build` + reinicia
+la API. No requiere webhooks ni abrir puertos entrantes nuevos.
+
+**1. Usuario y checkout dedicados** (una sola vez, como root):
+
+```bash
+adduser --system --group --home /opt/radius-panel radpanel
+git clone https://github.com/di0603/Radius-Panel.git /opt/radius-panel
+chown -R radpanel:radpanel /opt/radius-panel
+```
+
+**2. Variables de entorno de produccion** (como `radpanel`): crea
+`/opt/radius-panel/server/.env` (y `web/.env` si usas login con Google) con
+las credenciales reales, siguiendo la tabla de la seccion
+[Variables de entorno](#variables-de-entorno-serverenv). Estos ficheros
+**no** viajan por git (estan en `.gitignore`), asi que hay que crearlos a
+mano la primera vez y el deploy automatico nunca los toca.
+
+**3. Primer build manual** (como `radpanel`, dentro de `/opt/radius-panel`):
+
+```bash
+npm run install:all
+npm run build
+chmod +x deploy/deploy.sh
+```
+
+**4. Unidades systemd** (como root):
+
+```bash
+cp deploy/radius-panel.service deploy/radius-panel-deploy.service deploy/radius-panel-deploy.timer /etc/systemd/system/
+cp deploy/radpanel-sudoers /etc/sudoers.d/radpanel-deploy
+chmod 0440 /etc/sudoers.d/radpanel-deploy
+visudo -c   # valida la sintaxis del sudoers
+
+systemctl daemon-reload
+systemctl enable --now radius-panel.service         # arranca la API
+systemctl enable --now radius-panel-deploy.timer     # activa el polling cada 2 min
+```
+
+`radius-panel-deploy.timer` corre como el usuario `radpanel`; el sudoers
+acotado (`deploy/radpanel-sudoers`) le permite ejecutar unicamente
+`systemctl restart radius-panel.service`, nada mas.
+
+**5. Comprobar que funciona:**
+
+```bash
+systemctl status radius-panel.service
+systemctl list-timers radius-panel-deploy.timer
+journalctl -u radius-panel-deploy.service -f   # ver deploys en vivo (haz un push y espera <2 min)
+```
+
+**Reverse proxy:** `web/dist` es estatico y `/api` debe proxyarse a la API
+(puerto de `PORT` en `server/.env`, por defecto 4000). Un `server{}` de
+nginx o Caddy delante de `/opt/radius-panel/web/dist` con proxy_pass a
+`http://127.0.0.1:4000/api` es suficiente; ese paso no lo gestiona el timer.
+
+Para desactivar el deploy automatico temporalmente:
+`systemctl stop radius-panel-deploy.timer` (y `enable`/`start` de nuevo para
+reanudarlo).
+
 ## Hoja de ruta
 
 `ideas.md` contiene el backlog completo de mejoras (UX, funcionalidad, seguridad,

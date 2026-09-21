@@ -1,0 +1,4 @@
+# Permite al usuario de deploy reiniciar SOLO el servicio de la API,
+# sin pedir contrasena y sin acceso sudo a nada mas.
+# Instalar como /etc/sudoers.d/radpanel-deploy (permisos 0440, validar con visudo -c).
+radpanel ALL=(root) NOPASSWD: /usr/bin/systemctl restart radius-panel.service

@@ -1,0 +1,11 @@
+[Unit]
+Description=Ejecuta radius-panel-deploy.service cada 2 minutos
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=2min
+AccuracySec=10s
+Persistent=false
+
+[Install]
+WantedBy=timers.target
