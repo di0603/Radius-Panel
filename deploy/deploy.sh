@@ -34,6 +34,6 @@ npm run install:all
 npm run build
 
 echo "$(date -Iseconds) Build OK, reiniciando $SERVICE_NAME"
-sudo /usr/bin/systemctl restart "$SERVICE_NAME"
+systemctl restart "$SERVICE_NAME"
 
 echo "$(date -Iseconds) Deploy completado en $(git rev-parse HEAD)"

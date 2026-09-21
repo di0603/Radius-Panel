@@ -5,19 +5,12 @@ Wants=mysql.service
 
 [Service]
 Type=simple
-User=radpanel
-Group=radpanel
 WorkingDirectory=/opt/radius-panel
 ExecStart=/usr/bin/node server/dist/index.js
 Restart=on-failure
 RestartSec=5
 # server/src/config.ts hace `import 'dotenv/config'`, que ya lee
 # /opt/radius-panel/server/.env usando el WorkingDirectory de arriba.
-
-# Endurecimiento basico (opcional, comenta si da problemas)
-NoNewPrivileges=true
-ProtectSystem=strict
-ReadWritePaths=/opt/radius-panel
 
 [Install]
 WantedBy=multi-user.target

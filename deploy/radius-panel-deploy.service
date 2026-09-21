@@ -3,7 +3,5 @@ Description=Radius Panel - comprueba y aplica deploy desde origin/main
 
 [Service]
 Type=oneshot
-User=radpanel
-Group=radpanel
 WorkingDirectory=/opt/radius-panel
 ExecStart=/opt/radius-panel/deploy/deploy.sh
