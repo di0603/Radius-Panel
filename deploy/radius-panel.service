@@ -5,12 +5,13 @@ Wants=mysql.service
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/radius-panel
-ExecStart=/usr/bin/node server/dist/index.js
+WorkingDirectory=/opt/radius-panel/server
+ExecStart=/usr/bin/node dist/index.js
 Restart=on-failure
 RestartSec=5
-# server/src/config.ts hace `import 'dotenv/config'`, que ya lee
-# /opt/radius-panel/server/.env usando el WorkingDirectory de arriba.
+# server/src/config.ts hace `import 'dotenv/config'`, que busca `.env` en el
+# cwd del proceso: por eso WorkingDirectory apunta a server/ (igual que hace
+# `npm --prefix server run dev` en desarrollo), no a la raiz del repo.
 
 [Install]
 WantedBy=multi-user.target
