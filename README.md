@@ -274,10 +274,31 @@ systemctl list-timers radius-panel-deploy.timer
 journalctl -u radius-panel-deploy.service -f   # ver deploys en vivo (haz un push y espera <2 min)
 ```
 
-**Reverse proxy:** `web/dist` es estatico y `/api` debe proxyarse a la API
-(puerto de `PORT` en `server/.env`, por defecto 4000). Un `server{}` de
-nginx o Caddy delante de `/opt/radius-panel/web/dist` con proxy_pass a
-`http://127.0.0.1:4000/api` es suficiente; ese paso no lo gestiona el timer.
+**6. Reverse proxy** (nginx local + Nginx Proxy Manager por delante para el
+dominio/HTTPS):
+
+```bash
+apt install -y nginx
+cp deploy/nginx-radius-panel.conf /etc/nginx/sites-available/radius-panel
+ln -s /etc/nginx/sites-available/radius-panel /etc/nginx/sites-enabled/
+rm -f /etc/nginx/sites-enabled/default
+nginx -t
+systemctl reload nginx
+```
+
+Esto sirve `web/dist` en `/` y proxya `/api` y `/health` a la API en
+`127.0.0.1:1003` (ajusta el puerto en `deploy/nginx-radius-panel.conf` si
+cambiaste `PORT` en `server/.env`). Nginx local escucha en el puerto 80 en
+HTTP plano — el HTTPS y el dominio los termina **Nginx Proxy Manager**, que
+reenvia aqui.
+
+En NPM, crea un **Proxy Host**:
+- Domain: tu dominio/subdominio
+- Scheme: `http`, Forward Hostname/IP: la IP de este VPS, Forward Port: `80`
+- SSL: pide certificado Let's Encrypt y activa "Force SSL"
+
+Prueba primero sin NPM: `curl -s http://127.0.0.1/health` en el propio VPS
+debe devolver el mismo JSON que en el puerto 1003.
 
 Para desactivar el deploy automatico temporalmente:
 `systemctl stop radius-panel-deploy.timer` (y `enable`/`start` de nuevo para
