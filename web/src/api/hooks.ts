@@ -756,6 +756,25 @@ export function useRevokeVpnDeviceCertificate() {
   });
 }
 
+/** Descarga el paquete de conexion (zip Windows / tar.gz Linux) y lo guarda en el navegador. */
+export function useDownloadVpnDevicePackage() {
+  return useMutation({
+    mutationFn: async (username: string) => {
+      const res = await api.get<Blob>(`/vpn-devices/${encodeURIComponent(username)}/package`, {
+        responseType: 'blob',
+      });
+      const disposition = res.headers['content-disposition'] as string | undefined;
+      const filename = disposition?.match(/filename="([^"]+)"/)?.[1] ?? `${username}.zip`;
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    },
+  });
+}
+
 export function useDecommissionVpnDevice() {
   const qc = useQueryClient();
   return useMutation({

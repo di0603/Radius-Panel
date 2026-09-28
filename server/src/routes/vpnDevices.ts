@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { asyncHandler } from '../lib/http.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { writeAudit } from '../middleware/audit.js';
+import { buildDevicePackage } from '../services/vpnClientPackages.js';
 import {
   NAME_PART_RE,
   createDevice,
@@ -71,6 +72,15 @@ vpnDevicesRouter.post(
       framedIp: device.framedIp,
     });
     res.status(201).json(device);
+  }),
+);
+
+vpnDevicesRouter.get(
+  '/:username/package',
+  asyncHandler(async (req, res) => {
+    const pkg = await buildDevicePackage(req.params.username);
+    res.set('Content-Disposition', `attachment; filename="${pkg.filename}"`);
+    res.type(pkg.contentType).send(pkg.buffer);
   }),
 );
 

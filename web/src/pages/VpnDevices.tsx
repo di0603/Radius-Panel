@@ -22,7 +22,14 @@ import {
 } from '@mantine/core';
 import { modals } from '@mantine/modals';
 import { useSearchParams } from 'react-router-dom';
-import { IconCertificate, IconPlus, IconRouter, IconTicket, IconTrash } from '@tabler/icons-react';
+import {
+  IconCertificate,
+  IconDownload,
+  IconPlus,
+  IconRouter,
+  IconTicket,
+  IconTrash,
+} from '@tabler/icons-react';
 import { PageHeader } from '../components/PageHeader';
 import { SectionCard } from '../components/SectionCard';
 import { TableSkeleton } from '../components/TableSkeleton';
@@ -30,6 +37,7 @@ import { EmptyState } from '../components/EmptyState';
 import {
   useCreateVpnDevice,
   useDecommissionVpnDevice,
+  useDownloadVpnDevicePackage,
   useGenerateEnrollToken,
   useRevokeVpnDeviceCertificate,
   useSetVpnDeviceEnabled,
@@ -210,6 +218,16 @@ function DeviceDrawer({ username, onClose }: { username: string | null; onClose:
   const enrollToken = useGenerateEnrollToken();
   const revokeCert = useRevokeVpnDeviceCertificate();
   const decommission = useDecommissionVpnDevice();
+  const downloadPackage = useDownloadVpnDevicePackage();
+
+  const runDownloadPackage = async () => {
+    if (!username) return;
+    try {
+      await downloadPackage.mutateAsync(username);
+    } catch (err) {
+      notifyError(err);
+    }
+  };
 
   const runGenerateToken = async () => {
     if (!username) return;
@@ -407,6 +425,17 @@ function DeviceDrawer({ username, onClose }: { username: string | null; onClose:
               >
                 Generar token de alta
               </Button>
+              {device.platform !== 'android' && (
+                <Button
+                  size="xs"
+                  variant="light"
+                  leftSection={<IconDownload size={14} />}
+                  loading={downloadPackage.isPending}
+                  onClick={runDownloadPackage}
+                >
+                  Descargar paquete de conexion
+                </Button>
+              )}
               {hasActiveCert && (
                 <Button
                   size="xs"

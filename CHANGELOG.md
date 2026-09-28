@@ -112,6 +112,37 @@ Este proyecto usa versionado semantico.
   El listener no arranca si falta `EST_TLS_CERT`/`EST_TLS_KEY` o si
   `EST_ENABLED=false`: el resto del panel sigue funcionando igual, solo que
   sin alta/renovacion automatica.
+- **Paquete de conexion descargable** desde la ficha del dispositivo (boton
+  "Descargar paquete de conexion"), para Windows y Linux/VPS -Android
+  todavia se configura a mano en la app de strongSwan-. Nunca incluye
+  claves ni el token de alta: las plantillas solo llevan datos publicos
+  (`panel_vpn_settings`, la cadena de la CA) y el token se pide por pantalla
+  al ejecutar el script de alta.
+  - **Windows** (`.zip`): `install.ps1` crea la conexion IKEv2 "Casa" con
+    EAP-TLS (perfil `EapHostConfig`/EAP tipo 13 de Microsoft, con
+    `TrustedRootCA` fijado a la huella de la raiz que el propio script
+    importa en `Cert:\LocalMachine\Root`) y GCMAES256/SHA384/ECP384 en las
+    dos fases IPsec; `enroll.ps1` genera la clave en el TPM del equipo
+    (ECDSA P-256, no exportable -si no hay TPM, avisa y usa el proveedor de
+    software de Windows, igual de no exportable-), pide el token por
+    pantalla y da de alta el certificado por `simpleenroll`, y de paso
+    programa `renew.ps1` en el Programador de tareas (diario y al iniciar
+    sesion); `renew.ps1` consulta `GET status` de EST para saber si toca
+    renovar (evita que el cliente tenga que repetir la cuenta de dias que
+    ya hace el servidor) y renueva por `simplereenroll` sin pedir nada.
+  - **Linux/VPS** (`.tar.gz`): `casa.conf` (fragmento de `swanctl.conf`,
+    `remote_ts` a la LAN de casa en modo split o a todo el trafico en modo
+    full), `vpn-enroll` (bash + openssl + curl: clave ECDSA P-384 en
+    `/etc/swanctl/ecdsa` con permisos 600, token leido de la entrada
+    estandar -nunca como argumento-) y `vpn-renew` + unidades systemd
+    (`vpn-renew.timer`, diario): renueva por `simplereenroll`, conserva la
+    clave y el certificado anteriores y solo los borra despues de comprobar
+    que `swanctl --initiate` levanta la conexion con los nuevos; si no
+    levanta, restaura los anteriores.
+  - Probado descomprimiendo de verdad los bytes del zip/tar.gz generados
+    (no solo "no lanza"): se listan los ficheros esperados, se comprueban
+    los permisos ejecutables del `.tar.gz` y se busca en cada fichero
+    cualquier rastro de clave privada o secreto.
 - **Sistema de temas**: modo claro, oscuro y automatico (el del sistema) mas siete
   colores de acento, con la preferencia guardada en el navegador.
 - **Seguridad del panel**:

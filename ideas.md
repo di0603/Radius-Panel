@@ -284,6 +284,20 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
   vez de revocarlo en el acto. Errores sin detalle interno en la respuesta,
   con auditoría completa y métricas Prometheus por motivo de rechazo. Ver el
   detalle completo de cada validación en el CHANGELOG.
+- [x] **Paquete de conexión descargable** desde la ficha del dispositivo
+  (Windows y Linux/VPS; Android todavía se configura a mano en la app de
+  strongSwan). Windows: zip con `install.ps1` (conexión IKEv2 "Casa" con
+  EAP-TLS, importa la raíz/intermedia de la CA, GCMAES256/SHA384/ECP384),
+  `enroll.ps1` (clave no exportable en el TPM, o en el proveedor de software
+  si no hay TPM; pide el token por pantalla) y `renew.ps1` (usa `GET status`
+  de EST para saber si toca renovar; lo programa `enroll.ps1` en el
+  Programador de tareas). Linux/VPS: tar.gz con `casa.conf` (fragmento de
+  swanctl), `vpn-enroll`/`vpn-renew` (bash + openssl + curl, clave ECDSA
+  P-384, token leído de la entrada estándar) y las unidades systemd del
+  timer; `vpn-renew` conserva la clave y el certificado anteriores hasta
+  comprobar que la conexión arranca con los nuevos. Ningún paquete contiene
+  claves ni el token de alta (tests que descomprimen el zip/tar.gz de
+  verdad y comprueban que ningún fichero lleva material secreto).
 - [ ] Página de ajustes del módulo VPN (FQDN, identidad AAA, rango de IPs, días
   de vigencia/renovación, URL de EST).
 - [ ] Retirar el dispositivo de prueba `vps` cuando exista la CA intermedia real.
