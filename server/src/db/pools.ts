@@ -101,6 +101,37 @@ export async function userMetaTableExists(): Promise<boolean> {
   return rows.length > 0;
 }
 
+const VPN_RADIUS_TABLES = ['vpn_certificates'];
+const VPN_PANEL_TABLES = [
+  'panel_vpn_devices',
+  'panel_vpn_enroll_tokens',
+  'panel_pki_ca',
+  'panel_vpn_settings',
+];
+
+async function tablesExist(pool: typeof radiusPool, tables: string[]): Promise<boolean> {
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT TABLE_NAME FROM information_schema.TABLES
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN (?)`,
+    [tables],
+  );
+  return tables.every((t) => rows.some((row) => String(row.TABLE_NAME) === t));
+}
+
+/**
+ * El modulo VPN (PKI + enrolamiento de dispositivos) es opcional, igual que
+ * panel_user_meta: sin las tablas de sql/radius-schema-vpn.sql y
+ * sql/panel-schema-vpn.sql, el panel arranca igual y el modulo se anuncia
+ * desactivado en /api/meta en vez de romper el arranque.
+ */
+export async function vpnModuleTablesExist(): Promise<boolean> {
+  const [radiusOk, panelOk] = await Promise.all([
+    tablesExist(radiusPool, VPN_RADIUS_TABLES),
+    tablesExist(panelPool, VPN_PANEL_TABLES),
+  ]);
+  return radiusOk && panelOk;
+}
+
 export async function closePools(): Promise<void> {
   await Promise.allSettled([radiusPool.end(), panelPool.end()]);
 }

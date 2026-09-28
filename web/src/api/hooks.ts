@@ -9,6 +9,7 @@ export interface Meta {
   coaEnabled: boolean;
   testAuthEnabled: boolean;
   googleEnabled: boolean;
+  vpnEnabled: boolean;
   dbOk: boolean;
 }
 

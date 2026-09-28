@@ -67,6 +67,14 @@ mysql -u root -p < sql/panel-schema.sql
 > ```bash
 > mysql -u root -p radius_panel < sql/panel-schema-user-meta.sql
 > ```
+>
+> Si vas a usar el modulo de **VPN IKEv2/EAP-TLS** (opcional, en desarrollo),
+> aplica tambien:
+>
+> ```bash
+> mysql -u root -p radius < sql/radius-schema-vpn.sql
+> mysql -u root -p radius_panel < sql/panel-schema-vpn.sql
+> ```
 
 Da permisos a un usuario MySQL sobre ambas bases, por ejemplo:
 
@@ -135,8 +143,9 @@ Opciones:
 
 - **Esquema / migraciones** — aplicar `sql/panel-schema.sql`, `sql/freeradius-schema.sql`,
   `sql/panel-schema-security.sql` (refresh tokens, 2FA, bloqueo), `sql/panel-schema-google.sql`
-  (login con Google) o `sql/panel-schema-user-meta.sql` (email/notas por usuario RADIUS) contra tu
-  MySQL sin salir del proceso; ver que tablas existen en cada base y el estado de cada migracion.
+  (login con Google), `sql/panel-schema-user-meta.sql` (email/notas por usuario RADIUS) o
+  `sql/radius-schema-vpn.sql` / `sql/panel-schema-vpn.sql` (modulo VPN) contra tu MySQL sin salir
+  del proceso; ver que tablas existen en cada base y el estado de cada migracion.
 - **Administradores del panel** — listar, crear, cambiar contrasena, activar/desactivar.
 - **Usuarios RADIUS** — listar (con filtro), crear (usuario + contrasena + tipo + grupo), borrar.
 - **Registros y diagnostico** — ultimas autenticaciones (`radpostauth`), sesiones activas

@@ -204,7 +204,29 @@ Backlog completo. `[x]` = ya hecho · `[ ]` = pendiente · 🔥 = alta prioridad
 - [ ] Portal de autoservicio para el usuario final (cambiar contraseña, ver consumo).
 - [ ] Facturación básica (planes, ciclos, prepago/pospago) sobre el accounting.
 - [ ] Aprovisionamiento de CPE / integración con controladores WiFi (UniFi, Omada, Mikrotik API).
-- [ ] Soporte EAP/TLS: gestión de certificados de cliente y CA.
+- [ ] Soporte EAP/TLS: gestión de certificados de cliente y CA (en curso, ver §15).
 - [ ] Alta disponibilidad del propio panel (stateless + varios nodos tras balanceador).
 - [ ] App móvil / vista específica para operación desde el teléfono.
 - [ ] Modo "diagnóstico" que corre una batería de comprobaciones (esquema, índices, NAS accesibles, accounting llegando, CoA funcionando).
+
+---
+
+## 15. VPN IKEv2 / EAP-TLS (CA propia)
+
+Panel como CA emisora de certificados de dispositivo para una VPN IKEv2 (strongSwan)
+con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`.
+
+- [x] Esquema de base de datos: `vpn_certificates` (base `radius`, compatible con la
+  tabla ya creada a mano y su fila de prueba `vps`) y `panel_vpn_devices` /
+  `panel_vpn_enroll_tokens` / `panel_pki_ca` / `panel_vpn_settings` (base del panel).
+  Migraciones idempotentes registradas en `npm run menu`; `/api/meta.vpnEnabled`
+  indica si el módulo está activo.
+- [ ] Módulo de PKI: emisión/renovación de certificados de dispositivo firmados por
+  la CA intermedia, clave privada de la intermedia cifrada con `PKI_MASTER_KEY`.
+- [ ] Endpoint EST (RFC 7030) para alta y renovación automática de dispositivos.
+- [ ] Alta de dispositivo desde el panel: genera token de un solo uso, crea el
+  usuario RADIUS (`radcheck` con `Service-Type == Framed-User`, `radreply` con
+  `Framed-IP-Address` del pool, `radusergroup` = `vpn`).
+- [ ] Revocación de certificado (CRL de la intermedia) y baja de dispositivo.
+- [ ] Página de ajustes del módulo VPN (FQDN, rango de IPs, días de vigencia/renovación).
+- [ ] Retirar el dispositivo de prueba `vps` cuando exista la CA intermedia real.

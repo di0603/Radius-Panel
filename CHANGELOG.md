@@ -7,6 +7,14 @@ Este proyecto usa versionado semantico.
 
 ### Anadido
 
+- **Modulo VPN IKEv2/EAP-TLS (en curso)**: primer paso, esquema de base de datos.
+  `vpn_certificates` en la base `radius` (serial, huella de clave publica,
+  vigencia, estado activo/renovado/revocado) y, en la base del panel,
+  `panel_vpn_devices`, `panel_vpn_enroll_tokens` (solo hash del token de alta),
+  `panel_pki_ca` y `panel_vpn_settings` (FQDN, rango de IPs, dias de vigencia y
+  renovacion). Opcional como `panel_user_meta`: sin estas tablas el panel
+  arranca igual y `/api/meta` anuncia `vpnEnabled: false`. Migraciones
+  idempotentes, registradas en `npm run menu`.
 - **Sistema de temas**: modo claro, oscuro y automatico (el del sistema) mas siete
   colores de acento, con la preferencia guardada en el navegador.
 - **Seguridad del panel**:
