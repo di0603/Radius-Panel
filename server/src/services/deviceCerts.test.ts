@@ -126,6 +126,25 @@ test('signDeviceCsr: emite un certificado con el perfil fijo (ignora lo pedido e
   assert.ok(Date.now() - signed.notBefore.getTime() >= 4 * 60 * 1000); // ~5 min antes
 });
 
+test('signDeviceCsr: ignora RDNs adicionales del subject del CSR (solo CN)', async () => {
+  const keys = await generateEcKeyPair('P-256');
+  const csr = await x509.Pkcs10CertificateRequestGenerator.create({
+    name: 'CN=vpn-juan-laptop,O=Cualquiera,OU=Que Se Le Ocurra',
+    keys,
+    signingAlgorithm: { name: 'ECDSA', hash: 'SHA-256' },
+  });
+  const signed = await signDeviceCsr({
+    csrPem: csr.toString(),
+    cn: 'vpn-juan-laptop',
+    days: 30,
+    issuerCert: intermediateCert,
+    signingKey: intermediateKeys.privateKey,
+  });
+
+  const cert = new x509.X509Certificate(signed.certPem);
+  assert.equal(cert.subject, 'CN=vpn-juan-laptop');
+});
+
 test('signDeviceCsr: rechaza si el CN del CSR no coincide con el esperado', async () => {
   const { csr } = await makeDeviceCsr('vpn-juan-laptop');
   await assert.rejects(

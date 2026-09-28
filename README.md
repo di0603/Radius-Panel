@@ -262,6 +262,176 @@ Si `GOOGLE_CLIENT_ID` no esta definido en `server/.env`, el boton no aparece y
 el endpoint `/api/auth/google` responde 400. Para apagarlo temporalmente sin
 borrar las credenciales, pon `GOOGLE_ENABLED=false` y reinicia el servidor.
 
+## VPN y certificados (IKEv2 / EAP-TLS)
+
+Modulo opcional: el panel actua como CA emisora de certificados de dispositivo
+para una VPN IKEv2 con autenticacion EAP-TLS, con alta y renovacion automatica
+por **EST (RFC 7030)**. Todas las operaciones de PKI y de dispositivos VPN son
+solo para el rol `admin`.
+
+### Arquitectura
+
+```
+dispositivo (Windows/Linux/Android)
+   │  IKEv2 / EAP-TLS
+   ▼
+strongSwan (192.168.10.29) ──EAP──► FreeRADIUS (192.168.10.28, virtual server
+                                     "vpn", modulo eap_vpn, solo TLS)
+                                        │
+                                        ├─► MariaDB (192.168.10.30): vpn_certificates,
+                                        │   radcheck/radreply/radusergroup (rlm_sql)
+                                        │
+                            Radius Panel + su propia API (tambien en .28):
+                              - CA intermedia (panel_pki_ca) firma los
+                                certificados de dispositivo por EST
+                              - CA raiz: offline, el panel nunca tiene su clave
+```
+
+- Cada dispositivo es un **usuario RADIUS** cuyo username es el CN de su
+  certificado (`vpn-<owner_user>-<device_label>`), con IP fija
+  (`Framed-IP-Address`) del rango `pool_start`-`pool_end` (por defecto
+  `192.168.10.75`-`192.168.10.99`) y grupo `vpn`.
+- FreeRADIUS valida la cadena hasta la raiz offline, la CRL de la intermedia y
+  que el serial este `active` en `radius.vpn_certificates` — eso es
+  configuracion de FreeRADIUS (fuera de este repo); el panel solo publica esa
+  informacion (`GET /pki/ca-chain.pem`, `GET /pki/crl.pem`, sin autenticacion,
+  igual que cualquier CA publica su cadena y su CRL).
+- La WiFi sigue con PEAP-MSCHAPv2 sobre el mismo FreeRADIUS: nada de este
+  modulo la afecta.
+- Hay un dispositivo de prueba `vps` (192.168.10.77) con un certificado firmado
+  a mano directamente por la raiz, de cuando todavia no existia la CA
+  intermedia: se retira cuando la CA intermedia real este en produccion.
+
+### Paginas del panel
+
+| Pagina | Que hace |
+|--------|----------|
+| **PKI** | Genera la clave+CSR de la CA intermedia (ECDSA P-384), importa el certificado firmado offline por la raiz, rotacion y CRL. |
+| **VPN > Dispositivos** | Alta/baja, activar/desactivar, revocar certificado, token de alta EST, paquete de conexion descargable, permisos de red (firewall) por dispositivo. |
+| **VPN > Ajustes** | Token de la puerta de enlace del firewall (`deploy/vpn-gateway-agent.sh`). El resto de ajustes (`panel_vpn_settings`: FQDN, identidad AAA, rango de IPs, dias de vigencia/renovacion, URL de EST, red LAN) todavia se editan solo por SQL/`npm run menu`, sin pagina propia. |
+
+### Variables de entorno (server/.env)
+
+| Variable | Descripcion |
+|----------|-------------|
+| `PKI_MASTER_KEY` | Cifra la clave privada de la CA intermedia (`panel_pki_ca.private_key_encrypted`). Minimo 32 caracteres, aleatorio. Sin ella el panel arranca igual, pero generar/usar la CA intermedia falla con un mensaje claro. **Si la cambias despues de generar una CA intermedia, esa clave privada deja de poder descifrarse: no hay forma de recuperarla** (ver "Copias de seguridad" en `SECURITY.md`). |
+| `EST_ENABLED` | `false` apaga el listener EST aunque haya certificado/clave configurados (def. `true`). |
+| `EST_PORT` / `EST_BIND` | Puerto/IP del listener HTTPS de EST (def. `8443` / `0.0.0.0`). Servidor separado de la API principal: necesita TLS mutuo real (`requestCert: true`), que un proxy que termina TLS (nginx) no puede reenviar. |
+| `EST_TLS_CERT` / `EST_TLS_KEY` | Certificado y clave propios del listener EST, para el nombre publico de la PKI (p.ej. `pki.vlc.didev.es`). Los firma la CA raiz offline (EKU `serverAuth`, SAN DNS = ese nombre), **no** Let's Encrypt: los dispositivos confian solo en esa raiz para esta conexion. Sin estas dos, el resto del panel funciona igual, solo que sin alta/renovacion automatica. |
+
+Ver `.env.example` para el resto (comentarios inline).
+
+### Migraciones
+
+Todas idempotentes, en `sql/`, aplicables desde `npm run menu` → **Esquema /
+migraciones** (opciones entre parentesis) o a mano con `mysql -u root -p
+<base> < sql/<fichero>`, en este orden:
+
+| # | Fichero | Base | Que anade |
+|---|---------|------|-----------|
+| 6 | `radius-schema-vpn.sql` | `radius` | Tabla `vpn_certificates`. |
+| 7 | `panel-schema-vpn.sql` | `radius_panel` | `panel_vpn_devices`, `panel_vpn_enroll_tokens`, `panel_pki_ca`, `panel_vpn_settings`. |
+| 8 | `panel-schema-vpn-pki.sql` | `radius_panel` | Esquema correcto de `panel_pki_ca` (si el modulo se probo antes de fijar el modelo de `CLAUDE.md`). |
+| 9 | `panel-schema-vpn-devices.sql` | `radius_panel` | Esquema correcto de `panel_vpn_devices` (idem). |
+| 10 | `radius-schema-vpn-issuer.sql` | `radius` | `vpn_certificates.ca_id` (enlaza cada certificado con la CA que lo firmo, para que revocar regenere la CRL correcta). |
+| 11 | `panel-schema-vpn-4.5.sql` | `radius_panel` | `panel_vpn_settings.aaa_id`/`est_url`, `panel_vpn_enroll_tokens.token_sha256`. |
+| 12 | `panel-schema-vpn-android.sql` | `radius_panel` | `panel_vpn_settings.lan_cidr`, tabla `panel_vpn_android_downloads` (boton "Emitir certificado" para Android). |
+| 13 | `panel-schema-vpn-firewall.sql` | `radius_panel` | `allow_radius_host`/`allow_mariadb_host`, tabla `panel_vpn_device_rules`, `panel_vpn_settings.gateway_token_sha256` (firewall de la VM VPN). |
+
+`npm run menu` te dice cuales faltan contra tu base real (no solo si la tabla
+existe: tambien si tiene ya las columnas de la version actual).
+
+### Puesta en marcha de la CA intermedia
+
+La raiz es **offline**: el panel nunca tiene su clave privada. El flujo es
+generar la peticion en el panel, firmarla a mano en la maquina donde vive la
+raiz, e importar el resultado.
+
+1. **Panel → PKI → "Generar CA intermedia"**: pide un `subjectCn` (p.ej. `CN
+   VPN Casa Intermedia 2026`) y genera la clave ECDSA P-384 (queda cifrada con
+   `PKI_MASTER_KEY`) y descarga el CSR (`csr.pem`).
+2. **En la maquina offline de la raiz**, firma el CSR como intermedia
+   (`BasicConstraints CA:true, pathLenConstraint=0`, `KeyUsage
+   keyCertSign,cRLSign`, `ExtendedKeyUsage clientAuth`, ECDSA P-384/SHA-384),
+   por ejemplo:
+   ```bash
+   openssl ca -config raiz.cnf -extensions v3_intermediate_ca \
+     -days 1825 -notext -md sha384 \
+     -in csr.pem -out intermedia.pem
+   ```
+   (Ajusta `raiz.cnf`/`v3_intermediate_ca` a tu propia CA raiz; lo que
+   importa es que el certificado resultante cumpla exactamente esas
+   extensiones — el panel rechaza la importacion si no.)
+3. **Panel → PKI → "Importar certificado"**: sube `intermedia.pem` (el
+   certificado firmado) y `raiz.pem` (el certificado de la raiz, autofirmado).
+   El panel comprueba firma, vigencia, extensiones y que la clave publica
+   corresponda al CSR generado en el paso 1; si hay una intermedia activa
+   previa, pasa a "retirandose" (sigue publicando CRL hasta que caduca, pero
+   deja de firmar certificados nuevos).
+4. Verifica que `GET /pki/ca-chain.pem` y `GET /pki/crl.pem` responden
+   (sin autenticacion; en la propia maquina del panel:
+   `curl http://127.0.0.1:1003/pki/ca-chain.pem`).
+5. Configura FreeRADIUS (fuera de este repo) para validar contra esa cadena y
+   esa CRL, y para consultar `radius.vpn_certificates` (`status = 'active'`)
+   en el virtual server `vpn`.
+
+### Alta de un dispositivo
+
+1. **Panel → VPN > Dispositivos → "Nuevo dispositivo"**: `ownerUser` +
+   `deviceLabel` (minusculas/numeros/guiones) forman el username
+   `vpn-<ownerUser>-<deviceLabel>`; elige la plataforma. El panel asigna la
+   primera IP libre del pool, crea el usuario RADIUS (`radcheck`, `radreply`,
+   `radusergroup`) y la ficha del panel en una sola operacion.
+2. **Genera un token de alta** (ficha del dispositivo → "Generar token de
+   alta"): un solo uso, valido 24h, se ensena una unica vez.
+3. Segun la plataforma:
+   - **Windows / Linux**: descarga el "Paquete de conexion" desde la ficha
+     del dispositivo (botón "Descargar paquete de conexion"). El zip/tar.gz
+     no lleva ninguna clave ni el token; trae los scripts de instalacion y
+     alta (`install.ps1`+`enroll.ps1` en Windows, `vpn-enroll` en Linux) que
+     piden el token por pantalla, generan la clave en el equipo (TPM si lo
+     hay, en Windows) y piden el primer certificado por `simpleenroll`.
+     Tambien instalan la renovacion automatica (`renew.ps1` / `vpn-renew` +
+     systemd timer) que usa `GET status` de EST para saber cuando toca.
+   - **Android**: la app de strongSwan para Android no sabe renovarse sola
+     por EST, asi que en su lugar pulsa "Emitir certificado" en la ficha del
+     dispositivo. El panel genera la clave, construye un `.p12` protegido con
+     una contrasena aleatoria (se ensena una unica vez) y da un enlace de
+     descarga de un solo uso (15 minutos, solo accesible desde la VPN o la
+     LAN configurada) que entrega un perfil `.sswan` para importar en la app.
+     Repite este paso cuando toque renovar (no hay renovacion automatica para
+     Android).
+4. Revisa **VPN > Dispositivos** (o la tarjeta "VPN" del panel) para ver el
+   estado de cada certificado y las alertas de renovaciones atascadas.
+
+### Firewall de la puerta de enlace VPN (192.168.10.29)
+
+El panel genera el fichero nftables completo (`GET /vpn/gateway/firewall.nft`)
+a partir de los permisos de red de cada dispositivo ("internet", "toda la
+LAN" o un destino/protocolo/puerto concreto); RADIUS (`192.168.10.28`) y
+MariaDB (`192.168.10.30`) quedan siempre bloqueados para los clientes VPN,
+salvo excepcion explicita por dispositivo.
+
+1. **Panel → VPN > Ajustes → "Generar token de la puerta de enlace"**: se
+   ensena una unica vez.
+2. En la VM VPN (192.168.10.29), instala `deploy/vpn-gateway-agent.sh` (ver
+   "Deploy automatico en el VPS" mas abajo) y su configuracion
+   (`deploy/vpn-gateway-agent.config.sh.example`): **`PANEL_URL` debe apuntar
+   a la API principal del panel** (`http://192.168.10.28:1003` por LAN
+   directa, no a `EST_PORT`/8443 — ese es un servidor HTTPS distinto que solo
+   entiende `/.well-known/est/*`) y `GATEWAY_TOKEN` es el token del paso 1.
+3. El timer systemd (`vpn-gateway-agent.timer`, cada 5 min) descarga el
+   fichero, lo valida con `nft -c -f` y solo entonces lo aplica; si algo
+   falla, conserva el firewall que ya estaba cargado.
+
+### Mantenimiento periodico
+
+`npm run vpn:jobs` (en produccion, `deploy/radius-panel-vpn-jobs.timer` cada
+15 min): certificados `superseded` vencidos pasan a `revoked` y regeneran su
+CRL, poda de revocados ya caducados fuera de la CRL, borrado de tokens de alta
+caducados y regeneracion adelantada de la CRL. Ver "Deploy automatico en el
+VPS" para las unidades systemd.
+
 ## Build de produccion
 
 ```bash

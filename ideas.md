@@ -354,3 +354,14 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
   AAA, rango de IPs, días de vigencia/renovación, URL de EST, red LAN,
   umbral de alerta de rechazos EST) sigue pendiente de una página completa.
 - [ ] Retirar el dispositivo de prueba `vps` cuando exista la CA intermedia real.
+- [x] **Cierre del modulo**: seccion "VPN y certificados" en el `README.md`
+  (arquitectura, variables, migraciones en orden, puesta en marcha de la CA
+  intermedia, alta por plataforma, firewall de la puerta de enlace) y
+  `SECURITY.md` nuevo (modelo de amenazas, copias de seguridad de
+  `panel_pki_ca`/`PKI_MASTER_KEY` por separado, procedimiento de revocacion de
+  la intermedia). Revision de seguridad de todo el codigo del modulo: ver el
+  detalle de lo corregido en el CHANGELOG.
+- [ ] Boton "revocar todos los certificados de esta CA" en la pagina PKI (hoy
+  requiere SQL directo, ver `SECURITY.md` → "Procedimiento si hay que revocar
+  la CA intermedia"), y una ruta para pasar una intermedia `retiring` a
+  `retired` a mano sin esperar a que expire su CRL.

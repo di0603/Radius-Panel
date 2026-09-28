@@ -171,6 +171,15 @@ test('createDevice: escribe radcheck/radreply/radusergroup y la ficha del panel'
       String(c.arguments[0]).includes('INSERT INTO panel_vpn_devices'),
     );
     assert.equal((insertCall?.arguments[1] as { framedIp: string }).framedIp, '192.168.10.75');
+
+    // Bloquea las filas de radreply leidas: sin esto, dos altas simultaneas
+    // podrian elegir la misma IP libre (ver el comentario en vpnDevices.ts).
+    assert.ok(
+      conn.calls.some(
+        (s) => s.includes("SELECT value FROM radreply WHERE attribute = 'Framed-IP-Address'") &&
+          s.includes('FOR UPDATE'),
+      ),
+    );
   } finally {
     mock.restoreAll();
   }

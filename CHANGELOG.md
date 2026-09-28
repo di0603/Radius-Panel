@@ -272,6 +272,66 @@ Este proyecto usa versionado semantico.
     si esta disponible, `nft -c -f` sobre la sintaxis generada de verdad;
     `shellcheck` sobre `vpn-gateway-agent.sh`.
 
+- **Cierre del modulo VPN**: documentacion y revision de seguridad de todo el
+  codigo nuevo (PKI, EST, dispositivos, paquetes de conexion, Android,
+  firewall de la puerta de enlace), como si fuera una revision externa.
+  - `README.md`: seccion nueva "VPN y certificados" (arquitectura, paginas
+    del panel, variables de entorno, las 8 migraciones en el orden correcto
+    con la base de cada una, puesta en marcha paso a paso de la CA
+    intermedia, alta de un dispositivo por plataforma, instalacion del
+    firewall de la puerta de enlace, mantenimiento periodico).
+  - `SECURITY.md` (nuevo): modelo de amenazas (panel comprometido, token de
+    alta filtrado, certificado de dispositivo robado, dispositivo
+    perdido/robado, VPS comprometido, solo la base de datos comprometida) con
+    que mitiga cada caso; copias de seguridad de `panel_pki_ca` y de
+    `PKI_MASTER_KEY` **por separado** (y por que no deben acabar juntas);
+    procedimiento completo si hay que revocar la CA intermedia (emitir una
+    nueva, revocar en bloque los certificados de la comprometida, regenerar
+    su CRL, marcarla `retired`, re-enrolar cada dispositivo afectado).
+  - **Correcciones encontradas en la revision**:
+    - Condicion de carrera al asignar la IP de un dispositivo nuevo: el
+      `SELECT` de las IPs ya usadas en `radreply` no bloqueaba esas filas
+      (`FOR UPDATE`), asi que dos altas simultaneas podian elegir la misma IP
+      libre — el `UNIQUE` de `panel_vpn_devices.framed_ip` lo detectaba
+      despues (sin corrupcion silenciosa), pero dejaba un momento con dos
+      cuentas RADIUS con la misma `Framed-IP-Address` y la peticion que
+      perdia la carrera fallaba con un error de clave duplicada en vez de un
+      mensaje claro. Ahora el `SELECT` bloquea esas filas dentro de la misma
+      transaccion.
+    - El certificado de dispositivo emitido copiaba el `subject` completo del
+      CSR (no solo el CN ya validado): un CSR podia pedir RDNs adicionales
+      (`O`, `OU`...) que acababan en el certificado firmado sin validacion
+      propia. Sin impacto real hoy (la identidad que usan strongSwan/RADIUS
+      es el SAN `dNSName`, que siempre fija el servidor, no el subject), pero
+      se corrige por defecto en profundidad: el subject emitido es siempre
+      exactamente `CN=<username validado>`.
+    - `simplereenroll`/`status` no tenian ningun rate-limit (a diferencia de
+      `simpleenroll`, la descarga de Android o el firewall de la puerta de
+      enlace): un certificado de dispositivo robado se podia usar para
+      bombardear el endpoint con verificaciones X.509 completas y
+      transacciones con filas bloqueadas. Anadido un limite (120 peticiones /
+      15 min) generoso para no afectar el uso normal con varios dispositivos
+      detras de la misma IP (NAT).
+    - `deploy/vpn-gateway-agent.config.sh.example` documentaba `PANEL_URL`
+      como el listener EST (puerto 8443), pero `GET /vpn/gateway/firewall.nft`
+      vive en la API principal (otro servidor Express, otro puerto): con la
+      configuracion de ejemplo tal como estaba, el agente de la puerta de
+      enlace nunca habria conseguido descargar el fichero (404 constante) y
+      el firewall generado desde el panel nunca se habria llegado a aplicar
+      en produccion. Corregido el ejemplo (LAN directa a la API principal,
+      `http://192.168.10.28:1003`) y anadidos los bloques
+      `location /pki/`/`location /vpn/` que faltaban en
+      `deploy/nginx-radius-panel.conf` para quien prefiera la URL publica en
+      vez de la LAN directa.
+    - `app.set('trust proxy', 1)` (`server/src/index.ts`) solo contaba un
+      salto de proxy, pero la topologia real (confirmada con el usuario) tiene
+      dos: Nginx Proxy Manager en **otra maquina**, delante del nginx local de
+      `deploy/nginx-radius-panel.conf`, que es quien reenvia a la API. Con
+      solo 1, `req.ip` resolvia a la IP de NPM en vez de la del cliente real
+      para **toda** la API (no solo la VPN): rompia el rate-limit por IP en
+      general y, en este modulo, la restriccion "solo desde la VPN o la LAN"
+      de la descarga de Android y su propio rate-limit. Corregido a `2`.
+
 ### Corregido
 
 - **EST (correccion)**:
