@@ -553,12 +553,10 @@ export function useUserActivity(username: string | null) {
 
 /* ------------------------------ PKI (VPN) --------------------------- */
 
-export type PkiCaRole = 'root' | 'intermediate';
 export type PkiCaStatus = 'pending' | 'active' | 'retiring' | 'retired';
 
 export interface PkiCaSummary {
   id: number;
-  role: PkiCaRole;
   status: PkiCaStatus;
   subjectCn: string | null;
   serial: string | null;
@@ -569,11 +567,18 @@ export interface PkiCaSummary {
   crlLastGeneratedAt: string | null;
   crlNextUpdate: string | null;
   createdAt: string;
-  importedAt: string | null;
+  /** true si esta 'retired' sin haber llegado a activarse: una CA RSA obsoleta (ahora solo ECDSA P-384). */
+  staleAlgorithm: boolean;
+}
+
+export interface PkiRootSummary {
+  subjectCn: string;
+  serial: string;
+  notAfter: string;
 }
 
 export interface PkiStatus {
-  root: PkiCaSummary | null;
+  root: PkiRootSummary | null;
   intermediates: PkiCaSummary[];
   activeDeviceCertificates: number;
 }
@@ -639,18 +644,22 @@ export function useRegenerateCrl() {
 
 export type DevicePlatform = 'windows' | 'android' | 'linux';
 export type TunnelMode = 'full' | 'split';
-export type DeviceStatus = 'pending' | 'active' | 'disabled' | 'revoked';
+/** Derivado en el servidor de `enabled` + `framedIp`: no hay una columna de estado propia. */
+export type DeviceStatus = 'active' | 'disabled' | 'decommissioned';
 
 export interface VpnDevice {
   id: number;
   username: string;
-  owner: string | null;
+  ownerUser: string;
+  deviceLabel: string;
+  ownerName: string | null;
   platform: DevicePlatform;
   tunnelMode: TunnelMode;
   notes: string | null;
   certDays: number | null;
   renewAfterDays: number | null;
   framedIp: string | null;
+  enabled: boolean;
   status: DeviceStatus;
   createdAt: string;
   updatedAt: string;
@@ -689,8 +698,9 @@ export function useVpnDevice(username: string | null) {
 }
 
 export interface CreateVpnDeviceInput {
-  name: string;
-  owner: string | null;
+  ownerUser: string;
+  deviceLabel: string;
+  ownerName: string | null;
   platform: DevicePlatform;
   tunnelMode?: TunnelMode;
   notes: string | null;

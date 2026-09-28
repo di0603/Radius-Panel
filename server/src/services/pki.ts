@@ -3,10 +3,10 @@ import { panelPool, radiusPool } from '../db/pools.js';
 import { badRequest, conflict, notFound } from '../lib/http.js';
 import { decryptPkiPrivateKey, encryptPkiPrivateKey } from '../lib/pkiCrypto.js';
 import {
-  RSA_SIGNING_ALGORITHM,
+  EC_P384_SIGNING_ALGORITHM,
   exportPrivateKeyPem,
-  generateRsaKeyPair,
-  importRsaPrivateKeyPem,
+  generateEcKeyPair,
+  importEcPrivateKeyPem,
   sha256Hex,
   x509,
 } from '../lib/x509.js';
@@ -14,15 +14,15 @@ import {
 /**
  * Gestion de la CA intermedia de la VPN: generar CSR, importar el
  * certificado firmado por la raiz offline, rotacion y publicacion de CRL.
- * Ver sql/panel-schema-vpn-pki.sql para el esquema de panel_pki_ca.
+ * Ver sql/panel-schema-vpn.sql para el esquema de panel_pki_ca: una fila por
+ * CA intermedia; la raiz (offline, el panel nunca tiene su clave privada) se
+ * guarda como `root_cert_pem` dentro de esa misma fila, no como fila propia.
  */
 
-export type PkiCaRole = 'root' | 'intermediate';
 export type PkiCaStatus = 'pending' | 'active' | 'retiring' | 'retired';
 
 export interface PkiCaSummary {
   id: number;
-  role: PkiCaRole;
   status: PkiCaStatus;
   subjectCn: string | null;
   serial: string | null;
@@ -33,11 +33,18 @@ export interface PkiCaSummary {
   crlLastGeneratedAt: string | null;
   crlNextUpdate: string | null;
   createdAt: string;
-  importedAt: string | null;
+  /** true si esta 'retired' sin haber llegado a activarse: una intermedia RSA de una version anterior. */
+  staleAlgorithm: boolean;
+}
+
+export interface PkiRootSummary {
+  subjectCn: string;
+  serial: string;
+  notAfter: string;
 }
 
 export interface PkiStatus {
-  root: PkiCaSummary | null;
+  root: PkiRootSummary | null;
   intermediates: PkiCaSummary[];
   activeDeviceCertificates: number;
 }
@@ -46,22 +53,35 @@ function isMissingTable(err: unknown): boolean {
   return (err as { code?: string } | undefined)?.code === 'ER_NO_SUCH_TABLE';
 }
 
+/** `crl_last_generated_at` no se guarda: se deriva de `crl_next_update - 7 dias` (ver buildCrl). */
+function deriveCrlLastGeneratedAt(crlNextUpdate: string | null): string | null {
+  if (!crlNextUpdate) return null;
+  const next = new Date(`${String(crlNextUpdate).replace(' ', 'T')}Z`);
+  return new Date(next.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+}
+
 function toSummary(row: RowDataPacket): PkiCaSummary {
   return {
     id: Number(row.id),
-    role: row.role,
     status: row.status,
-    subjectCn: row.subject_cn ?? null,
+    subjectCn: row.subject ?? null,
     serial: row.serial ?? null,
     spkiSha256: row.spki_sha256 ?? null,
     notBefore: row.not_before ?? null,
     notAfter: row.not_after ?? null,
     crlNumber: Number(row.crl_number ?? 0),
-    crlLastGeneratedAt: row.crl_last_generated_at ?? null,
+    crlLastGeneratedAt: deriveCrlLastGeneratedAt(row.crl_next_update ?? null),
     crlNextUpdate: row.crl_next_update ?? null,
     createdAt: row.created_at,
-    importedAt: row.imported_at ?? null,
+    staleAlgorithm: row.status === 'retired' && !row.cert_pem,
   };
+}
+
+async function getStoredRootCertPem(): Promise<string | null> {
+  const [[row]] = await panelPool.query<RowDataPacket[]>(
+    `SELECT root_cert_pem FROM panel_pki_ca WHERE root_cert_pem IS NOT NULL ORDER BY created_at DESC LIMIT 1`,
+  );
+  return row?.root_cert_pem ?? null;
 }
 
 /** Vista general para la pagina "PKI": CA raiz, intermedias y sus CRL. */
@@ -69,15 +89,23 @@ export async function getPkiStatus(): Promise<PkiStatus> {
   let rows: RowDataPacket[] = [];
   try {
     [rows] = await panelPool.query<RowDataPacket[]>(
-      `SELECT * FROM panel_pki_ca ORDER BY role ASC, created_at DESC`,
+      `SELECT * FROM panel_pki_ca ORDER BY created_at DESC`,
     );
   } catch (err) {
     if (!isMissingTable(err)) throw err;
     return { root: null, intermediates: [], activeDeviceCertificates: 0 };
   }
 
-  const rootRow = rows.find((r) => r.role === 'root');
-  const intermediateRows = rows.filter((r) => r.role === 'intermediate');
+  let root: PkiRootSummary | null = null;
+  const rootPem = rows.find((r) => r.root_cert_pem)?.root_cert_pem;
+  if (rootPem) {
+    const rootCert = new x509.X509Certificate(rootPem);
+    root = {
+      subjectCn: rootCert.subject,
+      serial: rootCert.serialNumber.toLowerCase(),
+      notAfter: rootCert.notAfter.toISOString(),
+    };
+  }
 
   let activeDeviceCertificates = 0;
   try {
@@ -89,32 +117,60 @@ export async function getPkiStatus(): Promise<PkiStatus> {
     if (!isMissingTable(err)) throw err;
   }
 
-  return {
-    root: rootRow ? toSummary(rootRow) : null,
-    intermediates: intermediateRows.map(toSummary),
-    activeDeviceCertificates,
-  };
-}
-
-async function getStoredRoot(): Promise<RowDataPacket | undefined> {
-  const [[row]] = await panelPool.query<RowDataPacket[]>(
-    `SELECT * FROM panel_pki_ca WHERE role = 'root' LIMIT 1`,
-  );
-  return row;
+  return { root, intermediates: rows.map(toSummary), activeDeviceCertificates };
 }
 
 /**
- * Paso 1 del alta de la CA intermedia: genera un par de claves RSA y su CSR.
- * La clave privada se cifra con PKI_MASTER_KEY antes de guardarla; nunca se
- * devuelve ni se audita en claro. Solo puede haber una intermedia pendiente
- * de importar a la vez.
+ * Si al arrancar (o al consultar el estado) queda alguna intermedia
+ * 'pending' generada con una version anterior del panel (RSA en vez de
+ * ECDSA P-384), se retira: no se puede importar un certificado para una
+ * clave con un algoritmo que ya no se admite. La pagina PKI lo muestra como
+ * aviso (`PkiCaSummary.staleAlgorithm`) para que se genere una nueva.
+ */
+export async function retireStaleRsaIntermediates(): Promise<number> {
+  let rows: RowDataPacket[] = [];
+  try {
+    [rows] = await panelPool.query<RowDataPacket[]>(
+      `SELECT id, csr_pem FROM panel_pki_ca WHERE status = 'pending' AND csr_pem IS NOT NULL`,
+    );
+  } catch (err) {
+    if (isMissingTable(err)) return 0;
+    throw err;
+  }
+
+  let retired = 0;
+  for (const row of rows) {
+    let isEcP384 = false;
+    try {
+      const csr = new x509.Pkcs10CertificateRequest(row.csr_pem);
+      const alg = csr.publicKey.algorithm as { name: string; namedCurve?: string };
+      isEcP384 = alg.name === 'ECDSA' && alg.namedCurve === 'P-384';
+    } catch {
+      isEcP384 = false; // CSR ilegible: se trata igual que un algoritmo no admitido.
+    }
+    if (!isEcP384) {
+      await panelPool.query(`UPDATE panel_pki_ca SET status = 'retired' WHERE id = :id`, {
+        id: row.id,
+      });
+      retired++;
+    }
+  }
+  return retired;
+}
+
+/**
+ * Paso 1 del alta de la CA intermedia: genera un par de claves ECDSA P-384 y
+ * su CSR (BasicConstraints CA:true con pathLenConstraint=0, KeyUsage
+ * keyCertSign+cRLSign, EKU solo clientAuth). La clave privada se cifra con
+ * PKI_MASTER_KEY antes de guardarla; nunca se devuelve ni se audita en
+ * claro. Solo puede haber una intermedia pendiente de importar a la vez.
  */
 export async function generateIntermediateCsr(input: {
   subjectCn: string;
   createdBy: number | null;
 }): Promise<{ id: number; csrPem: string; subjectCn: string }> {
   const [[existingPending]] = await panelPool.query<RowDataPacket[]>(
-    `SELECT id FROM panel_pki_ca WHERE role = 'intermediate' AND status = 'pending' LIMIT 1`,
+    `SELECT id FROM panel_pki_ca WHERE status = 'pending' LIMIT 1`,
   );
   if (existingPending) {
     throw conflict(
@@ -122,12 +178,19 @@ export async function generateIntermediateCsr(input: {
     );
   }
 
-  const keys = await generateRsaKeyPair();
+  const keys = await generateEcKeyPair('P-384');
   const csr = await x509.Pkcs10CertificateRequestGenerator.create({
     name: `CN=${input.subjectCn}`,
     keys,
-    signingAlgorithm: RSA_SIGNING_ALGORITHM,
-    extensions: [new x509.BasicConstraintsExtension(true, undefined, true)],
+    signingAlgorithm: EC_P384_SIGNING_ALGORITHM,
+    extensions: [
+      new x509.BasicConstraintsExtension(true, 0, true),
+      new x509.KeyUsagesExtension(
+        x509.KeyUsageFlags.keyCertSign | x509.KeyUsageFlags.cRLSign,
+        true,
+      ),
+      new x509.ExtendedKeyUsageExtension([x509.ExtendedKeyUsage.clientAuth], true),
+    ],
   });
   const csrPem = csr.toString();
   const privateKeyPem = await exportPrivateKeyPem(keys.privateKey);
@@ -135,16 +198,9 @@ export async function generateIntermediateCsr(input: {
   const privateKeyEncrypted = encryptPkiPrivateKey(privateKeyPem);
 
   const [result] = await panelPool.query<ResultSetHeader>(
-    `INSERT INTO panel_pki_ca
-       (role, status, subject_cn, private_key_encrypted, csr_pem, spki_sha256, key_created_at, created_by)
-     VALUES ('intermediate', 'pending', :subjectCn, :privateKeyEncrypted, :csrPem, :spkiSha256, NOW(), :createdBy)`,
-    {
-      subjectCn: input.subjectCn,
-      privateKeyEncrypted,
-      csrPem,
-      spkiSha256,
-      createdBy: input.createdBy,
-    },
+    `INSERT INTO panel_pki_ca (status, subject, private_key_encrypted, csr_pem, spki_sha256)
+     VALUES ('pending', :subjectCn, :privateKeyEncrypted, :csrPem, :spkiSha256)`,
+    { subjectCn: input.subjectCn, privateKeyEncrypted, csrPem, spkiSha256 },
   );
 
   return { id: result.insertId, csrPem, subjectCn: input.subjectCn };
@@ -153,7 +209,7 @@ export async function generateIntermediateCsr(input: {
 /** Cancela una CA intermedia pendiente (todavia sin certificado importado). */
 export async function cancelPendingIntermediate(id: number): Promise<void> {
   const [result] = await panelPool.query<ResultSetHeader>(
-    `DELETE FROM panel_pki_ca WHERE id = :id AND role = 'intermediate' AND status = 'pending'`,
+    `DELETE FROM panel_pki_ca WHERE id = :id AND status = 'pending'`,
     { id },
   );
   if (result.affectedRows === 0) {
@@ -209,11 +265,27 @@ export async function validateIntermediateImport(input: {
       'El certificado no tiene BasicConstraints CA:true: no es un certificado de CA',
     );
   }
+  if (basicConstraints.pathLength !== 0) {
+    throw badRequest('El certificado debe tener BasicConstraints con pathLenConstraint = 0');
+  }
 
   const keyUsage = intermediateCert.getExtension(x509.KeyUsagesExtension);
   const needed = x509.KeyUsageFlags.keyCertSign | x509.KeyUsageFlags.cRLSign;
   if (((keyUsage?.usages ?? 0) & needed) !== needed) {
     throw badRequest('El certificado no tiene KeyUsage keyCertSign + cRLSign');
+  }
+
+  const eku = intermediateCert.getExtension(x509.ExtendedKeyUsageExtension);
+  if (!eku || eku.usages.length === 0) {
+    throw badRequest('El certificado no tiene ExtendedKeyUsage');
+  }
+  if (eku.usages.some((u) => u !== x509.ExtendedKeyUsage.clientAuth)) {
+    throw badRequest('El ExtendedKeyUsage del certificado debe ser unicamente clientAuth');
+  }
+
+  const alg = intermediateCert.publicKey.algorithm as { name?: string; namedCurve?: string };
+  if (alg.name !== 'ECDSA' || alg.namedCurve !== 'P-384') {
+    throw badRequest('La clave del certificado debe ser ECDSA P-384');
   }
 
   const spkiSha256 = sha256Hex(intermediateCert.publicKey.rawData);
@@ -226,16 +298,16 @@ export async function validateIntermediateImport(input: {
 
 /**
  * Paso 2 del alta: importa el certificado de la intermedia firmado offline
- * (y el de la raiz, la primera vez). Si ya hay una intermedia activa, esta
- * pasa a "retiring" (sigue publicando CRL hasta que caduque, pero deja de
- * firmar certificados nuevos).
+ * (y el de la raiz). Si ya hay una intermedia activa, esta pasa a
+ * "retiring" (sigue publicando CRL hasta que caduque, pero deja de firmar
+ * certificados nuevos).
  */
 export async function importIntermediate(
   id: number,
   input: { certPem: string; rootCertPem: string },
 ): Promise<PkiCaSummary> {
   const [[pending]] = await panelPool.query<RowDataPacket[]>(
-    `SELECT * FROM panel_pki_ca WHERE id = :id AND role = 'intermediate' AND status = 'pending' LIMIT 1`,
+    `SELECT * FROM panel_pki_ca WHERE id = :id AND status = 'pending' LIMIT 1`,
     { id },
   );
   if (!pending) throw notFound('No existe una CA intermedia pendiente con ese id');
@@ -254,12 +326,14 @@ export async function importIntermediate(
     throw badRequest('No se ha podido leer alguno de los certificados (PEM invalido)');
   }
 
-  const rootSerial = rootCert.serialNumber.toLowerCase();
-  const existingRoot = await getStoredRoot();
-  if (existingRoot?.serial && existingRoot.serial !== rootSerial) {
-    throw conflict(
-      'Ya hay una CA raiz distinta registrada en el panel; usar varias raices no esta soportado',
-    );
+  const existingRootPem = await getStoredRootCertPem();
+  if (existingRootPem) {
+    const existingRootSerial = new x509.X509Certificate(existingRootPem).serialNumber.toLowerCase();
+    if (existingRootSerial !== rootCert.serialNumber.toLowerCase()) {
+      throw conflict(
+        'Ya hay una CA raiz distinta registrada en el panel; usar varias raices no esta soportado',
+      );
+    }
   }
 
   await validateIntermediateImport({
@@ -271,42 +345,27 @@ export async function importIntermediate(
   const conn = await panelPool.getConnection();
   try {
     await conn.beginTransaction();
-
-    if (!existingRoot) {
-      await conn.query(
-        `INSERT INTO panel_pki_ca (role, status, subject_cn, serial, not_before, not_after, cert_pem, imported_at)
-         VALUES ('root', 'active', :subjectCn, :serial, :notBefore, :notAfter, :certPem, NOW())`,
-        {
-          subjectCn: rootCert.subject,
-          serial: rootSerial,
-          notBefore: rootCert.notBefore,
-          notAfter: rootCert.notAfter,
-          certPem: rootCert.toString(),
-        },
-      );
-    }
-
     await conn.query(
-      `UPDATE panel_pki_ca SET status = 'retiring' WHERE role = 'intermediate' AND status = 'active' AND id != :id`,
-      { id },
+      `UPDATE panel_pki_ca SET status = 'retiring' WHERE status = 'active' AND id != :id`,
+      {
+        id,
+      },
     );
-
     await conn.query(
       `UPDATE panel_pki_ca
-          SET status = 'active', subject_cn = :subjectCn, serial = :serial, not_before = :notBefore,
-              not_after = :notAfter, cert_pem = :certPem, issuer_serial = :issuerSerial, imported_at = NOW()
+          SET status = 'active', subject = :subject, serial = :serial, not_before = :notBefore,
+              not_after = :notAfter, cert_pem = :certPem, root_cert_pem = :rootCertPem
         WHERE id = :id`,
       {
         id,
-        subjectCn: intermediateCert.subject,
+        subject: intermediateCert.subject,
         serial: intermediateCert.serialNumber.toLowerCase(),
         notBefore: intermediateCert.notBefore,
         notAfter: intermediateCert.notAfter,
         certPem: intermediateCert.toString(),
-        issuerSerial: rootSerial,
+        rootCertPem: rootCert.toString(),
       },
     );
-
     await conn.commit();
   } catch (err) {
     await conn.rollback();
@@ -319,7 +378,9 @@ export async function importIntermediate(
 
   const [[updated]] = await panelPool.query<RowDataPacket[]>(
     `SELECT * FROM panel_pki_ca WHERE id = :id`,
-    { id },
+    {
+      id,
+    },
   );
   return toSummary(updated);
 }
@@ -350,7 +411,7 @@ export async function buildCrl(input: {
     issuer: issuerCert.subject,
     thisUpdate,
     nextUpdate,
-    signingAlgorithm: RSA_SIGNING_ALGORITHM,
+    signingAlgorithm: EC_P384_SIGNING_ALGORITHM,
     signingKey,
     entries: entries.map((e) => ({
       serialNumber: e.serialNumber,
@@ -362,23 +423,21 @@ export async function buildCrl(input: {
 }
 
 /**
- * `vpn_certificates.ca_serial` (sql/radius-schema-vpn-issuer.sql) enlaza cada
- * certificado con el serial de la CA que lo firmo. Sigue vacio para los
+ * `vpn_certificates.ca_id` (sql/radius-schema-vpn-issuer.sql) enlaza cada
+ * certificado con el id de `panel_pki_ca` que lo firmo. Sigue vacio para los
  * certificados sin CA gestionada (p.ej. el dispositivo de prueba "vps",
  * firmado directamente por la raiz): esos nunca aparecen en ninguna CRL
- * automatica. Se degrada a "sin revocados" si la columna todavia no existe
- * (migracion no aplicada) o si `caSerial` es null.
+ * automatica. Se degrada a "sin revocados" si la columna todavia no existe.
  */
-async function getRevokedEntriesForCa(caSerial: string | null): Promise<CrlEntryInput[]> {
-  if (!caSerial) return [];
+async function getRevokedEntriesForCa(caId: number): Promise<CrlEntryInput[]> {
   try {
     const [rows] = await radiusPool.query<RowDataPacket[]>(
-      `SELECT serial, revoked_at FROM vpn_certificates WHERE ca_serial = :caSerial AND status = 'revoked'`,
-      { caSerial },
+      `SELECT serial, revoked_at FROM vpn_certificates WHERE ca_id = :caId AND status = 'revoked'`,
+      { caId },
     );
     return rows.map((r) => ({
       serialNumber: String(r.serial),
-      revocationDate: new Date(String(r.revoked_at).replace(' ', 'T') + 'Z'),
+      revocationDate: new Date(`${String(r.revoked_at).replace(' ', 'T')}Z`),
     }));
   } catch (err) {
     if ((err as { code?: string } | undefined)?.code === 'ER_BAD_FIELD_ERROR') return [];
@@ -386,26 +445,13 @@ async function getRevokedEntriesForCa(caSerial: string | null): Promise<CrlEntry
   }
 }
 
-/**
- * Regenera la CRL de la CA cuyo serial firmo un certificado dado, tras
- * revocarlo. No-op silencioso si ese serial no corresponde a ninguna CA
- * gestionada por el panel (ver `getRevokedEntriesForCa`) o si ya no esta
- * activa/retirandose.
- */
-export async function regenerateCrlBySerial(caSerial: string): Promise<void> {
-  const [[row]] = await panelPool.query<RowDataPacket[]>(
-    `SELECT id FROM panel_pki_ca WHERE role = 'intermediate' AND serial = :serial
-       AND status IN ('active', 'retiring') LIMIT 1`,
-    { serial: caSerial },
-  );
-  if (row) await regenerateCrl(Number(row.id));
-}
-
 /** Regenera y guarda la CRL de una CA intermedia activa o en retirada. */
 export async function regenerateCrl(caId: number): Promise<string> {
   const [[row]] = await panelPool.query<RowDataPacket[]>(
-    `SELECT * FROM panel_pki_ca WHERE id = :id AND role = 'intermediate' LIMIT 1`,
-    { id: caId },
+    `SELECT * FROM panel_pki_ca WHERE id = :id`,
+    {
+      id: caId,
+    },
   );
   if (!row || !row.cert_pem || !row.private_key_encrypted) {
     throw badRequest('Esta CA intermedia todavia no tiene un certificado importado');
@@ -415,16 +461,17 @@ export async function regenerateCrl(caId: number): Promise<string> {
   }
 
   const issuerCert = new x509.X509Certificate(row.cert_pem);
-  const signingKey = await importRsaPrivateKeyPem(decryptPkiPrivateKey(row.private_key_encrypted));
-  const entries = await getRevokedEntriesForCa(row.serial);
+  const signingKey = await importEcPrivateKeyPem(
+    decryptPkiPrivateKey(row.private_key_encrypted),
+    'P-384',
+  );
+  const entries = await getRevokedEntriesForCa(caId);
 
   const crl = await buildCrl({ issuerCert, signingKey, entries });
   const crlPem = crl.toString();
 
   await panelPool.query(
-    `UPDATE panel_pki_ca
-        SET crl_pem = :crlPem, crl_number = crl_number + 1, crl_last_generated_at = NOW(),
-            crl_next_update = :nextUpdate
+    `UPDATE panel_pki_ca SET crl_pem = :crlPem, crl_number = crl_number + 1, crl_next_update = :nextUpdate
       WHERE id = :id`,
     { crlPem, nextUpdate: crl.nextUpdate, id: caId },
   );
@@ -438,7 +485,7 @@ export async function regenerateDueCrls(): Promise<number> {
   try {
     [rows] = await panelPool.query<RowDataPacket[]>(
       `SELECT id FROM panel_pki_ca
-        WHERE role = 'intermediate' AND status IN ('active', 'retiring')
+        WHERE status IN ('active', 'retiring')
           AND (crl_next_update IS NULL OR crl_next_update <= DATE_ADD(NOW(), INTERVAL 1 DAY))`,
     );
   } catch (err) {
@@ -458,17 +505,17 @@ export async function getCaChainPem(): Promise<string | null> {
   let rows: RowDataPacket[] = [];
   try {
     [rows] = await panelPool.query<RowDataPacket[]>(
-      `SELECT cert_pem, role FROM panel_pki_ca
-        WHERE cert_pem IS NOT NULL AND (role = 'root' OR status IN ('active', 'retiring'))`,
+      `SELECT cert_pem, root_cert_pem FROM panel_pki_ca WHERE status IN ('active', 'retiring') AND cert_pem IS NOT NULL`,
     );
   } catch (err) {
     if (isMissingTable(err)) return null;
     throw err;
   }
   if (!rows.length) return null;
-  const intermediates = rows.filter((r) => r.role === 'intermediate');
-  const root = rows.filter((r) => r.role === 'root');
-  return [...intermediates, ...root].map((r) => String(r.cert_pem).trim()).join('\n');
+  const parts = rows.map((r) => String(r.cert_pem).trim());
+  const rootPem = rows.find((r) => r.root_cert_pem)?.root_cert_pem;
+  if (rootPem) parts.push(String(rootPem).trim());
+  return parts.join('\n');
 }
 
 /** GET /pki/crl.pem: CRL vigente de cada intermedia activa o en retirada. `null` si no hay ninguna. */
@@ -476,8 +523,7 @@ export async function getCrlBundlePem(): Promise<string | null> {
   let rows: RowDataPacket[] = [];
   try {
     [rows] = await panelPool.query<RowDataPacket[]>(
-      `SELECT crl_pem FROM panel_pki_ca
-        WHERE role = 'intermediate' AND status IN ('active', 'retiring') AND crl_pem IS NOT NULL`,
+      `SELECT crl_pem FROM panel_pki_ca WHERE status IN ('active', 'retiring') AND crl_pem IS NOT NULL`,
     );
   } catch (err) {
     if (isMissingTable(err)) return null;

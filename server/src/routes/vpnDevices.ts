@@ -4,6 +4,7 @@ import { asyncHandler } from '../lib/http.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { writeAudit } from '../middleware/audit.js';
 import {
+  NAME_PART_RE,
   createDevice,
   decommissionDevice,
   generateEnrollToken,
@@ -20,11 +21,13 @@ import {
 export const vpnDevicesRouter = Router();
 vpnDevicesRouter.use(requireAuth, requireRole('admin'));
 
-const NAME_RE = /^[a-z0-9-]{3,32}$/;
+const namePart = (label: string) =>
+  z.string().regex(NAME_PART_RE, `${label}: solo minusculas, numeros y guiones, 2-32 caracteres`);
 
 const createSchema = z.object({
-  name: z.string().regex(NAME_RE, 'Solo minusculas, numeros y guiones, 3-32 caracteres'),
-  owner: z.string().max(255).nullable().optional(),
+  ownerUser: namePart('ownerUser'),
+  deviceLabel: namePart('deviceLabel'),
+  ownerName: z.string().max(128).nullable().optional(),
   platform: z.enum(['windows', 'android', 'linux']),
   tunnelMode: z.enum(['full', 'split']).optional(),
   notes: z.string().max(2000).nullable().optional(),
@@ -54,14 +57,14 @@ vpnDevicesRouter.post(
     // enrutar todo su trafico por la VPN; el resto va en tunel completo.
     const tunnelMode = input.tunnelMode ?? (input.platform === 'linux' ? 'split' : 'full');
     const device = await createDevice({
-      name: input.name,
-      owner: input.owner ?? null,
+      ownerUser: input.ownerUser,
+      deviceLabel: input.deviceLabel,
+      ownerName: input.ownerName ?? null,
       platform: input.platform,
       tunnelMode,
       notes: input.notes ?? null,
       certDays: input.certDays ?? null,
       renewAfterDays: input.renewAfterDays ?? null,
-      createdBy: req.auth!.sub,
     });
     await writeAudit(req, 'create', 'vpn_device', device.username, {
       platform: device.platform,

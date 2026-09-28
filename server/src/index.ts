@@ -19,7 +19,7 @@ import {
 import { logger } from './lib/logger.js';
 import { metricsMiddleware, registry } from './lib/metrics.js';
 import { purgeOldTokens } from './services/auth.js';
-import { regenerateDueCrls } from './services/pki.js';
+import { regenerateDueCrls, retireStaleRsaIntermediates } from './services/pki.js';
 import { APP_VERSION } from './version.js';
 
 const app = express();
@@ -128,6 +128,16 @@ async function main(): Promise<void> {
   } catch (err) {
     logger.fatal((err as Error).message);
     process.exit(1);
+  }
+
+  // Retira cualquier CA intermedia 'pending' generada en RSA con una version
+  // anterior del panel: ahora solo se admite ECDSA P-384. No-op si el modulo
+  // PKI todavia no esta configurado.
+  try {
+    const retired = await retireStaleRsaIntermediates();
+    if (retired) logger.warn({ retired }, 'CA(s) intermedia(s) RSA obsoletas retiradas');
+  } catch (err) {
+    logger.warn({ err }, 'no se pudo comprobar si hay CAs intermedias RSA obsoletas');
   }
 
   const server = app.listen(config.port, () => {

@@ -102,33 +102,42 @@ export async function userMetaTableExists(): Promise<boolean> {
 }
 
 /**
- * Comprueba si sql/panel-schema-vpn-pki.sql ya esta aplicada (columnas del
- * ciclo de vida de la CA intermedia: status, private_key_encrypted, ...). No
- * lanza: solo informa en el menu de administracion, igual que
- * `userMetaTableExists`.
+ * Comprueba si panel_pki_ca ya tiene el esquema de CLAUDE.md (una fila por
+ * intermedia, con `root_cert_pem`) en vez del esquema anterior (`role`,
+ * CA raiz como fila propia). No lanza: solo informa en el menu de
+ * administracion, igual que `userMetaTableExists`.
  */
 export async function pkiCaExtendedSchemaExists(): Promise<boolean> {
   const [rows] = await panelPool.query<RowDataPacket[]>(
     `SELECT COLUMN_NAME FROM information_schema.COLUMNS
-      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'panel_pki_ca' AND COLUMN_NAME = 'status'`,
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'panel_pki_ca' AND COLUMN_NAME = 'root_cert_pem'`,
   );
   return rows.length > 0;
 }
 
-/** Comprueba si sql/panel-schema-vpn-devices.sql ya esta aplicada (owner, tunnel_mode, ...). */
+/** Comprueba si panel_vpn_devices ya tiene el esquema de CLAUDE.md (owner_user, device_label, enabled...). */
 export async function vpnDevicesExtendedSchemaExists(): Promise<boolean> {
   const [rows] = await panelPool.query<RowDataPacket[]>(
     `SELECT COLUMN_NAME FROM information_schema.COLUMNS
-      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'panel_vpn_devices' AND COLUMN_NAME = 'owner'`,
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'panel_vpn_devices' AND COLUMN_NAME = 'owner_user'`,
   );
   return rows.length > 0;
 }
 
-/** Comprueba si sql/radius-schema-vpn-issuer.sql ya esta aplicada (vpn_certificates.ca_serial). */
+/** Comprueba si vpn_certificates ya tiene `ca_id` (modelo de CLAUDE.md) en vez de `ca_serial`. */
 export async function vpnCertificateIssuerColumnExists(): Promise<boolean> {
   const [rows] = await radiusPool.query<RowDataPacket[]>(
     `SELECT COLUMN_NAME FROM information_schema.COLUMNS
-      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'vpn_certificates' AND COLUMN_NAME = 'ca_serial'`,
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'vpn_certificates' AND COLUMN_NAME = 'ca_id'`,
+  );
+  return rows.length > 0;
+}
+
+/** Comprueba si panel_vpn_settings tiene aaa_id/est_url (correccion 4.5). */
+export async function vpnSettingsExtendedSchemaExists(): Promise<boolean> {
+  const [rows] = await panelPool.query<RowDataPacket[]>(
+    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'panel_vpn_settings' AND COLUMN_NAME = 'aaa_id'`,
   );
   return rows.length > 0;
 }

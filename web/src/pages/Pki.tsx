@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import {
+  Alert,
   Badge,
   Button,
   Code,
@@ -13,6 +14,7 @@ import {
 } from '@mantine/core';
 import { modals } from '@mantine/modals';
 import {
+  IconAlertTriangle,
   IconCertificate,
   IconDownload,
   IconRefresh,
@@ -347,6 +349,17 @@ export function PkiPage() {
               key={ca.id}
               style={{ borderTop: '1px solid var(--mantine-color-default-border)', paddingTop: 12 }}
             >
+              {ca.staleAlgorithm && (
+                <Alert
+                  mb="xs"
+                  color="orange"
+                  icon={<IconAlertTriangle size={16} />}
+                  title="CA obsoleta: generada en RSA"
+                >
+                  Esta intermedia se genero con una version anterior del panel (RSA) y ya no se
+                  admite: solo ECDSA P-384. Se ha retirado sola; genera una nueva.
+                </Alert>
+              )}
               <Group justify="space-between" wrap="wrap">
                 <Stack gap={4}>
                   <Group gap="xs">

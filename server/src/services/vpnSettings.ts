@@ -10,6 +10,8 @@ import { logger } from '../lib/logger.js';
  */
 export interface VpnSettings {
   vpnFqdn: string;
+  /** Identidad AAA que deben configurar los clientes para validar el certificado de FreeRADIUS. */
+  aaaId: string;
   poolStart: string;
   poolEnd: string;
   dns: string;
@@ -17,10 +19,13 @@ export interface VpnSettings {
   renewAfterDays: number;
   overlapHours: number;
   androidCertDays: number;
+  /** URL del endpoint EST (RFC 7030), pendiente de implementar. */
+  estUrl: string;
 }
 
 export const DEFAULT_VPN_SETTINGS: VpnSettings = {
   vpnFqdn: 'vpn.vlc.didev.es',
+  aaaId: 'CN=radius.vpn.vlc.didev.es',
   poolStart: '192.168.10.75',
   poolEnd: '192.168.10.99',
   dns: '',
@@ -28,6 +33,7 @@ export const DEFAULT_VPN_SETTINGS: VpnSettings = {
   renewAfterDays: 20,
   overlapHours: 48,
   androidCertDays: 365,
+  estUrl: 'https://pki.vlc.didev.es:8443',
 };
 
 const ipv4 = z.string().refine(isValidIpv4, 'Direccion IPv4 invalida');
@@ -41,6 +47,7 @@ const ipv4 = z.string().refine(isValidIpv4, 'Direccion IPv4 invalida');
 export const vpnSettingsSchema = z
   .object({
     vpnFqdn: z.string().min(1, 'vpnFqdn no puede estar vacio'),
+    aaaId: z.string().min(1, 'aaaId no puede estar vacio'),
     poolStart: ipv4,
     poolEnd: ipv4,
     dns: z.string().default(''),
@@ -48,6 +55,7 @@ export const vpnSettingsSchema = z
     renewAfterDays: z.number().int().positive(),
     overlapHours: z.number().int().positive(),
     androidCertDays: z.number().int().positive(),
+    estUrl: z.string().min(1, 'estUrl no puede estar vacio'),
   })
   .refine((s) => s.renewAfterDays < s.deviceCertDays, {
     message: 'renewAfterDays debe ser menor que deviceCertDays',
@@ -63,6 +71,7 @@ export function parseVpnSettingsRow(row: RowDataPacket | undefined): VpnSettings
   if (!row) return DEFAULT_VPN_SETTINGS;
   return vpnSettingsSchema.parse({
     vpnFqdn: row.vpn_fqdn,
+    aaaId: row.aaa_id ?? DEFAULT_VPN_SETTINGS.aaaId,
     poolStart: row.pool_start,
     poolEnd: row.pool_end,
     dns: row.dns ?? '',
@@ -70,6 +79,7 @@ export function parseVpnSettingsRow(row: RowDataPacket | undefined): VpnSettings
     renewAfterDays: Number(row.renew_after_days),
     overlapHours: Number(row.overlap_hours),
     androidCertDays: Number(row.android_cert_days),
+    estUrl: row.est_url ?? DEFAULT_VPN_SETTINGS.estUrl,
   });
 }
 
@@ -86,9 +96,7 @@ function isMissingTable(err: unknown): boolean {
 export async function getVpnSettings(): Promise<VpnSettings> {
   try {
     const [rows] = await panelPool.query<RowDataPacket[]>(
-      `SELECT vpn_fqdn, pool_start, pool_end, dns, device_cert_days, renew_after_days,
-              overlap_hours, android_cert_days
-         FROM panel_vpn_settings WHERE id = 1`,
+      `SELECT * FROM panel_vpn_settings WHERE id = 1`,
     );
     return parseVpnSettingsRow(rows[0]);
   } catch (err) {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import { webcrypto } from 'node:crypto';
 import test from 'node:test';
-import { RSA_SIGNING_ALGORITHM, generateRsaKeyPair, sha256Hex, x509 } from '../lib/x509.js';
+import { EC_P384_SIGNING_ALGORITHM, generateEcKeyPair, sha256Hex, x509 } from '../lib/x509.js';
 import { buildCrl, validateIntermediateImport } from './pki.js';
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -11,13 +12,13 @@ interface TestCa {
 }
 
 async function makeRootCa(): Promise<TestCa> {
-  const keys = await generateRsaKeyPair(2048);
+  const keys = await generateEcKeyPair('P-384');
   const cert = await x509.X509CertificateGenerator.createSelfSigned({
     name: 'CN=Test Root CA',
     keys,
     notBefore: new Date(Date.now() - DAY),
     notAfter: new Date(Date.now() + 3650 * DAY),
-    signingAlgorithm: RSA_SIGNING_ALGORITHM,
+    signingAlgorithm: EC_P384_SIGNING_ALGORITHM,
     extensions: [
       new x509.BasicConstraintsExtension(true, undefined, true),
       new x509.KeyUsagesExtension(
@@ -35,25 +36,50 @@ async function signIntermediate(
     notBefore?: Date;
     notAfter?: Date;
     basicConstraintsCa?: boolean;
+    pathLength?: number;
     keyUsage?: number;
+    eku?: (typeof x509.ExtendedKeyUsage)[keyof typeof x509.ExtendedKeyUsage][] | null;
+    curve?: 'P-256' | 'P-384';
+    rsa?: boolean;
   } = {},
 ): Promise<TestCa & { spkiSha256: string }> {
-  const keys = await generateRsaKeyPair(2048);
+  const keys = overrides.rsa
+    ? ((await webcrypto.subtle.generateKey(
+        {
+          name: 'RSASSA-PKCS1-v1_5',
+          modulusLength: 3072,
+          publicExponent: new Uint8Array([1, 0, 1]),
+          hash: 'SHA-256',
+        },
+        true,
+        ['sign', 'verify'],
+      )) as CryptoKeyPair)
+    : await generateEcKeyPair(overrides.curve ?? 'P-384');
+  const extensions = [
+    new x509.BasicConstraintsExtension(
+      overrides.basicConstraintsCa ?? true,
+      overrides.pathLength ?? 0,
+      true,
+    ),
+    new x509.KeyUsagesExtension(
+      overrides.keyUsage ?? x509.KeyUsageFlags.keyCertSign | x509.KeyUsageFlags.cRLSign,
+      true,
+    ),
+  ];
+  if (overrides.eku !== null) {
+    extensions.push(
+      new x509.ExtendedKeyUsageExtension(overrides.eku ?? [x509.ExtendedKeyUsage.clientAuth], true),
+    );
+  }
   const cert = await x509.X509CertificateGenerator.create({
     subject: 'CN=Test Intermediate CA',
     issuer: root.cert.subject,
     publicKey: keys.publicKey,
     signingKey: root.keys.privateKey,
-    signingAlgorithm: RSA_SIGNING_ALGORITHM,
+    signingAlgorithm: EC_P384_SIGNING_ALGORITHM,
     notBefore: overrides.notBefore ?? new Date(Date.now() - DAY),
     notAfter: overrides.notAfter ?? new Date(Date.now() + 365 * DAY),
-    extensions: [
-      new x509.BasicConstraintsExtension(overrides.basicConstraintsCa ?? true, undefined, true),
-      new x509.KeyUsagesExtension(
-        overrides.keyUsage ?? x509.KeyUsageFlags.keyCertSign | x509.KeyUsageFlags.cRLSign,
-        true,
-      ),
-    ],
+    extensions,
   });
   return { keys, cert, spkiSha256: sha256Hex(cert.publicKey.rawData) };
 }
@@ -62,7 +88,7 @@ const root = await makeRootCa();
 const otherRoot = await makeRootCa();
 const goodIntermediate = await signIntermediate(root);
 
-test('validateIntermediateImport: acepta una intermedia correctamente firmada', async () => {
+test('validateIntermediateImport: acepta una intermedia ECDSA P-384 correctamente firmada', async () => {
   await assert.doesNotReject(
     validateIntermediateImport({
       intermediateCert: goodIntermediate.cert,
@@ -106,6 +132,18 @@ test('validateIntermediateImport: rechaza sin BasicConstraints CA:true', async (
   );
 });
 
+test('validateIntermediateImport: rechaza BasicConstraints sin pathLenConstraint = 0', async () => {
+  const bad = await signIntermediate(root, { pathLength: 1 });
+  await assert.rejects(
+    validateIntermediateImport({
+      intermediateCert: bad.cert,
+      rootCert: root.cert,
+      expectedSpkiSha256: bad.spkiSha256,
+    }),
+    /pathLenConstraint/,
+  );
+});
+
 test('validateIntermediateImport: rechaza sin KeyUsage keyCertSign/cRLSign', async () => {
   const bad = await signIntermediate(root, { keyUsage: x509.KeyUsageFlags.digitalSignature });
   await assert.rejects(
@@ -115,6 +153,56 @@ test('validateIntermediateImport: rechaza sin KeyUsage keyCertSign/cRLSign', asy
       expectedSpkiSha256: bad.spkiSha256,
     }),
     /KeyUsage/,
+  );
+});
+
+test('validateIntermediateImport: rechaza sin ExtendedKeyUsage', async () => {
+  const bad = await signIntermediate(root, { eku: null });
+  await assert.rejects(
+    validateIntermediateImport({
+      intermediateCert: bad.cert,
+      rootCert: root.cert,
+      expectedSpkiSha256: bad.spkiSha256,
+    }),
+    /no tiene ExtendedKeyUsage/,
+  );
+});
+
+test('validateIntermediateImport: rechaza EKU con un uso distinto de clientAuth', async () => {
+  const bad = await signIntermediate(root, {
+    eku: [x509.ExtendedKeyUsage.clientAuth, x509.ExtendedKeyUsage.serverAuth],
+  });
+  await assert.rejects(
+    validateIntermediateImport({
+      intermediateCert: bad.cert,
+      rootCert: root.cert,
+      expectedSpkiSha256: bad.spkiSha256,
+    }),
+    /unicamente clientAuth/,
+  );
+});
+
+test('validateIntermediateImport: rechaza una clave ECDSA P-256 (exige P-384)', async () => {
+  const bad = await signIntermediate(root, { curve: 'P-256' });
+  await assert.rejects(
+    validateIntermediateImport({
+      intermediateCert: bad.cert,
+      rootCert: root.cert,
+      expectedSpkiSha256: bad.spkiSha256,
+    }),
+    /ECDSA P-384/,
+  );
+});
+
+test('validateIntermediateImport: rechaza una clave RSA (exige ECDSA P-384)', async () => {
+  const bad = await signIntermediate(root, { rsa: true });
+  await assert.rejects(
+    validateIntermediateImport({
+      intermediateCert: bad.cert,
+      rootCert: root.cert,
+      expectedSpkiSha256: bad.spkiSha256,
+    }),
+    /ECDSA P-384/,
   );
 });
 

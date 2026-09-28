@@ -43,11 +43,15 @@ import {
 import { formatBytes, formatDateTime, formatDuration } from '../lib/format';
 import { notifyError, notifyOk } from '../lib/notify';
 
+const STATUS_LABEL: Record<string, string> = {
+  active: 'activo',
+  disabled: 'desactivado',
+  decommissioned: 'dado de baja',
+};
 const STATUS_COLOR: Record<string, string> = {
-  pending: 'yellow',
   active: 'teal',
   disabled: 'gray',
-  revoked: 'red',
+  decommissioned: 'red',
 };
 
 const CERT_STATUS_COLOR: Record<string, string> = {
@@ -56,21 +60,25 @@ const CERT_STATUS_COLOR: Record<string, string> = {
   revoked: 'red',
 };
 
-const NAME_RE = /^[a-z0-9-]{3,32}$/;
+const NAME_PART_RE = /^[a-z0-9-]{2,32}$/;
 
 function CreateDeviceModal({ opened, onClose }: { opened: boolean; onClose: () => void }) {
   const create = useCreateVpnDevice();
-  const [name, setName] = useState('');
-  const [owner, setOwner] = useState('');
+  const [ownerUser, setOwnerUser] = useState('');
+  const [deviceLabel, setDeviceLabel] = useState('');
+  const [ownerName, setOwnerName] = useState('');
   const [platform, setPlatform] = useState<DevicePlatform>('windows');
   const [tunnelMode, setTunnelMode] = useState<TunnelMode | ''>('');
   const [notes, setNotes] = useState('');
   const [certDays, setCertDays] = useState<number | ''>('');
   const [renewAfterDays, setRenewAfterDays] = useState<number | ''>('');
 
+  const valid = NAME_PART_RE.test(ownerUser) && NAME_PART_RE.test(deviceLabel);
+
   const reset = () => {
-    setName('');
-    setOwner('');
+    setOwnerUser('');
+    setDeviceLabel('');
+    setOwnerName('');
     setPlatform('windows');
     setTunnelMode('');
     setNotes('');
@@ -80,8 +88,9 @@ function CreateDeviceModal({ opened, onClose }: { opened: boolean; onClose: () =
 
   const submit = async () => {
     const input: CreateVpnDeviceInput = {
-      name: name.trim(),
-      owner: owner.trim() || null,
+      ownerUser: ownerUser.trim(),
+      deviceLabel: deviceLabel.trim(),
+      ownerName: ownerName.trim() || null,
       platform,
       tunnelMode: tunnelMode || undefined,
       notes: notes.trim() || null,
@@ -101,16 +110,37 @@ function CreateDeviceModal({ opened, onClose }: { opened: boolean; onClose: () =
   return (
     <Modal opened={opened} onClose={onClose} title="Nuevo dispositivo VPN">
       <Stack>
+        <Group grow>
+          <TextInput
+            label="Usuario (owner_user)"
+            description="Identificador corto de la persona: minusculas, numeros, guiones (2-32)"
+            placeholder="juan"
+            value={ownerUser}
+            onChange={(e) => setOwnerUser(e.currentTarget.value.toLowerCase())}
+            error={ownerUser && !NAME_PART_RE.test(ownerUser) ? 'Formato invalido' : undefined}
+            required
+          />
+          <TextInput
+            label="Etiqueta del dispositivo"
+            description="minusculas, numeros, guiones (2-32)"
+            placeholder="laptop"
+            value={deviceLabel}
+            onChange={(e) => setDeviceLabel(e.currentTarget.value.toLowerCase())}
+            error={deviceLabel && !NAME_PART_RE.test(deviceLabel) ? 'Formato invalido' : undefined}
+            required
+          />
+        </Group>
+        <Text size="xs" c="dimmed">
+          Usuario RADIUS resultante:{' '}
+          <span className="mono">
+            vpn-{ownerUser || '…'}-{deviceLabel || '…'}
+          </span>
+        </Text>
         <TextInput
-          label="Nombre"
-          description="Se le antepone vpn-; solo minusculas, numeros y guiones (3-32)"
-          placeholder="laptop-juan"
-          value={name}
-          onChange={(e) => setName(e.currentTarget.value.toLowerCase())}
-          error={name && !NAME_RE.test(name) ? 'Formato invalido' : undefined}
-          required
+          label="Nombre del dueno (opcional)"
+          value={ownerName}
+          onChange={(e) => setOwnerName(e.currentTarget.value)}
         />
-        <TextInput label="Dueno" value={owner} onChange={(e) => setOwner(e.currentTarget.value)} />
         <Group grow>
           <Select
             label="Plataforma"
@@ -164,7 +194,7 @@ function CreateDeviceModal({ opened, onClose }: { opened: boolean; onClose: () =
           <Button variant="default" onClick={onClose}>
             Cancelar
           </Button>
-          <Button onClick={submit} loading={create.isPending} disabled={!NAME_RE.test(name)}>
+          <Button onClick={submit} loading={create.isPending} disabled={!valid}>
             Crear
           </Button>
         </Group>
@@ -298,7 +328,7 @@ function DeviceDrawer({ username, onClose }: { username: string | null; onClose:
           <Title order={4}>{username}</Title>
           {device && (
             <Badge color={STATUS_COLOR[device.status]} variant="light">
-              {device.status}
+              {STATUS_LABEL[device.status]}
             </Badge>
           )}
         </Group>
@@ -312,9 +342,9 @@ function DeviceDrawer({ username, onClose }: { username: string | null; onClose:
         <Stack gap="md">
           <Group justify="space-between">
             <Switch
-              label={device.status === 'disabled' ? 'Desactivado' : 'Activo'}
-              checked={device.status !== 'disabled'}
-              disabled={device.status === 'revoked'}
+              label={device.enabled ? 'Activo' : 'Desactivado'}
+              checked={device.enabled}
+              disabled={device.status === 'decommissioned'}
               onChange={async (e) => {
                 try {
                   await setEnabled.mutateAsync({
@@ -329,7 +359,7 @@ function DeviceDrawer({ username, onClose }: { username: string | null; onClose:
                 }
               }}
             />
-            {device.status !== 'revoked' && (
+            {device.status !== 'decommissioned' && (
               <Button
                 size="xs"
                 color="red"
@@ -345,7 +375,8 @@ function DeviceDrawer({ username, onClose }: { username: string | null; onClose:
           <Card padding="sm">
             <Stack gap={4}>
               <Text size="sm">
-                <b>Dueno:</b> {device.owner ?? '—'}
+                <b>Dueno:</b> {device.ownerName ?? device.ownerUser} ({device.ownerUser}) ·{' '}
+                <b>Etiqueta:</b> {device.deviceLabel}
               </Text>
               <Text size="sm">
                 <b>Plataforma:</b> {device.platform} · <b>Tunel:</b> {device.tunnelMode}
@@ -365,7 +396,7 @@ function DeviceDrawer({ username, onClose }: { username: string | null; onClose:
             </Stack>
           </Card>
 
-          {device.status !== 'revoked' && (
+          {device.status !== 'decommissioned' && (
             <Group>
               <Button
                 size="xs"
@@ -551,13 +582,13 @@ export function VpnDevicesPage() {
                   onClick={() => setOpenUsername(d.username)}
                 >
                   <Table.Td fw={550}>{d.username}</Table.Td>
-                  <Table.Td>{d.owner ?? '—'}</Table.Td>
+                  <Table.Td>{d.ownerName ?? d.ownerUser}</Table.Td>
                   <Table.Td>{d.platform}</Table.Td>
                   <Table.Td>{d.tunnelMode}</Table.Td>
                   <Table.Td className="mono">{d.framedIp ?? '—'}</Table.Td>
                   <Table.Td>
                     <Badge size="sm" variant="light" color={STATUS_COLOR[d.status]}>
-                      {d.status}
+                      {STATUS_LABEL[d.status]}
                     </Badge>
                   </Table.Td>
                 </Table.Tr>
