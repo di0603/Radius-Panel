@@ -15,6 +15,7 @@ import {
   RENEW_MIN_INTERVAL_HOURS,
   claimEnrollToken,
   enrollDevice,
+  type EstRejection,
   getStatus,
   renewDevice,
 } from './est.js';
@@ -218,6 +219,13 @@ function panelDispatch(db: FakeDb): QueryDispatch {
       const match = db.device && db.device.username === p.u ? [db.device] : [];
       return [match, []];
     }
+    if (sql.includes('SET used_at = NULL')) {
+      // releaseEnrollToken: contrapartida de la reclamacion, usada por
+      // enrollDevice cuando firmar/insertar falla despues de reclamar.
+      const tok = db.tokens.get(String(p.hash));
+      if (tok && tok.username === p.u) tok.used_at = null;
+      return [{}, []];
+    }
     if (sql.startsWith('UPDATE panel_vpn_enroll_tokens')) {
       const tok = db.tokens.get(String(p.hash));
       const ok = !!tok && tok.username === p.u && !tok.used_at && Date.parse(tok.expires_at) > Date.now();
@@ -234,21 +242,16 @@ function panelDispatch(db: FakeDb): QueryDispatch {
 function radiusDispatch(db: FakeDb): QueryDispatch {
   return (sql, params) => {
     const p = (params ?? {}) as Record<string, unknown>;
+    if (sql.includes('FROM vpn_certificates WHERE username')) {
+      // Version bloqueada usada por renewDevice dentro de su transaccion
+      // (ver el mutex de installFakeDb): tanto la de un solo serial como la
+      // de todo el username devuelven la misma foto de db.certificates.
+      const rows = [...db.certificates.values()].filter((c) => c.username === p.u);
+      return [rows, []];
+    }
     if (sql.includes('FROM vpn_certificates WHERE serial')) {
       const row = db.certificates.get(String(p.serial));
       return [row ? [row] : [], []];
-    }
-    if (sql.includes('SELECT spki_sha256 FROM vpn_certificates')) {
-      const rows = [...db.certificates.values()]
-        .filter((c) => c.username === p.u)
-        .map((c) => ({ spki_sha256: c.spki_sha256 }));
-      return [rows, []];
-    }
-    if (sql.includes('SELECT created_at FROM vpn_certificates')) {
-      const rows = [...db.certificates.values()]
-        .filter((c) => c.username === p.u)
-        .sort((a, b) => b.created_at.localeCompare(a.created_at));
-      return [rows.length ? [rows[0]] : [], []];
     }
     if (sql.startsWith('INSERT INTO vpn_certificates')) {
       const row: FakeCertRow = {
@@ -279,9 +282,69 @@ function radiusDispatch(db: FakeDb): QueryDispatch {
   };
 }
 
+/**
+ * Mutex FIFO por clave: simula el bloqueo de filas de un `SELECT ... FOR
+ * UPDATE` real dentro de una transaccion. `acquire(key)` no se resuelve
+ * hasta que el titular anterior de esa clave llama a la funcion de
+ * liberacion que le devuelve -- asi el test de renovaciones concurrentes
+ * puede comprobar que la segunda transaccion ve el estado que dejo la
+ * primera, no uno obsoleto.
+ */
+function createKeyedMutex(): (key: string) => Promise<() => void> {
+  const chains = new Map<string, Promise<void>>();
+  return (key: string) => {
+    const previous = chains.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    chains.set(
+      key,
+      previous.then(() => held),
+    );
+    return previous.then(() => release);
+  };
+}
+
+/**
+ * Instala los mocks de panelPool/radiusPool.query (como antes) y ademas
+ * radiusPool.getConnection, que renewDevice usa para su transaccion. La
+ * conexion falsa comparte el mismo `db` en memoria; su `SELECT ... WHERE
+ * username ... FOR UPDATE` pasa por el mutex de arriba para que dos
+ * renovaciones concurrentes del mismo dispositivo se serialicen igual que en
+ * MySQL de verdad.
+ */
 function installFakeDb(db: FakeDb): void {
   mock.method(pools.panelPool, 'query', panelDispatch(db) as never);
-  mock.method(pools.radiusPool, 'query', radiusDispatch(db) as never);
+  const dispatch = radiusDispatch(db);
+  mock.method(pools.radiusPool, 'query', dispatch as never);
+
+  const acquire = createKeyedMutex();
+  mock.method(
+    pools.radiusPool,
+    'getConnection',
+    (async () => {
+      let unlock: (() => void) | null = null;
+      return {
+        query: async (sql: string, params?: Record<string, unknown>) => {
+          if (sql.includes('FROM vpn_certificates WHERE username') && sql.includes('FOR UPDATE')) {
+            unlock = await acquire(String(params?.u));
+          }
+          return dispatch(sql, params);
+        },
+        beginTransaction: async () => {},
+        commit: async () => {
+          unlock?.();
+          unlock = null;
+        },
+        rollback: async () => {
+          unlock?.();
+          unlock = null;
+        },
+        release: () => {},
+      };
+    }) as unknown as typeof pools.radiusPool.getConnection,
+  );
 }
 
 function addToken(db: FakeDb, plain: string, opts: { username?: string; expiresInMs?: number } = {}): void {
@@ -340,7 +403,7 @@ test('enrollDevice: rechaza un token ya usado', async () => {
     const { csrPem } = await makeDeviceCert(intermediateA, db.device!.username);
     await assert.rejects(
       enrollDevice({ username: db.device!.username, token: 'usado', csrBody: csrPem }),
-      /Token de alta invalido/,
+      /Dispositivo o token de alta invalidos/,
     );
   } finally {
     mock.restoreAll();
@@ -355,7 +418,7 @@ test('enrollDevice: rechaza un token caducado', async () => {
     const { csrPem } = await makeDeviceCert(intermediateA, db.device!.username);
     await assert.rejects(
       enrollDevice({ username: db.device!.username, token: 'caducado', csrBody: csrPem }),
-      /Token de alta invalido/,
+      /Dispositivo o token de alta invalidos/,
     );
   } finally {
     mock.restoreAll();
@@ -370,8 +433,96 @@ test('enrollDevice: rechaza un token de otro dispositivo', async () => {
     const { csrPem } = await makeDeviceCert(intermediateA, db.device!.username);
     await assert.rejects(
       enrollDevice({ username: db.device!.username, token: 'de-otro', csrBody: csrPem }),
-      /Token de alta invalido/,
+      /Dispositivo o token de alta invalidos/,
     );
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test('enrollDevice: dispositivo inexistente y token incorrecto responden con el mismo mensaje', async () => {
+  // El motivo real (EstRejection.reason) es distinto -- solo queda en la
+  // auditoria -- pero el error que ve el cliente tiene que ser identico en
+  // los dos casos, para no poder usar simpleenroll a modo de oraculo y
+  // averiguar que usernames existen.
+  const dbUnknownDevice = makeFakeDb({ device: null });
+  installFakeDb(dbUnknownDevice);
+  let unknownDeviceError: EstRejection;
+  try {
+    const { csrPem } = await makeDeviceCert(intermediateA, 'vpn-no-existe');
+    try {
+      await enrollDevice({ username: 'vpn-no-existe', token: 'lo-que-sea', csrBody: csrPem });
+      assert.fail('deberia haber rechazado');
+    } catch (err) {
+      unknownDeviceError = err as EstRejection;
+    }
+  } finally {
+    mock.restoreAll();
+  }
+
+  const dbWrongToken = makeFakeDb();
+  addToken(dbWrongToken, 'el-correcto');
+  installFakeDb(dbWrongToken);
+  let wrongTokenError: EstRejection;
+  try {
+    const { csrPem } = await makeDeviceCert(intermediateA, dbWrongToken.device!.username);
+    try {
+      await enrollDevice({ username: dbWrongToken.device!.username, token: 'el-incorrecto', csrBody: csrPem });
+      assert.fail('deberia haber rechazado');
+    } catch (err) {
+      wrongTokenError = err as EstRejection;
+    }
+  } finally {
+    mock.restoreAll();
+  }
+
+  assert.equal(unknownDeviceError!.apiError.status, wrongTokenError!.apiError.status);
+  assert.equal(unknownDeviceError!.apiError.message, wrongTokenError!.apiError.message);
+  // ... pero el motivo real que se audita si es distinto.
+  assert.equal(unknownDeviceError!.reason, 'dispositivo_no_encontrado');
+  assert.equal(wrongTokenError!.reason, 'token_invalido');
+});
+
+test('enrollDevice: rechaza un CSR con firma invalida sin gastar el token', async () => {
+  const db = makeFakeDb();
+  addToken(db, 'sin-gastar');
+  installFakeDb(db);
+  try {
+    const { csrPem } = await makeDeviceCert(intermediateA, db.device!.username);
+    // Corrompe el ultimo byte del CSR en DER (parte de la firma, el ultimo
+    // campo de CertificationRequest): sigue siendo un PKCS10 valido en
+    // cuanto a formato, pero la firma ya no verifica.
+    const der = Buffer.from(Buffer.from(csrPem.replace(/-----[^-]+-----|\s/g, ''), 'base64'));
+    der[der.length - 1] = der[der.length - 1]! ^ 0xff;
+
+    await assert.rejects(
+      enrollDevice({ username: db.device!.username, token: 'sin-gastar', csrBody: der.toString('base64') }),
+      /firma del CSR/,
+    );
+
+    // El token sigue sin usar: se puede reintentar con un CSR valido.
+    const { csrPem: goodCsr } = await makeDeviceCert(intermediateA, db.device!.username);
+    const result = await enrollDevice({ username: db.device!.username, token: 'sin-gastar', csrBody: goodCsr });
+    assert.match(result.serial, /^[0-9a-f]{32}$/);
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test('enrollDevice: si falla la firma tras reclamar el token (sin CA activa), lo libera para poder reintentar', async () => {
+  const db = makeFakeDb({ activeCaId: null });
+  addToken(db, 'reintentable');
+  installFakeDb(db);
+  try {
+    const { csrPem } = await makeDeviceCert(intermediateA, db.device!.username);
+    await assert.rejects(
+      enrollDevice({ username: db.device!.username, token: 'reintentable', csrBody: csrPem }),
+      /CA intermedia activa/,
+    );
+
+    // El token sigue disponible: se puede reclamar otra vez sin generar uno nuevo.
+    const claimedAgain = await claimEnrollToken(db.device!.username, 'reintentable');
+    assert.equal(claimedAgain, true);
   } finally {
     mock.restoreAll();
   }
@@ -568,6 +719,54 @@ test('renewDevice: rechaza si el dispositivo esta deshabilitado', async () => {
   }
 });
 
+test('renewDevice: rechaza si el CN del certificado presentado no coincide con el username de su fila', async () => {
+  const db = makeFakeDb();
+  const c = await makeDeviceCert(intermediateA, db.device!.username); // CN real = vpn-juan-laptop
+  // La fila en vpn_certificates dice que es de OTRO dispositivo (dato
+  // heredado, error de correlacion...): mismo serial, mismo emisor, pero
+  // username distinto del CN que lleva el certificado de verdad.
+  addCertificate(db, c.cert, { username: 'vpn-otro-dispositivo' });
+  installFakeDb(db);
+  try {
+    const fresh = await makeDeviceCert(intermediateA, db.device!.username);
+    await assert.rejects(
+      renewDevice({ clientCertDer: c.cert.rawData, csrBody: fresh.csrPem }),
+      /CN del certificado presentado/,
+    );
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test('renewDevice: dos renovaciones concurrentes del mismo dispositivo, solo una tiene exito', async () => {
+  const db = makeFakeDb();
+  const old = await makeDeviceCert(intermediateA, db.device!.username);
+  addCertificate(db, old.cert);
+  installFakeDb(db);
+  try {
+    const csrA = await makeDeviceCert(intermediateA, db.device!.username);
+    const csrB = await makeDeviceCert(intermediateA, db.device!.username);
+
+    const results = await Promise.allSettled([
+      renewDevice({ clientCertDer: old.cert.rawData, csrBody: csrA.csrPem }),
+      renewDevice({ clientCertDer: old.cert.rawData, csrBody: csrB.csrPem }),
+    ]);
+
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    assert.equal(fulfilled.length, 1);
+    assert.equal(rejected.length, 1);
+    // La perdedora bloquea hasta que la ganadora confirma y entonces ve el
+    // certificado presentado ya 'superseded' -- no un fallo de otro tipo
+    // (p.ej. clave reutilizada), lo que demostraria que no se bloqueo.
+    assert.match(String((rejected[0]!.reason as Error).message), /no esta activo/);
+
+    assert.equal([...db.certificates.values()].filter((c) => c.status === 'active').length, 1);
+  } finally {
+    mock.restoreAll();
+  }
+});
+
 /* ------------------------------------ status ------------------------------------ */
 
 test('getStatus: informa de la caducidad y si toca renovar', async () => {
@@ -582,6 +781,30 @@ test('getStatus: informa de la caducidad y si toca renovar', async () => {
     const status = await getStatus(c.cert.rawData);
     assert.equal(status.username, db.device!.username);
     assert.equal(status.renewDue, true); // renew_after_days=20 y ya han pasado 25
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test('getStatus: rechaza un certificado autofirmado con el serial de uno valido', async () => {
+  const db = makeFakeDb();
+  const real = await makeDeviceCert(intermediateA, db.device!.username);
+  addCertificate(db, real.cert);
+  installFakeDb(db);
+  try {
+    // Mismo serial que el legitimo, pero AUTOFIRMADO (no por intermediateA):
+    // si /status no comprobara la cadena (solo el estado 'active' de la
+    // fila, como antes de esta correccion) pasaria igual.
+    const forgedKeys = await generateEcKeyPair('P-256');
+    const forged = await x509.X509CertificateGenerator.createSelfSigned({
+      serialNumber: real.cert.serialNumber,
+      name: `CN=${db.device!.username}`,
+      keys: forgedKeys,
+      notBefore: new Date(Date.now() - DAY),
+      notAfter: new Date(Date.now() + 30 * DAY),
+      signingAlgorithm: { name: 'ECDSA', hash: 'SHA-256' },
+    });
+    await assert.rejects(getStatus(forged.rawData), /cadena de confianza/);
   } finally {
     mock.restoreAll();
   }

@@ -242,6 +242,42 @@ Este proyecto usa versionado semantico.
   al iniciar.
 - **Calidad**: ESLint integrado en el CI y tests del cifrado y del flujo TOTP.
 
+### Corregido
+
+- **EST (correccion)**:
+  - `GET /.well-known/est/status` validaba unicamente que el certificado
+    presentado tuviera una fila `active`, sin comprobar fechas ni la firma
+    contra su CA: un certificado autofirmado con el serial de uno legitimo
+    pasaba igual. Ahora reutiliza la misma validacion que `simplereenroll`
+    (fechas, cadena hasta la CA de su `ca_id`, estado `active` y que el CN
+    del propio certificado coincida con el username de su fila), extraida a
+    una funcion comun.
+  - `simplereenroll` es ahora atomica: localiza y bloquea (`SELECT ... FOR
+    UPDATE`) las filas del dispositivo dentro de una transaccion de
+    `radiusPool`, y el limite de 12h y la reutilizacion de clave se
+    comprueban contra esa lectura bloqueada, no contra una lectura anterior
+    sin bloquear. Dos renovaciones concurrentes del mismo dispositivo ya no
+    pueden tener exito las dos (antes, una condicion de carrera podia dejar
+    dos certificados `active` para el mismo dispositivo).
+  - `simpleenroll` valida el CSR (formato, firma, CN) antes de tocar el
+    token de alta, y si firmar o insertar el certificado falla despues de
+    reclamarlo, el token se libera (`releaseEnrollToken`) para poder
+    reintentar sin generar uno nuevo — panel_vpn_enroll_tokens (`radius_panel`)
+    y vpn_certificates (`radius`) siguen en pools distintos, asi que no hay
+    una unica transaccion SQL que cubra las dos escrituras; esto consigue el
+    mismo efecto practico por compensacion. Un dispositivo desconocido y un
+    token incorrecto responden ahora con el mismo 401 (el motivo real solo
+    queda en la auditoria), para que `simpleenroll` no sirva para averiguar
+    que usernames de dispositivo existen.
+  - Los dos pools de MySQL (`radiusPool`, `panelPool`) fijan ahora
+    `timezone: 'Z'` y `SET time_zone = '+00:00'` en cada conexion nueva, y el
+    modulo VPN ya no usa `NOW()` (siempre `UTC_TIMESTAMP()`): sin esto, un
+    servidor con el proceso o MySQL en huso horario distinto de UTC escribia
+    mal las fechas de `vpn_certificates`/tokens de alta/descargas Android.
+    Alcance: como los pools son compartidos por toda la aplicacion, la
+    sesion de MySQL pasa a ser UTC tambien para los modulos no-VPN
+    (usuarios RADIUS, auditoria, informes).
+
 ### Cambiado
 
 - Rediseno completo de la interfaz: tarjetas, tablas, graficas y formularios

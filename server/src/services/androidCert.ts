@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { ResultSetHeader, RowDataPacket } from 'mysql2';
 import { panelPool, radiusPool } from '../db/pools.js';
+import { formatUtcDateTime } from '../lib/dates.js';
 import { randomPassword, randomToken, sha256 } from '../lib/crypto.js';
 import { conflict, forbidden, notFound, unauthorized } from '../lib/http.js';
 import { isIpv4InCidr, isIpv4InRange } from '../lib/ipv4.js';
@@ -109,7 +110,7 @@ export async function issueAndroidCertificate(
         tokenSha256: sha256(downloadToken),
         p12: encryptAndroidP12(p12.toString('base64')),
         createdBy,
-        expiresAt,
+        expiresAt: formatUtcDateTime(expiresAt),
       },
     );
   } catch (err) {

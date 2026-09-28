@@ -540,7 +540,7 @@ export async function regenerateDueCrls(withinDays = 1): Promise<number> {
     [rows] = await panelPool.query<RowDataPacket[]>(
       `SELECT id FROM panel_pki_ca
         WHERE status IN ('active', 'retiring')
-          AND (crl_next_update IS NULL OR crl_next_update <= DATE_ADD(NOW(), INTERVAL :withinDays DAY))`,
+          AND (crl_next_update IS NULL OR crl_next_update <= DATE_ADD(UTC_TIMESTAMP(), INTERVAL :withinDays DAY))`,
       { withinDays },
     );
   } catch (err) {

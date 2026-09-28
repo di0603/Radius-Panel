@@ -1,12 +1,25 @@
 import mysql from 'mysql2/promise';
 import type { RowDataPacket } from 'mysql2';
 import { config } from '../config.js';
+import { logger } from '../lib/logger.js';
 
+/**
+ * mysql2 formatea los `Date` de JS que se pasan como parametro con el uso
+ * horario "local" del proceso, no UTC, salvo que se le diga lo contrario
+ * (comprobado: sin esto, `new Date('2024-01-01T00:00:00Z')` se escribe como
+ * '2024-01-01 01:00:00' en un proceso con TZ=Europe/Madrid). El modulo VPN
+ * necesita que vpn_certificates, panel_vpn_enroll_tokens y
+ * panel_vpn_android_downloads esten siempre en UTC (FreeRADIUS y los propios
+ * clientes EST comparan con UTC_TIMESTAMP()), asi que `timezone: 'Z'` fuerza
+ * ese formateo del lado del cliente para los dos pools -- no solo para el
+ * modulo VPN, ya que ambos son compartidos por toda la aplicacion.
+ */
 const common = {
   waitForConnections: true,
   connectionLimit: config.dbPoolSize,
   namedPlaceholders: true,
   dateStrings: true as const,
+  timezone: 'Z' as const,
 };
 
 /** Pool contra la base de datos de FreeRADIUS (radcheck, radacct, nas, ...). */
@@ -14,6 +27,30 @@ export const radiusPool = mysql.createPool({ ...config.radiusDb, ...common });
 
 /** Pool contra la base de datos propia del panel (panel_admins, panel_audit_log). */
 export const panelPool = mysql.createPool({ ...config.panelDb, ...common });
+
+/**
+ * Ademas de `timezone: 'Z'` (que solo controla como formatea mysql2 los
+ * `Date` de JS), fija tambien el `time_zone` de la SESION de MySQL a UTC en
+ * cuanto se abre cada conexion fisica del pool: asi NOW()/UTC_TIMESTAMP() y
+ * las comparaciones de fecha en SQL ven UTC igual, sea cual sea el huso
+ * horario configurado en el propio servidor MySQL.
+ *
+ * mysql2 emite 'connection' con la conexion "cruda" (estilo callback) del
+ * pool interno, no con el wrapper de promesas -- de ahi el cast y el uso de
+ * un callback en vez de `await`.
+ */
+function forceUtcSession(pool: mysql.Pool): void {
+  pool.on('connection', (connection) => {
+    (connection as unknown as { query: (sql: string, cb: (err: Error | null) => void) => void }).query(
+      "SET time_zone = '+00:00'",
+      (err) => {
+        if (err) logger.error({ err }, '[db] no se ha podido fijar time_zone en una conexion nueva');
+      },
+    );
+  });
+}
+forceUtcSession(radiusPool);
+forceUtcSession(panelPool);
 
 export async function assertDbConnectivity(): Promise<void> {
   await radiusPool.query('SELECT 1');

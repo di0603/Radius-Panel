@@ -155,18 +155,15 @@ function setUpMockDb() {
     throw new Error(`panelPool.query no esperado: ${sql}`);
   }) as never);
 
-  mock.method(pools.radiusPool, 'query', ((sql: string, params?: unknown) => {
+  function radiusDispatch(sql: string, params?: unknown) {
     const p = (params ?? {}) as Record<string, unknown>;
+    if (sql.includes('FROM vpn_certificates WHERE username')) {
+      // Version bloqueada que usa renewDevice dentro de su transaccion.
+      return [[...certificates.values()].filter((c) => c.username === p.u), []];
+    }
     if (sql.includes('FROM vpn_certificates WHERE serial')) {
       const row = certificates.get(String(p.serial));
       return [row ? [row] : [], []];
-    }
-    if (sql.includes('SELECT spki_sha256 FROM vpn_certificates')) {
-      return [[...certificates.values()].filter((c) => c.username === p.u).map((c) => ({ spki_sha256: c.spki_sha256 })), []];
-    }
-    if (sql.includes('SELECT created_at FROM vpn_certificates')) {
-      const rows = [...certificates.values()].filter((c) => c.username === p.u).sort((a, b) => b.created_at.localeCompare(a.created_at));
-      return [rows.length ? [rows[0]] : [], []];
     }
     if (sql.startsWith('INSERT INTO vpn_certificates')) {
       const row: CertRow = {
@@ -193,7 +190,20 @@ function setUpMockDb() {
       return [{}, []];
     }
     throw new Error(`radiusPool.query no esperado: ${sql}`);
-  }) as never);
+  }
+
+  mock.method(pools.radiusPool, 'query', radiusDispatch as never);
+  mock.method(
+    pools.radiusPool,
+    'getConnection',
+    (async () => ({
+      query: async (sql: string, params?: unknown) => radiusDispatch(sql, params),
+      beginTransaction: async () => {},
+      commit: async () => {},
+      rollback: async () => {},
+      release: () => {},
+    })) as unknown as typeof pools.radiusPool.getConnection,
+  );
 
   return {
     tokens,

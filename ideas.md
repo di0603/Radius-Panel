@@ -272,17 +272,23 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
 - [x] **EST (RFC 7030)** para alta y renovación automática de dispositivos:
   listener HTTPS propio (`EST_PORT`, separado de la API/nginx porque necesita
   TLS mutuo real), TLS 1.2 mínimo y solo cifrados ECDHE+AEAD. `GET cacerts`
-  sin login; `POST simpleenroll` autenticado con HTTP Basic (usuario =
-  dispositivo, contraseña = token de alta, reclamado de forma atómica antes
-  de firmar para que no se pueda usar dos veces en paralelo); `POST
+  sin login; `POST simpleenroll` valida el CSR (formato, firma, CN) antes de
+  tocar el token de alta, reclamado de forma atómica (y liberado si firmar o
+  insertar falla después); dispositivo desconocido y token incorrecto
+  responden con el mismo 401 (el motivo real solo va a auditoría). `POST
   simplereenroll` autenticado por el certificado de cliente de la propia
   conexión mTLS, con una cadena de validaciones (serie conocida, no caducado,
   firma de la CA que según la base de datos lo emitió, no revocado, estado
-  activo, dispositivo habilitado, CN del CSR coincide, firma del CSR válida,
-  clave no reutilizada, límite de frecuencia de 12h) antes de emitir la
-  renovación y pasar el certificado viejo a `superseded` con solapamiento en
-  vez de revocarlo en el acto. Errores sin detalle interno en la respuesta,
-  con auditoría completa y métricas Prometheus por motivo de rechazo. Ver el
+  activo, CN del propio certificado coincide con el dispositivo de su fila,
+  dispositivo habilitado, CN del CSR coincide, firma del CSR válida, clave no
+  reutilizada, límite de frecuencia de 12h) antes de emitir la renovación y
+  pasar el certificado viejo a `superseded` con solapamiento en vez de
+  revocarlo en el acto — todo (localizar/bloquear filas, comprobar límites,
+  insertar, marcar `superseded`) en una única transacción de `radiusPool`,
+  para que dos renovaciones concurrentes del mismo dispositivo no puedan
+  tener éxito las dos. `GET status` comparte esa misma validación del
+  certificado presentado. Errores sin detalle interno en la respuesta, con
+  auditoría completa y métricas Prometheus por motivo de rechazo. Ver el
   detalle completo de cada validación en el CHANGELOG.
 - [x] **Paquete de conexión descargable** desde la ficha del dispositivo
   (Windows y Linux/VPS; Android todavía se configura a mano en la app de

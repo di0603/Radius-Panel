@@ -117,7 +117,9 @@ function setUpMockDb(overrides: { enabled?: number; platform?: string } = {}) {
         serial: String(p.serial),
         token_sha256: String(p.tokenSha256),
         p12_encrypted: String(p.p12),
-        expires_at: toSqlDateTime(p.expiresAt as Date),
+        // insertAndroidDownload ya envia expires_at formateado a UTC como
+        // texto "YYYY-MM-DD HH:MM:SS" (ver lib/dates.ts), no un `Date`.
+        expires_at: String(p.expiresAt),
         downloaded_at: null,
       });
       return [{ insertId: 1 }, []];
