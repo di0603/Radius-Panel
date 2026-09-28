@@ -277,6 +277,16 @@ Este proyecto usa versionado semantico.
     Alcance: como los pools son compartidos por toda la aplicacion, la
     sesion de MySQL pasa a ser UTC tambien para los modulos no-VPN
     (usuarios RADIUS, auditoria, informes).
+- **`sql/panel-schema-vpn-4.5.sql` (correccion 8.6)**: en una instalacion
+  nueva, `panel-schema-vpn.sql` ya crea `panel_vpn_enroll_tokens` con
+  `token_sha256` desde el principio y sin `token_hash` (ese nombre solo
+  existio en el esquema anterior a la correccion 4.5), asi que el `UPDATE
+  ... SET token_sha256 = token_hash` fallaba con `Unknown column
+  'token_hash' in 'WHERE'` en cualquier servidor que nunca tuvo esa
+  columna. Ahora comprueba antes en `information_schema.COLUMNS` y solo
+  prepara/ejecuta ese `UPDATE` si `token_hash` existe de verdad (si no,
+  ejecuta un `SELECT 1` inocuo via `PREPARE`/`EXECUTE`); sigue sin borrar
+  nada.
 
 ### Cambiado
 

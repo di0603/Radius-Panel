@@ -333,6 +333,12 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
   Windows/Linux (crítico si caducan en <3 días o no tienen certificado
   activo), certificados Android que caducan en <30 días, CA intermedia que
   caduca en <90 días, pico de rechazos EST en la última hora.
+- [x] **Corrección 8.6**: `sql/panel-schema-vpn-4.5.sql` fallaba con `Unknown
+  column 'token_hash'` en cualquier instalación nueva (`panel-schema-vpn.sql`
+  ya crea `panel_vpn_enroll_tokens` con `token_sha256` desde el principio).
+  El `UPDATE` que copiaba el hash ahora comprueba antes en
+  `information_schema.COLUMNS` y solo se ejecuta (vía `PREPARE`/`EXECUTE`) si
+  `token_hash` existe de verdad.
 - [ ] Página de ajustes del módulo VPN (FQDN, identidad AAA, rango de IPs, días
   de vigencia/renovación, URL de EST, red LAN para la descarga Android, umbral
   de alerta de rechazos EST).
