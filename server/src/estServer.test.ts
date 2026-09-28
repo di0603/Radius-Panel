@@ -26,6 +26,15 @@ config.pki.masterKey = 'y'.repeat(32);
 
 const DAY = 24 * 60 * 60 * 1000;
 
+/**
+ * RFC 7030 4.1.3 exige este Content-Type exacto, sin nada mas -en concreto,
+ * sin "; charset=utf-8": Express se lo anade solo a cualquier Content-Type
+ * cuando el cuerpo es un string (ver el comentario de `sendPkcs7` en
+ * routes/est.ts), por eso se comprueba con igualdad estricta y no con un
+ * `match` que dejaria pasar ese sufijo de mas.
+ */
+const PKCS7_CONTENT_TYPE = 'application/pkcs7-mime; smime-type=certs-only';
+
 async function makeRootCa() {
   const keys = await generateEcKeyPair('P-384');
   const cert = await x509.X509CertificateGenerator.createSelfSigned({
@@ -292,7 +301,7 @@ test('EST real: cacerts, simpleenroll y simplereenroll sobre TLS real', async (t
   await t.test('GET cacerts: PKCS7 certs-only, base64', async () => {
     const res = await httpsRequest(port, { method: 'GET', path: '/.well-known/est/cacerts' });
     assert.equal(res.status, 200);
-    assert.match(String(res.headers['content-type']), /application\/pkcs7-mime/);
+    assert.equal(res.headers['content-type'], PKCS7_CONTENT_TYPE);
     const certs = new x509.X509Certificates(res.body);
     assert.equal(certs.length, 2); // intermedia + raiz
   });
@@ -311,7 +320,7 @@ test('EST real: cacerts, simpleenroll y simplereenroll sobre TLS real', async (t
       body: csr.toString('base64'),
     });
     assert.equal(res.status, 200);
-    assert.match(String(res.headers['content-type']), /application\/pkcs7-mime/);
+    assert.equal(res.headers['content-type'], PKCS7_CONTENT_TYPE);
     const certs = new x509.X509Certificates(res.body);
     assert.equal(certs.length, 1);
     deviceCertPem = certs[0]!.toString();
@@ -339,6 +348,7 @@ test('EST real: cacerts, simpleenroll y simplereenroll sobre TLS real', async (t
       clientCert: { cert: deviceCertPem, key: deviceKeyPem },
     });
     assert.equal(res.status, 200);
+    assert.equal(res.headers['content-type'], PKCS7_CONTENT_TYPE);
     const certs = new x509.X509Certificates(res.body);
     assert.equal(await certs[0]!.verify({ publicKey: intermediate.cert.publicKey }), true);
   });

@@ -4,7 +4,13 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { MARIADB_HOST, RADIUS_HOST, buildFirewallRuleset, type DeviceFirewallInput } from './vpnFirewall.js';
+import {
+  MARIADB_HOST,
+  PRIVATE_RANGES,
+  RADIUS_HOST,
+  buildFirewallRuleset,
+  type DeviceFirewallInput,
+} from './vpnFirewall.js';
 
 /**
  * `buildFirewallRuleset` es pura (sin base de datos): se prueba con casos
@@ -13,7 +19,12 @@ import { MARIADB_HOST, RADIUS_HOST, buildFirewallRuleset, type DeviceFirewallInp
  * `nft -c -f` acepta de verdad la sintaxis generada.
  */
 
-const OPTIONS = { estPort: 8443, lanCidr: '192.168.10.0/24' };
+const OPTIONS = {
+  estPort: 8443,
+  lanCidr: '192.168.10.0/24',
+  poolStart: '192.168.10.75',
+  poolEnd: '192.168.10.99',
+};
 
 function device(overrides: Partial<DeviceFirewallInput> = {}): DeviceFirewallInput {
   return {
@@ -45,9 +56,21 @@ test('buildFirewallRuleset: el bloqueo va antes que "internet", para que no lo a
   );
   const deviceLines = nft.split('\n').filter((l) => l.includes('192.168.10.80'));
   const dropIdx = deviceLines.findIndex((l) => l.includes(`daddr ${RADIUS_HOST}`) && l.includes('drop'));
-  const internetIdx = deviceLines.findIndex((l) => l.includes('0.0.0.0/0'));
+  const internetIdx = deviceLines.findIndex((l) => l.includes('daddr != {'));
   assert.ok(dropIdx >= 0 && internetIdx >= 0);
   assert.ok(dropIdx < internetIdx, 'el drop de RADIUS debe ir antes que el accept a internet');
+});
+
+test('buildFirewallRuleset: "internet" excluye privadas/CGNAT/link-local, no es un 0.0.0.0/0 literal', () => {
+  const nft = buildFirewallRuleset(
+    [device({ rules: [{ id: 1, kind: 'internet', destCidr: null, protocol: null, port: null }] })],
+    OPTIONS,
+  );
+  assert.doesNotMatch(nft, /ip daddr 0\.0\.0\.0\/0 accept/);
+  const expected = new RegExp(
+    `ip saddr 192\\.168\\.10\\.80 ip daddr != \\{ ${PRIVATE_RANGES.map((r) => r.replace(/\./g, '\\.').replace(/\//g, '\\/')).join(', ')} \\} accept`,
+  );
+  assert.match(nft, expected);
 });
 
 test('buildFirewallRuleset: "lan" usa el lan_cidr configurado, no un literal fijo', () => {
@@ -119,6 +142,44 @@ test('buildFirewallRuleset: sin dispositivos activos, la tabla queda vacia pero 
   assert.match(nft, /policy drop/);
 });
 
+test('buildFirewallRuleset: idempotente ("nft -f" no debe acumular reglas en cada ejecucion)', () => {
+  const nft = buildFirewallRuleset([device()], OPTIONS);
+  const emptyIdx = nft.indexOf('table inet vpn_clients {}');
+  const deleteIdx = nft.indexOf('delete table inet vpn_clients');
+  // La definicion real: "table inet vpn_clients {" seguido de la cadena, no
+  // la declaracion vacia de arriba (misma cadena de texto salvo el "}" pegado).
+  const defIdx = nft.indexOf('table inet vpn_clients {\n');
+  assert.ok(emptyIdx >= 0, 'falta "table inet vpn_clients {}" (para que el delete no falle la primera vez)');
+  assert.ok(deleteIdx >= 0, 'falta "delete table inet vpn_clients"');
+  assert.ok(defIdx >= 0, 'falta la definicion real de la tabla');
+  assert.ok(
+    emptyIdx < deleteIdx && deleteIdx < defIdx,
+    'el orden debe ser: declarar vacia, borrar, definir de verdad -todo en el mismo "nft -f"',
+  );
+});
+
+test('buildFirewallRuleset: acepta el estado de conexion antes de las reglas por dispositivo (trafico de vuelta)', () => {
+  const nft = buildFirewallRuleset([device()], OPTIONS);
+  const chainStart = nft.indexOf('chain forward {');
+  const scopeIdx = nft.indexOf(`ip saddr != ${OPTIONS.poolStart}-${OPTIONS.poolEnd}`);
+  const invalidIdx = nft.indexOf('ct state invalid drop');
+  const establishedIdx = nft.indexOf('ct state established,related accept');
+  const deviceIdx = nft.indexOf(`# ${device().username}`);
+  assert.ok(chainStart >= 0 && scopeIdx >= 0 && invalidIdx >= 0 && establishedIdx >= 0 && deviceIdx >= 0);
+  assert.ok(
+    chainStart < scopeIdx && scopeIdx < invalidIdx && invalidIdx < establishedIdx && establishedIdx < deviceIdx,
+    'orden esperado: entrar en la cadena, excluir lo que no toca al pool VPN, ct invalid drop, ct established/related accept, y solo despues las reglas por dispositivo',
+  );
+});
+
+test('buildFirewallRuleset: el trafico ajeno al pool VPN se acepta sin mirar las reglas de dispositivo (no interfiere con el resto del forward de la maquina)', () => {
+  const nft = buildFirewallRuleset([device()], OPTIONS);
+  assert.match(
+    nft,
+    new RegExp(`ip saddr != ${OPTIONS.poolStart}-${OPTIONS.poolEnd} ip daddr != ${OPTIONS.poolStart}-${OPTIONS.poolEnd} accept`),
+  );
+});
+
 test('buildFirewallRuleset: varios dispositivos, cada uno con sus propias lineas', () => {
   const nft = buildFirewallRuleset(
     [
@@ -129,7 +190,7 @@ test('buildFirewallRuleset: varios dispositivos, cada uno con sus propias lineas
   );
   assert.match(nft, /vpn-juan-laptop/);
   assert.match(nft, /vpn-maria-vps/);
-  assert.match(nft, /ip saddr 192\.168\.10\.80 ip daddr 0\.0\.0\.0\/0 accept/);
+  assert.match(nft, /ip saddr 192\.168\.10\.80 ip daddr != \{ .* \} accept/);
   assert.match(nft, /ip saddr 192\.168\.10\.81 ip daddr 192\.168\.10\.0\/24 accept/);
 });
 

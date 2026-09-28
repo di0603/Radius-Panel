@@ -19,6 +19,7 @@ import {
 } from './db/pools.js';
 import { logger } from './lib/logger.js';
 import { metricsMiddleware, registry } from './lib/metrics.js';
+import { TRUSTED_PROXIES } from './lib/trustProxy.js';
 import { purgeOldTokens } from './services/auth.js';
 import { regenerateDueCrls, retireStaleRsaIntermediates } from './services/pki.js';
 import { purgeExpiredAndroidDownloads } from './services/androidCert.js';
@@ -28,12 +29,22 @@ import { APP_VERSION } from './version.js';
 
 const app = express();
 
-// 2 saltos reales delante de Node: Nginx Proxy Manager (otra maquina) y el
-// nginx local de este VPS (deploy/nginx-radius-panel.conf), que es quien
-// reenvia aqui. Con solo 1, req.ip resolveria a la IP de NPM en vez de la
-// del cliente real, para toda la API (rate-limits por IP y, en el modulo
-// VPN, la restriccion "solo desde la LAN/VPN" de la descarga Android).
-app.set('trust proxy', 2);
+/**
+ * Lista explicita de proxies de confianza, no un numero de saltos: con un
+ * numero (p.ej. 2), Express se fia de los dos ultimos valores de
+ * X-Forwarded-For que traiga la peticion SIN comprobar de quien vino en
+ * realidad — si algo pudiera llegar a Node sin pasar por los dos proxies
+ * reales (nginx local no deja pasar nada por fuera de el, pero un fallo de
+ * ese firewall lo dejaria expuesto), bastaria con mandar esa cabecera con
+ * dos IPs inventadas por delante para que `req.ip` se creyera cualquier
+ * cosa. Con la lista de `lib/trustProxy.ts`, Express solo sigue el
+ * encadenado de X-Forwarded-For mientras cada salto, de derecha a
+ * izquierda, sea una IP conocida; en cuanto aparece una que no lo es, esa es
+ * la IP real del cliente y ahi se para — una peticion que llegue
+ * directamente desde una IP no confiada nunca puede hacer que se use su
+ * propio X-Forwarded-For inventado.
+ */
+app.set('trust proxy', TRUSTED_PROXIES);
 app.disable('x-powered-by');
 
 app.use((req, res, next) => {

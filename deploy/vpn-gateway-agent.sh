@@ -7,7 +7,7 @@
 #
 # Configuracion (no se versiona, crear a mano en la VM):
 #   /etc/vpn-gateway-agent/config.sh
-#     PANEL_URL='http://192.168.10.28:1003'   # API principal, NO el listener EST (8443)
+#     PANEL_URL='https://radius.didev.es'   # obligatorio HTTPS, ver el .example
 #     GATEWAY_TOKEN='...'   # generado en el panel: VPN > Ajustes
 # Ver deploy/vpn-gateway-agent.config.sh.example para mas detalle.
 set -euo pipefail
@@ -22,6 +22,18 @@ fi
 # shellcheck source=/dev/null
 . "$CONFIG_FILE"
 
+# El token viaja en la cabecera Authorization: en claro por HTTP, cualquiera
+# en la LAN podria leerlo y, con el, servir un firewall.nft propio que esta
+# maquina aplicaria como root. Por eso PANEL_URL tiene que ser HTTPS siempre
+# (curl --proto/--tlsv1.2 mas abajo hacen cumplir lo mismo del lado curl).
+case "$PANEL_URL" in
+  https://*) ;;
+  *)
+    echo "PANEL_URL debe empezar por https:// (es '$PANEL_URL'); el token de la puerta de enlace no debe viajar por HTTP en claro." >&2
+    exit 1
+    ;;
+esac
+
 mkdir -p "$STATE_DIR"
 chmod 700 "$STATE_DIR"
 current_file="$STATE_DIR/firewall.nft"
@@ -29,7 +41,7 @@ new_file="$(mktemp)"
 trap 'rm -f "$new_file"' EXIT
 
 echo "Descargando el firewall generado desde $PANEL_URL..."
-if ! curl -sS --fail --max-time 15 \
+if ! curl -sS --fail --max-time 15 --proto '=https' --tlsv1.2 \
   -H "Authorization: Bearer $GATEWAY_TOKEN" \
   "$PANEL_URL/vpn/gateway/firewall.nft" -o "$new_file"; then
   echo "No se pudo descargar el fichero: se conserva el firewall actual." >&2
