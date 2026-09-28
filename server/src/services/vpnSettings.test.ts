@@ -51,7 +51,9 @@ test('vpnSettingsSchema: rechaza poolEnd anterior a poolStart', () => {
 
 test('vpnSettingsSchema: rechaza una IPv4 invalida', () => {
   assert.throws(() => vpnSettingsSchema.parse({ ...DEFAULT_VPN_SETTINGS, poolStart: '999.1.1.1' }));
-  assert.throws(() => vpnSettingsSchema.parse({ ...DEFAULT_VPN_SETTINGS, poolEnd: 'no-es-una-ip' }));
+  assert.throws(() =>
+    vpnSettingsSchema.parse({ ...DEFAULT_VPN_SETTINGS, poolEnd: 'no-es-una-ip' }),
+  );
 });
 
 test('vpnSettingsSchema: acepta poolStart igual a poolEnd (rango de un solo host)', () => {

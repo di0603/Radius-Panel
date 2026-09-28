@@ -74,7 +74,12 @@ mysql -u root -p < sql/panel-schema.sql
 > ```bash
 > mysql -u root -p radius < sql/radius-schema-vpn.sql
 > mysql -u root -p radius_panel < sql/panel-schema-vpn.sql
+> mysql -u root -p radius_panel < sql/panel-schema-vpn-pki.sql
 > ```
+>
+> La ultima anade el ciclo de vida de la CA intermedia (generar/importar/CRL,
+> pagina "PKI"). Si vas a usarla, define ademas `PKI_MASTER_KEY` en
+> `server/.env` (cifra la clave privada de la intermedia; ver `.env.example`).
 
 Da permisos a un usuario MySQL sobre ambas bases, por ejemplo:
 
@@ -144,8 +149,9 @@ Opciones:
 - **Esquema / migraciones** — aplicar `sql/panel-schema.sql`, `sql/freeradius-schema.sql`,
   `sql/panel-schema-security.sql` (refresh tokens, 2FA, bloqueo), `sql/panel-schema-google.sql`
   (login con Google), `sql/panel-schema-user-meta.sql` (email/notas por usuario RADIUS) o
-  `sql/radius-schema-vpn.sql` / `sql/panel-schema-vpn.sql` (modulo VPN) contra tu MySQL sin salir
-  del proceso; ver que tablas existen en cada base y el estado de cada migracion.
+  `sql/radius-schema-vpn.sql` / `sql/panel-schema-vpn.sql` / `sql/panel-schema-vpn-pki.sql`
+  (modulo VPN y su CA intermedia) contra tu MySQL sin salir del proceso; ver que tablas existen en
+  cada base y el estado de cada migracion.
 - **Administradores del panel** — listar, crear, cambiar contrasena, activar/desactivar.
 - **Usuarios RADIUS** — listar (con filtro), crear (usuario + contrasena + tipo + grupo), borrar.
 - **Registros y diagnostico** — ultimas autenticaciones (`radpostauth`), sesiones activas

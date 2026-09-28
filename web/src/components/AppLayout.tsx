@@ -14,6 +14,7 @@ import {
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import {
+  IconCertificate,
   IconChartBar,
   IconHistory,
   IconLogout,
@@ -62,6 +63,7 @@ const NAV_SECTIONS: { label: string; adminOnly?: boolean; items: NavItem[] }[] =
     items: [
       { to: '/admins', label: 'Administradores', icon: IconShieldLock },
       { to: '/audit', label: 'Auditoria', icon: IconHistory },
+      { to: '/pki', label: 'PKI (VPN)', icon: IconCertificate },
     ],
   },
 ];

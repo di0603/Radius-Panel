@@ -8,6 +8,7 @@ import { nasRouter } from './nas.js';
 import { reportsRouter } from './reports.js';
 import { adminsRouter } from './admins.js';
 import { auditRouter } from './audit.js';
+import { pkiRouter } from './pki.js';
 
 export const apiRouter = Router();
 
@@ -20,3 +21,4 @@ apiRouter.use('/nas', nasRouter);
 apiRouter.use('/reports', reportsRouter);
 apiRouter.use('/admins', adminsRouter);
 apiRouter.use('/audit', auditRouter);
+apiRouter.use('/pki', pkiRouter);

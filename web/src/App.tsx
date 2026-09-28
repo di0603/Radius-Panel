@@ -11,6 +11,7 @@ import { AdminsPage } from './pages/Admins';
 import { AuditPage } from './pages/Audit';
 import { AccountPage } from './pages/Account';
 import { ReportsPage } from './pages/Reports';
+import { PkiPage } from './pages/Pki';
 import { NotFoundPage } from './pages/NotFound';
 
 export function App() {
@@ -42,6 +43,14 @@ export function App() {
           element={
             <RequireAuth roles={['admin']}>
               <AuditPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/pki"
+          element={
+            <RequireAuth roles={['admin']}>
+              <PkiPage />
             </RequireAuth>
           }
         />

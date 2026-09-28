@@ -15,6 +15,17 @@ Este proyecto usa versionado semantico.
   renovacion). Opcional como `panel_user_meta`: sin estas tablas el panel
   arranca igual y `/api/meta` anuncia `vpnEnabled: false`. Migraciones
   idempotentes, registradas en `npm run menu`.
+- **Pagina "PKI" de la VPN** (solo admin): genera la clave y el CSR de la CA
+  intermedia (la clave se cifra con `PKI_MASTER_KEY`, nunca sale del servidor
+  ni se audita), importa el certificado firmado offline por la raiz con
+  validacion completa (firma, vigencia, `BasicConstraints CA:true`, `KeyUsage
+  keyCertSign`+`cRLSign` y que la clave publica coincida con el CSR generado —
+  una intermedia mal firmada no se puede activar) y soporta rotacion (la
+  intermedia anterior pasa a "retirandose": sigue publicando CRL hasta que
+  caduca, pero deja de firmar). Publica sin autenticacion `GET /pki/ca-chain.pem`
+  y `GET /pki/crl.pem` (CRL con `nextUpdate` a 7 dias, regenerada al importar y
+  a diario); la pagina incluye el script y la unidad systemd de ejemplo para que
+  el host de FreeRADIUS la sincronice cada hora.
 - **Sistema de temas**: modo claro, oscuro y automatico (el del sistema) mas siete
   colores de acento, con la preferencia guardada en el navegador.
 - **Seguridad del panel**:

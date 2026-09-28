@@ -550,3 +550,87 @@ export function useUserActivity(username: string | null) {
       (await api.get<UserActivity>(`/users/${encodeURIComponent(username!)}/activity`)).data,
   });
 }
+
+/* ------------------------------ PKI (VPN) --------------------------- */
+
+export type PkiCaRole = 'root' | 'intermediate';
+export type PkiCaStatus = 'pending' | 'active' | 'retiring' | 'retired';
+
+export interface PkiCaSummary {
+  id: number;
+  role: PkiCaRole;
+  status: PkiCaStatus;
+  subjectCn: string | null;
+  serial: string | null;
+  spkiSha256: string | null;
+  notBefore: string | null;
+  notAfter: string | null;
+  crlNumber: number;
+  crlLastGeneratedAt: string | null;
+  crlNextUpdate: string | null;
+  createdAt: string;
+  importedAt: string | null;
+}
+
+export interface PkiStatus {
+  root: PkiCaSummary | null;
+  intermediates: PkiCaSummary[];
+  activeDeviceCertificates: number;
+}
+
+export function usePkiStatus() {
+  return useQuery({
+    queryKey: ['pki-status'],
+    queryFn: async () => (await api.get<PkiStatus>('/pki/status')).data,
+  });
+}
+
+export function useGenerateIntermediate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (subjectCn: string) =>
+      (
+        await api.post<{ id: number; csrPem: string; subjectCn: string }>('/pki/intermediate', {
+          subjectCn,
+        })
+      ).data,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['pki-status'] }),
+  });
+}
+
+export function useCancelPendingIntermediate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: number) => {
+      await api.delete(`/pki/intermediate/${id}`);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['pki-status'] }),
+  });
+}
+
+export function useImportIntermediate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      id,
+      certPem,
+      rootCertPem,
+    }: {
+      id: number;
+      certPem: string;
+      rootCertPem: string;
+    }) =>
+      (await api.post<PkiCaSummary>(`/pki/intermediate/${id}/import`, { certPem, rootCertPem }))
+        .data,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['pki-status'] }),
+  });
+}
+
+export function useRegenerateCrl() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: number) =>
+      (await api.post<PkiStatus>(`/pki/intermediate/${id}/regenerate-crl`)).data,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['pki-status'] }),
+  });
+}

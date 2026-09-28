@@ -221,12 +221,23 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
   `panel_vpn_enroll_tokens` / `panel_pki_ca` / `panel_vpn_settings` (base del panel).
   Migraciones idempotentes registradas en `npm run menu`; `/api/meta.vpnEnabled`
   indica si el módulo está activo.
-- [ ] Módulo de PKI: emisión/renovación de certificados de dispositivo firmados por
-  la CA intermedia, clave privada de la intermedia cifrada con `PKI_MASTER_KEY`.
+- [x] Página "PKI" (solo admin): generar clave+CSR de la CA intermedia (clave
+  cifrada con `PKI_MASTER_KEY`, nunca en claro), importar el certificado firmado
+  offline por la raíz con validación completa (firma, vigencia, BasicConstraints,
+  KeyUsage, SPKI coincide con el CSR — una intermedia mal firmada no se puede
+  activar), rotación (la anterior pasa a "retirándose", sigue publicando CRL hasta
+  que caduca) y publicación pública `GET /pki/ca-chain.pem` / `GET /pki/crl.pem`
+  (CRL con `nextUpdate` a 7 días, regenerada al importar y a diario). Pendiente:
+  todavía no hay enlace entre `vpn_certificates` y la CA que firmó cada uno (ver
+  ítem de emisión de certificados de dispositivo, más abajo) — hasta entonces la
+  CRL se publica vacía pero válida.
+- [ ] Módulo de emisión/renovación de certificados de dispositivo firmados por la
+  CA intermedia (y enlazar cada `vpn_certificates` con la CA que lo firmó, para
+  que su revocación aparezca en la CRL correcta).
 - [ ] Endpoint EST (RFC 7030) para alta y renovación automática de dispositivos.
 - [ ] Alta de dispositivo desde el panel: genera token de un solo uso, crea el
   usuario RADIUS (`radcheck` con `Service-Type == Framed-User`, `radreply` con
   `Framed-IP-Address` del pool, `radusergroup` = `vpn`).
-- [ ] Revocación de certificado (CRL de la intermedia) y baja de dispositivo.
+- [ ] Revocación de certificado de dispositivo y baja de dispositivo.
 - [ ] Página de ajustes del módulo VPN (FQDN, rango de IPs, días de vigencia/renovación).
 - [ ] Retirar el dispositivo de prueba `vps` cuando exista la CA intermedia real.

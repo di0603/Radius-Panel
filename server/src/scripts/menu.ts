@@ -22,6 +22,7 @@ import {
   closePools,
   userMetaTableExists,
   vpnModuleTablesExist,
+  pkiCaExtendedSchemaExists,
 } from '../db/pools.js';
 import { createUser, deleteUser, listUsers } from '../services/radiusUsers.js';
 import { createAdmin, listAdmins, updateAdmin } from '../services/admins.js';
@@ -139,6 +140,20 @@ async function vpnMigrationStatus(): Promise<void> {
   }
 }
 
+/** Comprueba si sql/panel-schema-vpn-pki.sql esta aplicada (ciclo de vida de la CA intermedia). */
+async function pkiCaMigrationStatus(): Promise<void> {
+  if (await pkiCaExtendedSchemaExists()) {
+    console.log(
+      '\x1b[32m✔\x1b[0m esquema de la CA intermedia aplicado (generar/importar/CRL disponibles)',
+    );
+  } else {
+    console.log(
+      '\x1b[33m!\x1b[0m falta sql/panel-schema-vpn-pki.sql: la pagina PKI fallara al usarla.\n' +
+        `  Aplica: mysql -u root -p ${config.panelDb.database} < sql/panel-schema-vpn-pki.sql`,
+    );
+  }
+}
+
 async function schemaMenu(): Promise<void> {
   for (;;) {
     heading('Esquema / migraciones');
@@ -150,11 +165,13 @@ async function schemaMenu(): Promise<void> {
         ` 5) Aplicar sql/panel-schema-user-meta.sql (email/notas de usuarios RADIUS, opcional)\n` +
         ` 6) Aplicar sql/radius-schema-vpn.sql (tabla de certificados VPN, opcional)\n` +
         ` 7) Aplicar sql/panel-schema-vpn.sql (dispositivos/PKI/ajustes VPN, opcional)\n` +
-        ` 8) Estado de las tablas\n` +
-        ` 9) Estado de la migracion de seguridad\n` +
-        ` 10) Estado de la migracion de Google\n` +
-        ` 11) Estado de email/notas de usuarios\n` +
-        ` 12) Estado del modulo VPN\n` +
+        ` 8) Aplicar sql/panel-schema-vpn-pki.sql (ciclo de vida de la CA intermedia, opcional)\n` +
+        ` 9) Estado de las tablas\n` +
+        ` 10) Estado de la migracion de seguridad\n` +
+        ` 11) Estado de la migracion de Google\n` +
+        ` 12) Estado de email/notas de usuarios\n` +
+        ` 13) Estado del modulo VPN\n` +
+        ` 14) Estado de la CA intermedia (PKI)\n` +
         ` 0) Volver`,
     );
     const c = (await ask('> ')).trim();
@@ -193,16 +210,25 @@ async function schemaMenu(): Promise<void> {
             `Requiere que "${config.panelDb.database}" ya exista.`,
         );
         await runSqlFile('panel-schema-vpn.sql', config.panelDb, true);
-      } else if (c === '8') await schemaStatus();
-      else if (c === '9') await securityMigrationStatus();
-      else if (c === '10') await googleMigrationStatus();
-      else if (c === '11') await userMetaMigrationStatus();
-      else if (c === '12') await vpnMigrationStatus();
+      } else if (c === '8') {
+        console.log(
+          'Idempotente. Amplia panel_pki_ca para generar/importar la CA intermedia y su CRL.\n' +
+            `Requiere que "${config.panelDb.database}" ya exista con panel-schema-vpn.sql aplicado.`,
+        );
+        await runSqlFile('panel-schema-vpn-pki.sql', config.panelDb, true);
+      } else if (c === '9') await schemaStatus();
+      else if (c === '10') await securityMigrationStatus();
+      else if (c === '11') await googleMigrationStatus();
+      else if (c === '12') await userMetaMigrationStatus();
+      else if (c === '13') await vpnMigrationStatus();
+      else if (c === '14') await pkiCaMigrationStatus();
       else if (c === '0') return;
     } catch (err) {
       console.log(`\x1b[31merror:\x1b[0m ${(err as Error).message}`);
     }
-    if (['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12'].includes(c)) await pause();
+    if (['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14'].includes(c)) {
+      await pause();
+    }
   }
 }
 

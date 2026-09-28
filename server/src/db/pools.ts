@@ -101,6 +101,20 @@ export async function userMetaTableExists(): Promise<boolean> {
   return rows.length > 0;
 }
 
+/**
+ * Comprueba si sql/panel-schema-vpn-pki.sql ya esta aplicada (columnas del
+ * ciclo de vida de la CA intermedia: status, private_key_encrypted, ...). No
+ * lanza: solo informa en el menu de administracion, igual que
+ * `userMetaTableExists`.
+ */
+export async function pkiCaExtendedSchemaExists(): Promise<boolean> {
+  const [rows] = await panelPool.query<RowDataPacket[]>(
+    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'panel_pki_ca' AND COLUMN_NAME = 'status'`,
+  );
+  return rows.length > 0;
+}
+
 const VPN_RADIUS_TABLES = ['vpn_certificates'];
 const VPN_PANEL_TABLES = [
   'panel_vpn_devices',
