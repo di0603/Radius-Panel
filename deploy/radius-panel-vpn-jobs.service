@@ -1,0 +1,7 @@
+[Unit]
+Description=Radius Panel - mantenimiento periodico del modulo VPN
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/radius-panel/server
+ExecStart=/usr/bin/node dist/scripts/vpnJobs.js

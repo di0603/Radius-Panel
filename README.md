@@ -156,6 +156,7 @@ npm run seed:demo -- --force # insertar igualmente
 | `npm run seed:admin` | Crea el primer administrador |
 | `npm run seed:demo` | Carga datos de demostracion |
 | `npm run menu` | Menu interactivo de administracion |
+| `npm run vpn:jobs` | Mantenimiento periodico del modulo VPN (superseded -> revoked, poda de la CRL, tokens caducados, regenerar CRL); en produccion lo dispara `radius-panel-vpn-jobs.timer` cada 15 min |
 
 ## Menu de administracion
 
@@ -298,6 +299,16 @@ cp deploy/radius-panel.service deploy/radius-panel-deploy.service deploy/radius-
 systemctl daemon-reload
 systemctl enable --now radius-panel.service         # arranca la API
 systemctl enable --now radius-panel-deploy.timer     # activa el polling cada 2 min
+```
+
+Si usas el modulo VPN, ademas (mantenimiento periodico: certificados
+superseded -> revoked, poda de la CRL, tokens de alta caducados y
+regeneracion de la CRL; ver `npm run vpn:jobs` mas abajo):
+
+```bash
+cp deploy/radius-panel-vpn-jobs.service deploy/radius-panel-vpn-jobs.timer /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now radius-panel-vpn-jobs.timer   # lo ejecuta cada 15 min
 ```
 
 **5. Comprobar que funciona:**

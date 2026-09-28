@@ -469,11 +469,19 @@ export async function getCaCertById(caId: number): Promise<x509.X509Certificate 
  * certificados sin CA gestionada (p.ej. el dispositivo de prueba "vps",
  * firmado directamente por la raiz): esos nunca aparecen en ninguna CRL
  * automatica. Se degrada a "sin revocados" si la columna todavia no existe.
+ *
+ * Excluye los que ya han caducado por si solos (`not_after` pasado): un
+ * certificado caducado se rechaza igualmente aunque no apareciera en la CRL
+ * (RFC 5280), asi que mantenerlo aqui para siempre solo hincha el fichero
+ * sin anadir proteccion real. `npm run vpn:jobs` fuerza una regeneracion en
+ * cuanto un revocado cruza su fecha de caducidad, para que no tarde hasta el
+ * siguiente ciclo normal de la CRL en desaparecer.
  */
 async function getRevokedEntriesForCa(caId: number): Promise<CrlEntryInput[]> {
   try {
     const [rows] = await radiusPool.query<RowDataPacket[]>(
-      `SELECT serial, revoked_at FROM vpn_certificates WHERE ca_id = :caId AND status = 'revoked'`,
+      `SELECT serial, revoked_at FROM vpn_certificates
+        WHERE ca_id = :caId AND status = 'revoked' AND not_after > UTC_TIMESTAMP()`,
       { caId },
     );
     return rows.map((r) => ({
@@ -520,14 +528,20 @@ export async function regenerateCrl(caId: number): Promise<string> {
   return crlPem;
 }
 
-/** Regenera la CRL de toda CA cuya proxima actualizacion vence en menos de un dia. Uso: tarea diaria. */
-export async function regenerateDueCrls(): Promise<number> {
+/**
+ * Regenera la CRL de toda CA cuya proxima actualizacion vence en menos de
+ * `withinDays`. La llama tanto el timer de respaldo de server/src/index.ts
+ * (por si `npm run vpn:jobs` no llega a desplegarse) como el propio
+ * `vpn:jobs` (con un margen mas amplio y mucha mas frecuencia).
+ */
+export async function regenerateDueCrls(withinDays = 1): Promise<number> {
   let rows: RowDataPacket[] = [];
   try {
     [rows] = await panelPool.query<RowDataPacket[]>(
       `SELECT id FROM panel_pki_ca
         WHERE status IN ('active', 'retiring')
-          AND (crl_next_update IS NULL OR crl_next_update <= DATE_ADD(NOW(), INTERVAL 1 DAY))`,
+          AND (crl_next_update IS NULL OR crl_next_update <= DATE_ADD(NOW(), INTERVAL :withinDays DAY))`,
+      { withinDays },
     );
   } catch (err) {
     if (isMissingTable(err)) return 0;

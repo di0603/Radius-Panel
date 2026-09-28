@@ -11,6 +11,7 @@ import { auditRouter } from './audit.js';
 import { pkiRouter } from './pki.js';
 import { vpnDevicesRouter } from './vpnDevices.js';
 import { vpnAndroidDownloadRouter } from './vpnAndroidDownload.js';
+import { vpnAlertsRouter } from './vpnAlerts.js';
 
 export const apiRouter = Router();
 
@@ -26,3 +27,4 @@ apiRouter.use('/audit', auditRouter);
 apiRouter.use('/pki', pkiRouter);
 apiRouter.use('/vpn-devices', vpnDevicesRouter);
 apiRouter.use('/vpn-android', vpnAndroidDownloadRouter);
+apiRouter.use('/vpn-alerts', vpnAlertsRouter);

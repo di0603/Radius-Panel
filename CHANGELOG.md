@@ -181,6 +181,33 @@ Este proyecto usa versionado semantico.
     reales generados (abre con la contrasena mostrada, la rechaza con
     cualquier otra) y con la base de datos simulada: el enlace no sirve dos
     veces ni caducado, y solo dentro del rango de IP configurado.
+- **Mantenimiento periodico del modulo VPN** (`npm run vpn:jobs`, idempotente
+  y seguro si dos ejecuciones se solapan gracias a `GET_LOCK` de MySQL -la
+  segunda se omite al momento en vez de esperar-; en produccion lo dispara
+  `deploy/radius-panel-vpn-jobs.timer` cada 15 minutos):
+  - Certificados `superseded` cuya ventana de solapamiento ya paso pasan a
+    `revoked` (motivo `superseded`) y regenera la CRL de su CA.
+  - `getRevokedEntriesForCa` ya no incluye en la CRL los revocados que
+    tambien han caducado por su cuenta (un certificado caducado se rechaza
+    igualmente, RFC 5280, asi que mantenerlo ahi solo hincha el fichero); el
+    job fuerza una regeneracion en cuanto uno cruza esa fecha, en vez de
+    esperar al siguiente ciclo normal de la CRL.
+  - Tokens de alta EST caducados (usados o no) se borran.
+  - Regenera la CRL de cualquier CA a la que le queden menos de 3 dias
+    (antes 1 dia y solo dentro del proceso de la API; ese timer interno se
+    mantiene como red de seguridad con el mismo margen de 3 dias, por si el
+    timer de systemd no llegara a desplegarse en algun servidor, pero
+    `vpn:jobs` es ahora quien lo hace con mucha mas frecuencia).
+- **Alertas de salud del modulo VPN**, en la tarjeta "VPN" del panel (solo
+  admin) y como Gauges en `/metrics` (se recalculan en cada scrape, sin
+  timer propio): dispositivos Windows/Linux cuya renovacion automatica
+  deberia haber saltado y no lo ha hecho -en rojo los que caducan en menos
+  de 3 dias, o si no tienen ningun certificado activo-, dispositivos Android
+  que caducan en menos de 30 dias (no tienen renovacion automatica que
+  pueda fallar, asi que es un aviso aparte, no una "renovacion fallida"),
+  la CA intermedia si caduca en menos de 90 dias, y un pico de rechazos EST
+  en la ultima hora por encima de un umbral fijo (20, todavia sin pagina de
+  ajustes donde configurarlo).
 - **Sistema de temas**: modo claro, oscuro y automatico (el del sistema) mas siete
   colores de acento, con la preferencia guardada en el navegador.
 - **Seguridad del panel**:

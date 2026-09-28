@@ -314,6 +314,20 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
   (`panel_vpn_settings.lan_cidr`, columna nueva); borra la fila al servirlo y
   purga a diario los enlaces caducados sin descargar. Detalle completo en el
   CHANGELOG.
+- [x] **Mantenimiento periódico del módulo VPN** (`npm run vpn:jobs`, cada 15
+  min vía `deploy/radius-panel-vpn-jobs.timer`, con bloqueo `GET_LOCK` de
+  MySQL para que dos ejecuciones no se pisen): certificados `superseded`
+  vencidos -> `revoked` + regenerar CRL; poda de revocados ya caducados
+  fuera de la CRL (en cuanto cruzan la fecha, no en el siguiente ciclo);
+  tokens de alta EST caducados borrados; CRL regenerada si le quedan menos
+  de 3 días (antes 1 día, solo con el timer interno de la API, que ahora
+  queda como red de seguridad por si el timer de systemd no se despliega).
+- [x] **Alertas de salud VPN**: tarjeta "VPN" en el panel (solo admin) y
+  Gauges en `/metrics`. Renovación automática atascada en dispositivos
+  Windows/Linux (crítico si caducan en <3 días o no tienen certificado
+  activo), certificados Android que caducan en <30 días, CA intermedia que
+  caduca en <90 días, pico de rechazos EST en la última hora.
 - [ ] Página de ajustes del módulo VPN (FQDN, identidad AAA, rango de IPs, días
-  de vigencia/renovación, URL de EST, red LAN para la descarga Android).
+  de vigencia/renovación, URL de EST, red LAN para la descarga Android, umbral
+  de alerta de rechazos EST).
 - [ ] Retirar el dispositivo de prueba `vps` cuando exista la CA intermedia real.

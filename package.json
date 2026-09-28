@@ -10,6 +10,7 @@
     "seed:admin": "npm --prefix server run seed:admin",
     "seed:demo": "npm --prefix server run seed:demo",
     "menu": "npm --prefix server run menu",
+    "vpn:jobs": "npm --prefix server run vpn:jobs",
     "test": "npm --prefix server test",
     "typecheck": "npm --prefix server run typecheck && npm --prefix web run typecheck",
     "format": "prettier --write .",

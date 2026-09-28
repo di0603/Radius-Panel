@@ -810,3 +810,40 @@ export function useDecommissionVpnDevice() {
     },
   });
 }
+
+/* --------------------------- Alertas VPN (panel) ---------------------- */
+
+export interface RenewalFailingAlert {
+  username: string;
+  platform: 'windows' | 'linux';
+  notAfter: string | null;
+  critical: boolean;
+}
+
+export interface AndroidExpiringAlert {
+  username: string;
+  notAfter: string;
+}
+
+export interface CaExpiringAlert {
+  id: number;
+  subjectCn: string | null;
+  notAfter: string;
+}
+
+export interface VpnAlerts {
+  renewalFailing: RenewalFailingAlert[];
+  androidExpiringSoon: AndroidExpiringAlert[];
+  caExpiringSoon: CaExpiringAlert[];
+  estRejectionsLastHour: number;
+  estRejectionsThreshold: number;
+}
+
+export function useVpnAlerts(enabled: boolean) {
+  return useQuery({
+    queryKey: ['vpn-alerts'],
+    enabled,
+    queryFn: async () => (await api.get<VpnAlerts>('/vpn-alerts')).data,
+    refetchInterval: 60_000,
+  });
+}

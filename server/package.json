@@ -11,6 +11,7 @@
     "seed:admin": "tsx src/scripts/seedAdmin.ts",
     "seed:demo": "tsx src/scripts/seedDemo.ts",
     "menu": "tsx src/scripts/menu.ts",
+    "vpn:jobs": "tsx src/scripts/vpnJobs.ts",
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
