@@ -20,6 +20,7 @@ import { logger } from './lib/logger.js';
 import { metricsMiddleware, registry } from './lib/metrics.js';
 import { purgeOldTokens } from './services/auth.js';
 import { regenerateDueCrls, retireStaleRsaIntermediates } from './services/pki.js';
+import { startEstServer } from './estServer.js';
 import { APP_VERSION } from './version.js';
 
 const app = express();
@@ -144,6 +145,13 @@ async function main(): Promise<void> {
     logger.info(`API escuchando en http://localhost:${config.port}`);
   });
 
+  let estServer: Awaited<ReturnType<typeof startEstServer>> = null;
+  try {
+    estServer = await startEstServer();
+  } catch (err) {
+    logger.error({ err }, 'no se pudo arrancar el listener EST');
+  }
+
   // Limpieza diaria de refresh tokens caducados.
   const purgeTimer = setInterval(
     () => {
@@ -173,6 +181,7 @@ async function main(): Promise<void> {
     clearInterval(purgeTimer);
     clearInterval(crlTimer);
     server.close();
+    estServer?.close();
     await closePools();
     process.exit(0);
   };

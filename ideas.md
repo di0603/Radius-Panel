@@ -258,9 +258,9 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
   historial. El editor de usuarios genérico avisa si el usuario es un
   dispositivo VPN.
 - [x] `vpn_certificates.ca_id`: enlaza cada certificado con el id de `panel_pki_ca`
-  que lo firmó, para que revocar regenere la CRL correcta. Sigue sin rellenarse
-  hasta que exista emisión automática de certificados (ítem siguiente);
-  mientras tanto vale NULL, como en el dispositivo de prueba `vps`.
+  que lo firmó, para que revocar regenere la CRL correcta. Ya se rellena al
+  firmar por EST (ítem de más abajo); en el dispositivo de prueba `vps` sigue
+  valiendo NULL por ser anterior a la emisión automática.
 - [x] **Corrección 4.5**: a mitad del desarrollo apareció un `CLAUDE.md` con el
   modelo de datos y la criptografía obligatorios (ECDSA en vez de RSA para la
   CA, `ca_id` en vez de `ca_serial`, `owner_user`/`device_label`/`enabled` en
@@ -269,9 +269,21 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
   arriba con ese modelo; como el módulo no se había desplegado en producción
   todavía, `panel_pki_ca`/`panel_vpn_devices` se recrearon vacías en vez de
   migrarse con ALTER/RENAME.
-- [ ] Endpoint EST (RFC 7030) para alta y renovación automática de dispositivos:
-  conecta `signDeviceCsr` con una ruta HTTP autenticada por token de alta,
-  rellena `vpn_certificates.ca_id` al firmar y usa `panel_vpn_settings.est_url`.
+- [x] **EST (RFC 7030)** para alta y renovación automática de dispositivos:
+  listener HTTPS propio (`EST_PORT`, separado de la API/nginx porque necesita
+  TLS mutuo real), TLS 1.2 mínimo y solo cifrados ECDHE+AEAD. `GET cacerts`
+  sin login; `POST simpleenroll` autenticado con HTTP Basic (usuario =
+  dispositivo, contraseña = token de alta, reclamado de forma atómica antes
+  de firmar para que no se pueda usar dos veces en paralelo); `POST
+  simplereenroll` autenticado por el certificado de cliente de la propia
+  conexión mTLS, con una cadena de validaciones (serie conocida, no caducado,
+  firma de la CA que según la base de datos lo emitió, no revocado, estado
+  activo, dispositivo habilitado, CN del CSR coincide, firma del CSR válida,
+  clave no reutilizada, límite de frecuencia de 12h) antes de emitir la
+  renovación y pasar el certificado viejo a `superseded` con solapamiento en
+  vez de revocarlo en el acto. Errores sin detalle interno en la respuesta,
+  con auditoría completa y métricas Prometheus por motivo de rechazo. Ver el
+  detalle completo de cada validación en el CHANGELOG.
 - [ ] Página de ajustes del módulo VPN (FQDN, identidad AAA, rango de IPs, días
   de vigencia/renovación, URL de EST).
 - [ ] Retirar el dispositivo de prueba `vps` cuando exista la CA intermedia real.

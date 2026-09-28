@@ -61,6 +61,57 @@ Este proyecto usa versionado semantico.
   correcto en vez de migrarse con ALTER/RENAME; `radius.vpn_certificates` (que
   si tiene datos reales, la fila de prueba `vps`) se migra con ALTER
   idempotente normal.
+- **EST (RFC 7030)** para que los dispositivos VPN pidan su primer certificado
+  y lo renueven solos, sin que un admin tenga que firmar nada a mano. Listener
+  HTTPS propio y separado de la API principal (`EST_PORT`, por defecto 8443;
+  no pasa por nginx porque necesita TLS mutuo real, que un proxy que termina
+  TLS no puede reenviar), con `requestCert: true`, `TLSv1.2` como minimo y solo
+  cifrados ECDHE+AEAD (`ECDHE-*-AES*-GCM-*`, `ECDHE-*-CHACHA20-POLY1305`).
+  Rutas bajo `/.well-known/est/`:
+  - `GET cacerts`: la cadena intermedia+raiz en PKCS7 "certs-only" (sin login).
+  - `POST simpleenroll` (alta): autenticacion con HTTP Basic donde el usuario
+    es el username del dispositivo y la contrasena es el token de alta de un
+    solo uso. Orden de validacion: (1) el dispositivo existe y esta activo;
+    (2) el token se reclama de forma atomica (`UPDATE ... WHERE token_sha256
+    = ? AND used_at IS NULL AND expires_at > NOW()`, y solo sigue si
+    `affectedRows = 1`) — se reclama *antes* de firmar nada, no despues, para
+    que dos peticiones simultaneas con el mismo token no puedan acabar las dos
+    con un certificado valido; (3) el CSR tiene que traer el mismo CN que el
+    username del dispositivo; (4) hay una CA intermedia activa. Solo entonces
+    se firma con el perfil fijo de `signDeviceCsr` (vease la entrada de
+    "Emision de certificados de dispositivo" mas arriba).
+  - `POST simplereenroll` (renovacion): autenticacion por el certificado de
+    cliente que ya trae la conexion TLS (mTLS), no por contrasena. Orden de
+    validacion, pensado para que un certificado caducado nunca se reporte
+    como "cadena invalida" (la libreria de X.509 comprueba la vigencia dentro
+    de `.verify()` y devuelve `false` para un certificado caducado aunque la
+    firma sea correcta): (1) el cliente presento un certificado; (2) el
+    numero de serie es uno que emitimos nosotros (`vpn_certificates`); (3) no
+    esta caducado — comprobado con fechas antes de verificar la firma, por la
+    razon de arriba; (4) la firma de la cadena verifica de verdad contra la
+    CA que segun la base de datos lo emitio (evita que un certificado real
+    pero de otra CA, con el `ca_id` adulterado, pase la validacion); (5) no
+    esta revocado; (6) su estado es `activo` (no ya `superseded`); (7) el
+    dispositivo sigue habilitado; (8) el CN del CSR coincide con el del
+    certificado que se esta renovando; (9) la firma del CSR es valida y su
+    clave publica no es una que el dispositivo ya uso antes (evita reutilizar
+    la misma clave privada indefinidamente); (10) han pasado al menos 12h
+    desde la ultima emision (limite de frecuencia, evita renovaciones en
+    bucle). Al emitir la renovacion, el certificado anterior pasa a
+    `superseded` con una ventana de solapamiento (no se revoca en el acto:
+    así una sesion IKEv2 ya establecida con el certificado viejo no se corta
+    a mitad de la renovacion).
+  - `GET status` (opcional, mTLS igual que la renovacion): dias que le quedan
+    al certificado presentado y si ya toca renovar.
+  Respuestas de error sin detalles internos (nunca stack, SQL ni motivo fino
+  en el cuerpo), pero con auditoria completa en `panel_audit_log` (dispositivo,
+  IP, motivo exacto de cada rechazo) y metricas Prometheus
+  (`est_enrollments_total`, `est_renewals_total`, `est_rejections_total` por
+  endpoint y motivo). `POST simpleenroll` tiene rate-limit propio (20
+  peticiones / 15 min) porque es el unico paso autenticado solo por contrasena.
+  El listener no arranca si falta `EST_TLS_CERT`/`EST_TLS_KEY` o si
+  `EST_ENABLED=false`: el resto del panel sigue funcionando igual, solo que
+  sin alta/renovacion automatica.
 - **Sistema de temas**: modo claro, oscuro y automatico (el del sistema) mas siete
   colores de acento, con la preferencia guardada en el navegador.
 - **Seguridad del panel**:

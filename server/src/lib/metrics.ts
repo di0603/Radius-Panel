@@ -37,6 +37,27 @@ export const coaRequests = new Counter({
   registers: [registry],
 });
 
+export const estEnrollments = new Counter({
+  name: 'radius_panel_est_enrollments_total',
+  help: 'Altas EST (simpleenroll) atendidas',
+  labelNames: ['result'] as const,
+  registers: [registry],
+});
+
+export const estRenewals = new Counter({
+  name: 'radius_panel_est_renewals_total',
+  help: 'Renovaciones EST (simplereenroll) atendidas',
+  labelNames: ['result'] as const,
+  registers: [registry],
+});
+
+export const estRejections = new Counter({
+  name: 'radius_panel_est_rejections_total',
+  help: 'Peticiones EST rechazadas, por endpoint y motivo',
+  labelNames: ['endpoint', 'reason'] as const,
+  registers: [registry],
+});
+
 /**
  * Mide cada peticion. Usa la ruta de Express (`/api/users/:username`) en vez de
  * la URL real para no crear una serie temporal por cada usuario.

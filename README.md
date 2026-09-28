@@ -80,6 +80,13 @@ mysql -u root -p < sql/panel-schema.sql
 > La ultima anade el ciclo de vida de la CA intermedia (generar/importar/CRL,
 > pagina "PKI"). Si vas a usarla, define ademas `PKI_MASTER_KEY` en
 > `server/.env` (cifra la clave privada de la intermedia; ver `.env.example`).
+>
+> Para que los dispositivos den de alta y renueven su certificado solos por
+> **EST (RFC 7030)**, define `EST_TLS_CERT`/`EST_TLS_KEY` (certificado y clave
+> propios del listener EST, un HTTPS aparte de la API en `EST_PORT`, def. 8443,
+> porque necesita TLS mutuo real) en `server/.env`; sin ellos el resto del
+> panel funciona igual, solo que sin alta/renovacion automatica. Ver
+> `.env.example` para el resto de opciones (`EST_ENABLED`, `EST_BIND`).
 
 Da permisos a un usuario MySQL sobre ambas bases, por ejemplo:
 

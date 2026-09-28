@@ -422,6 +422,47 @@ export async function buildCrl(input: {
   });
 }
 
+export interface CaSigningMaterial {
+  id: number;
+  cert: x509.X509Certificate;
+  signingKey: CryptoKey;
+}
+
+async function loadSigningMaterial(row: RowDataPacket): Promise<CaSigningMaterial> {
+  if (!row.cert_pem || !row.private_key_encrypted) {
+    throw badRequest('Esta CA intermedia todavia no tiene un certificado importado');
+  }
+  return {
+    id: Number(row.id),
+    cert: new x509.X509Certificate(row.cert_pem),
+    signingKey: await importEcPrivateKeyPem(decryptPkiPrivateKey(row.private_key_encrypted), 'P-384'),
+  };
+}
+
+/**
+ * La CA intermedia que firma los certificados de dispositivo nuevos (EST
+ * simpleenroll/simplereenroll). Solo puede haber una 'active' a la vez.
+ */
+export async function getActiveIntermediate(): Promise<CaSigningMaterial> {
+  const [[row]] = await panelPool.query<RowDataPacket[]>(
+    `SELECT * FROM panel_pki_ca WHERE status = 'active' LIMIT 1`,
+  );
+  if (!row) {
+    throw conflict('No hay ninguna CA intermedia activa: genera e importa una desde la pagina PKI');
+  }
+  return loadSigningMaterial(row);
+}
+
+/** Certificado (sin la clave privada) de una CA por su id. `null` si no existe o no tiene cert_pem. */
+export async function getCaCertById(caId: number): Promise<x509.X509Certificate | null> {
+  const [[row]] = await panelPool.query<RowDataPacket[]>(
+    `SELECT cert_pem FROM panel_pki_ca WHERE id = :id`,
+    { id: caId },
+  );
+  if (!row?.cert_pem) return null;
+  return new x509.X509Certificate(row.cert_pem);
+}
+
 /**
  * `vpn_certificates.ca_id` (sql/radius-schema-vpn-issuer.sql) enlaza cada
  * certificado con el id de `panel_pki_ca` que lo firmo. Sigue vacio para los
