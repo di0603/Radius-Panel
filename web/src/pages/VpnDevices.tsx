@@ -22,7 +22,15 @@ import {
 } from '@mantine/core';
 import { modals } from '@mantine/modals';
 import { useSearchParams } from 'react-router-dom';
-import { IconCertificate, IconPlus, IconRouter, IconTicket, IconTrash } from '@tabler/icons-react';
+import {
+  IconCertificate,
+  IconDownload,
+  IconKey,
+  IconPlus,
+  IconRouter,
+  IconTicket,
+  IconTrash,
+} from '@tabler/icons-react';
 import { PageHeader } from '../components/PageHeader';
 import { SectionCard } from '../components/SectionCard';
 import { TableSkeleton } from '../components/TableSkeleton';
@@ -30,7 +38,9 @@ import { EmptyState } from '../components/EmptyState';
 import {
   useCreateVpnDevice,
   useDecommissionVpnDevice,
+  useDownloadVpnDevicePackage,
   useGenerateEnrollToken,
+  useIssueAndroidCertificate,
   useRevokeVpnDeviceCertificate,
   useSetVpnDeviceEnabled,
   useUserActivity,
@@ -210,6 +220,83 @@ function DeviceDrawer({ username, onClose }: { username: string | null; onClose:
   const enrollToken = useGenerateEnrollToken();
   const revokeCert = useRevokeVpnDeviceCertificate();
   const decommission = useDecommissionVpnDevice();
+  const downloadPackage = useDownloadVpnDevicePackage();
+  const issueAndroidCert = useIssueAndroidCertificate();
+
+  const runIssueAndroidCert = async () => {
+    if (!username) return;
+    try {
+      const result = await issueAndroidCert.mutateAsync(username);
+      const downloadUrl = `${window.location.origin}/api/vpn-android/${encodeURIComponent(username)}/download?token=${encodeURIComponent(result.downloadToken)}`;
+      modals.open({
+        title: 'Certificado emitido',
+        size: 'lg',
+        closeOnClickOutside: false,
+        children: (
+          <Stack>
+            <Text size="sm" c="dimmed">
+              Enlace de un solo uso, valido 15 minutos y solo desde la red local o la VPN. Ni la
+              contrasena ni el enlace se pueden volver a mostrar: copialos ahora y pasaselos al
+              dueno del dispositivo por un canal aparte (nunca los dos juntos).
+            </Text>
+            <Text size="sm" fw={600}>
+              Enlace de descarga (.sswan)
+            </Text>
+            <Code block style={{ wordBreak: 'break-all' }}>
+              {downloadUrl}
+            </Code>
+            <Group justify="flex-end">
+              <Button
+                size="xs"
+                variant="light"
+                onClick={() => {
+                  navigator.clipboard?.writeText(downloadUrl);
+                  notifyOk('Enlace copiado');
+                }}
+              >
+                Copiar enlace
+              </Button>
+            </Group>
+            <Text size="sm" fw={600}>
+              Contrasena del .p12
+            </Text>
+            <Code block style={{ wordBreak: 'break-all' }}>
+              {result.password}
+            </Code>
+            <Group justify="flex-end">
+              <Button
+                size="xs"
+                variant="light"
+                onClick={() => {
+                  navigator.clipboard?.writeText(result.password);
+                  notifyOk('Contrasena copiada');
+                }}
+              >
+                Copiar contrasena
+              </Button>
+            </Group>
+            <Text size="xs" c="dimmed">
+              Caduca: {formatDateTime(result.expiresAt)}
+            </Text>
+            <Group justify="flex-end">
+              <Button onClick={() => modals.closeAll()}>Cerrar</Button>
+            </Group>
+          </Stack>
+        ),
+      });
+    } catch (err) {
+      notifyError(err);
+    }
+  };
+
+  const runDownloadPackage = async () => {
+    if (!username) return;
+    try {
+      await downloadPackage.mutateAsync(username);
+    } catch (err) {
+      notifyError(err);
+    }
+  };
 
   const runGenerateToken = async () => {
     if (!username) return;
@@ -398,15 +485,39 @@ function DeviceDrawer({ username, onClose }: { username: string | null; onClose:
 
           {device.status !== 'decommissioned' && (
             <Group>
-              <Button
-                size="xs"
-                variant="light"
-                leftSection={<IconTicket size={14} />}
-                loading={enrollToken.isPending}
-                onClick={runGenerateToken}
-              >
-                Generar token de alta
-              </Button>
+              {device.platform !== 'android' && (
+                <>
+                  <Button
+                    size="xs"
+                    variant="light"
+                    leftSection={<IconTicket size={14} />}
+                    loading={enrollToken.isPending}
+                    onClick={runGenerateToken}
+                  >
+                    Generar token de alta
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="light"
+                    leftSection={<IconDownload size={14} />}
+                    loading={downloadPackage.isPending}
+                    onClick={runDownloadPackage}
+                  >
+                    Descargar paquete de conexion
+                  </Button>
+                </>
+              )}
+              {device.platform === 'android' && (
+                <Button
+                  size="xs"
+                  variant="light"
+                  leftSection={<IconKey size={14} />}
+                  loading={issueAndroidCert.isPending}
+                  onClick={runIssueAndroidCert}
+                >
+                  Emitir certificado
+                </Button>
+              )}
               {hasActiveCert && (
                 <Button
                   size="xs"

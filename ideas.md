@@ -258,9 +258,9 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
   historial. El editor de usuarios genérico avisa si el usuario es un
   dispositivo VPN.
 - [x] `vpn_certificates.ca_id`: enlaza cada certificado con el id de `panel_pki_ca`
-  que lo firmó, para que revocar regenere la CRL correcta. Sigue sin rellenarse
-  hasta que exista emisión automática de certificados (ítem siguiente);
-  mientras tanto vale NULL, como en el dispositivo de prueba `vps`.
+  que lo firmó, para que revocar regenere la CRL correcta. Ya se rellena al
+  firmar por EST (ítem de más abajo); en el dispositivo de prueba `vps` sigue
+  valiendo NULL por ser anterior a la emisión automática.
 - [x] **Corrección 4.5**: a mitad del desarrollo apareció un `CLAUDE.md` con el
   modelo de datos y la criptografía obligatorios (ECDSA en vez de RSA para la
   CA, `ca_id` en vez de `ca_serial`, `owner_user`/`device_label`/`enabled` en
@@ -269,9 +269,71 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
   arriba con ese modelo; como el módulo no se había desplegado en producción
   todavía, `panel_pki_ca`/`panel_vpn_devices` se recrearon vacías en vez de
   migrarse con ALTER/RENAME.
-- [ ] Endpoint EST (RFC 7030) para alta y renovación automática de dispositivos:
-  conecta `signDeviceCsr` con una ruta HTTP autenticada por token de alta,
-  rellena `vpn_certificates.ca_id` al firmar y usa `panel_vpn_settings.est_url`.
+- [x] **EST (RFC 7030)** para alta y renovación automática de dispositivos:
+  listener HTTPS propio (`EST_PORT`, separado de la API/nginx porque necesita
+  TLS mutuo real), TLS 1.2 mínimo y solo cifrados ECDHE+AEAD. `GET cacerts`
+  sin login; `POST simpleenroll` valida el CSR (formato, firma, CN) antes de
+  tocar el token de alta, reclamado de forma atómica (y liberado si firmar o
+  insertar falla después); dispositivo desconocido y token incorrecto
+  responden con el mismo 401 (el motivo real solo va a auditoría). `POST
+  simplereenroll` autenticado por el certificado de cliente de la propia
+  conexión mTLS, con una cadena de validaciones (serie conocida, no caducado,
+  firma de la CA que según la base de datos lo emitió, no revocado, estado
+  activo, CN del propio certificado coincide con el dispositivo de su fila,
+  dispositivo habilitado, CN del CSR coincide, firma del CSR válida, clave no
+  reutilizada, límite de frecuencia de 12h) antes de emitir la renovación y
+  pasar el certificado viejo a `superseded` con solapamiento en vez de
+  revocarlo en el acto — todo (localizar/bloquear filas, comprobar límites,
+  insertar, marcar `superseded`) en una única transacción de `radiusPool`,
+  para que dos renovaciones concurrentes del mismo dispositivo no puedan
+  tener éxito las dos. `GET status` comparte esa misma validación del
+  certificado presentado. Errores sin detalle interno en la respuesta, con
+  auditoría completa y métricas Prometheus por motivo de rechazo. Ver el
+  detalle completo de cada validación en el CHANGELOG.
+- [x] **Paquete de conexión descargable** desde la ficha del dispositivo
+  (Windows y Linux/VPS; Android todavía se configura a mano en la app de
+  strongSwan). Windows: zip con `install.ps1` (conexión IKEv2 "Casa" con
+  EAP-TLS, importa la raíz/intermedia de la CA, GCMAES256/SHA384/ECP384),
+  `enroll.ps1` (clave no exportable en el TPM, o en el proveedor de software
+  si no hay TPM; pide el token por pantalla) y `renew.ps1` (usa `GET status`
+  de EST para saber si toca renovar; lo programa `enroll.ps1` en el
+  Programador de tareas). Linux/VPS: tar.gz con `casa.conf` (fragmento de
+  swanctl), `vpn-enroll`/`vpn-renew` (bash + openssl + curl, clave ECDSA
+  P-384, token leído de la entrada estándar) y las unidades systemd del
+  timer; `vpn-renew` conserva la clave y el certificado anteriores hasta
+  comprobar que la conexión arranca con los nuevos. Ningún paquete contiene
+  claves ni el token de alta (tests que descomprimen el zip/tar.gz de
+  verdad y comprueban que ningún fichero lleva material secreto).
+- [x] **Certificado Android emitido por el panel** (excepción documentada: la
+  app de strongSwan para Android no sabe renovarse sola por EST, así que solo
+  para estos dispositivos genera la clave el propio panel). Botón "Emitir
+  certificado": clave ECDSA P-256, mismo perfil/vigencia (`android_cert_days`)
+  y mismo solapamiento que una renovación EST si ya había un certificado
+  activo; construye un `.p12` (AES-256-CBC/PBKDF2/SHA-256, verificado con
+  `openssl pkcs12 -info`) protegido con una contraseña aleatoria de 20
+  caracteres mostrada una única vez, y un perfil `.sswan` (formato de
+  importación de Android, comprobado contra la documentación oficial de
+  strongSwan) con el `.p12` embebido, la raíz de la CA y las propuestas
+  `aes256gcm16-prfsha384-ecp384`/`aes256gcm16-ecp384` en full tunnel. Enlace
+  de descarga público pero de un solo uso, caduca a los 15 minutos y solo
+  funciona desde la LAN o el rango de la VPN
+  (`panel_vpn_settings.lan_cidr`, columna nueva); borra la fila al servirlo y
+  purga a diario los enlaces caducados sin descargar. Detalle completo en el
+  CHANGELOG.
+- [x] **Mantenimiento periódico del módulo VPN** (`npm run vpn:jobs`, cada 15
+  min vía `deploy/radius-panel-vpn-jobs.timer`, con bloqueo `GET_LOCK` de
+  MySQL para que dos ejecuciones no se pisen): certificados `superseded`
+  vencidos -> `revoked` + regenerar CRL; poda de revocados ya caducados
+  fuera de la CRL (en cuanto cruzan la fecha, no en el siguiente ciclo);
+  tokens de alta EST caducados borrados; CRL regenerada si le quedan menos
+  de 3 días (antes 1 día, solo con el timer interno de la API, que ahora
+  queda como red de seguridad por si el timer de systemd no se despliega).
+- [x] **Alertas de salud VPN**: tarjeta "VPN" en el panel (solo admin) y
+  Gauges en `/metrics`. Renovación automática atascada en dispositivos
+  Windows/Linux (crítico si caducan en <3 días o no tienen certificado
+  activo), certificados Android que caducan en <30 días, CA intermedia que
+  caduca en <90 días, pico de rechazos EST en la última hora.
 - [ ] Página de ajustes del módulo VPN (FQDN, identidad AAA, rango de IPs, días
-  de vigencia/renovación, URL de EST).
+  de vigencia/renovación, URL de EST, red LAN para la descarga Android, umbral
+  de alerta de rechazos EST).
 - [ ] Retirar el dispositivo de prueba `vps` cuando exista la CA intermedia real.

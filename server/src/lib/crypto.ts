@@ -58,6 +58,16 @@ export function randomToken(): string {
   return randomBytes(32).toString('base64url');
 }
 
+/**
+ * Contrasena aleatoria en base64url (A-Za-z0-9-_), para el .p12 de un
+ * certificado Android que se ensena una vez. 20 caracteres = 15 bytes
+ * exactos (15*8 = 20*6 bits, sin relleno "=").
+ */
+export function randomPassword(length = 20): string {
+  const bytes = Math.ceil((length * 6) / 8);
+  return randomBytes(bytes).toString('base64url').slice(0, length);
+}
+
 /** Hash con el que se guardan los refresh tokens (nunca se guarda el token en claro). */
 export function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');

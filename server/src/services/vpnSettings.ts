@@ -14,6 +14,8 @@ export interface VpnSettings {
   aaaId: string;
   poolStart: string;
   poolEnd: string;
+  /** Red local (CIDR) desde la que se puede usar el enlace de descarga del .p12 de Android. */
+  lanCidr: string;
   dns: string;
   deviceCertDays: number;
   renewAfterDays: number;
@@ -28,6 +30,7 @@ export const DEFAULT_VPN_SETTINGS: VpnSettings = {
   aaaId: 'CN=radius.vpn.vlc.didev.es',
   poolStart: '192.168.10.75',
   poolEnd: '192.168.10.99',
+  lanCidr: '192.168.10.0/24',
   dns: '',
   deviceCertDays: 30,
   renewAfterDays: 20,
@@ -37,6 +40,10 @@ export const DEFAULT_VPN_SETTINGS: VpnSettings = {
 };
 
 const ipv4 = z.string().refine(isValidIpv4, 'Direccion IPv4 invalida');
+const cidr = z.string().refine((v) => {
+  const [ip, prefix] = v.split('/');
+  return !!ip && isValidIpv4(ip) && /^\d{1,2}$/.test(prefix ?? '') && Number(prefix) <= 32;
+}, 'CIDR invalido (formato a.b.c.d/nn)');
 
 /**
  * Valida los ajustes del modulo VPN. `renewAfterDays` tiene que ser menor que
@@ -50,6 +57,7 @@ export const vpnSettingsSchema = z
     aaaId: z.string().min(1, 'aaaId no puede estar vacio'),
     poolStart: ipv4,
     poolEnd: ipv4,
+    lanCidr: cidr,
     dns: z.string().default(''),
     deviceCertDays: z.number().int().positive(),
     renewAfterDays: z.number().int().positive(),
@@ -74,6 +82,7 @@ export function parseVpnSettingsRow(row: RowDataPacket | undefined): VpnSettings
     aaaId: row.aaa_id ?? DEFAULT_VPN_SETTINGS.aaaId,
     poolStart: row.pool_start,
     poolEnd: row.pool_end,
+    lanCidr: row.lan_cidr ?? DEFAULT_VPN_SETTINGS.lanCidr,
     dns: row.dns ?? '',
     deviceCertDays: Number(row.device_cert_days),
     renewAfterDays: Number(row.renew_after_days),

@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import {
+  Badge,
   Card,
   Group,
   RingProgress,
@@ -16,6 +17,7 @@ import {
   IconActivity,
   IconCircleCheck,
   IconCircleX,
+  IconShieldCheck,
   IconTargetArrow,
   IconUsers,
 } from '@tabler/icons-react';
@@ -37,9 +39,12 @@ import {
   useTerminateCauses,
   useTopNas,
   useTopUsers,
+  useVpnAlerts,
 } from '../api/hooks';
+import { useAuth } from '../auth/AuthContext';
 import { PageHeader } from '../components/PageHeader';
 import { SectionCard } from '../components/SectionCard';
+import { EmptyState } from '../components/EmptyState';
 import {
   formatBytes,
   formatDateTime,
@@ -162,6 +167,90 @@ function EmptyRow({ colSpan, text }: { colSpan: number; text: string }) {
   );
 }
 
+interface AlertRow {
+  key: string;
+  message: string;
+  severity: 'critical' | 'warning';
+}
+
+const SEVERITY_COLOR: Record<AlertRow['severity'], string> = { critical: 'red', warning: 'yellow' };
+const SEVERITY_LABEL: Record<AlertRow['severity'], string> = { critical: 'critico', warning: 'aviso' };
+
+function VpnAlertsCard() {
+  const { hasRole } = useAuth();
+  const alerts = useVpnAlerts(hasRole('admin'));
+
+  if (!hasRole('admin')) return null;
+
+  const rows: AlertRow[] = [];
+  for (const a of alerts.data?.renewalFailing ?? []) {
+    rows.push({
+      key: `renew-${a.username}`,
+      severity: a.critical ? 'critical' : 'warning',
+      message: a.notAfter
+        ? `${a.username} (${a.platform}): no se ha renovado solo, caduca ${formatDateTime(a.notAfter)}`
+        : `${a.username} (${a.platform}): sin ningun certificado activo`,
+    });
+  }
+  for (const a of alerts.data?.androidExpiringSoon ?? []) {
+    rows.push({
+      key: `android-${a.username}`,
+      severity: 'warning',
+      message: `${a.username} (Android): caduca ${formatDateTime(a.notAfter)}, hay que emitir uno nuevo a mano`,
+    });
+  }
+  for (const c of alerts.data?.caExpiringSoon ?? []) {
+    rows.push({
+      key: `ca-${c.id}`,
+      severity: 'critical',
+      message: `CA intermedia ${c.subjectCn ?? `#${c.id}`}: caduca ${formatDateTime(c.notAfter)}`,
+    });
+  }
+  const estRejections = alerts.data?.estRejectionsLastHour ?? 0;
+  const estThreshold = alerts.data?.estRejectionsThreshold ?? 0;
+  if (estRejections > estThreshold) {
+    rows.push({
+      key: 'est-rejections',
+      severity: 'critical',
+      message: `${estRejections} rechazos EST en la ultima hora (umbral ${estThreshold})`,
+    });
+  }
+  rows.sort((a, b) => (a.severity === b.severity ? 0 : a.severity === 'critical' ? -1 : 1));
+
+  return (
+    <SectionCard
+      title="VPN"
+      subtitle="Renovaciones, caducidades y rechazos EST"
+      bodyPadding={false}
+    >
+      {alerts.isLoading ? (
+        <Skeleton height={80} radius="md" m="md" />
+      ) : rows.length ? (
+        <Table verticalSpacing="xs">
+          <Table.Tbody>
+            {rows.map((r) => (
+              <Table.Tr key={r.key}>
+                <Table.Td w={90}>
+                  <Badge size="sm" variant="light" color={SEVERITY_COLOR[r.severity]}>
+                    {SEVERITY_LABEL[r.severity]}
+                  </Badge>
+                </Table.Td>
+                <Table.Td>{r.message}</Table.Td>
+              </Table.Tr>
+            ))}
+          </Table.Tbody>
+        </Table>
+      ) : (
+        <EmptyState
+          icon={<IconShieldCheck size={22} />}
+          title="Todo en orden"
+          description="Sin renovaciones atascadas, certificados a punto de caducar ni picos de rechazos EST."
+        />
+      )}
+    </SectionCard>
+  );
+}
+
 /* ------------------------------- Pagina --------------------------------- */
 
 export function DashboardPage() {
@@ -274,6 +363,8 @@ export function DashboardPage() {
           </>
         )}
       </SimpleGrid>
+
+      <VpnAlertsCard />
 
       <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="md">
         <SectionCard

@@ -756,6 +756,48 @@ export function useRevokeVpnDeviceCertificate() {
   });
 }
 
+export interface AndroidCertIssued {
+  password: string;
+  downloadToken: string;
+  expiresAt: string;
+}
+
+/**
+ * Emite (o renueva) el certificado de un dispositivo Android: excepcion
+ * documentada en la que el panel genera la clave (la app de Android no sabe
+ * renovarse sola por EST). Devuelve la contrasena del .p12 y el token de
+ * descarga en claro una unica vez.
+ */
+export function useIssueAndroidCertificate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (username: string) =>
+      (
+        await api.post<AndroidCertIssued>(`/vpn-devices/${encodeURIComponent(username)}/android-cert`)
+      ).data,
+    onSuccess: (_data, username) => qc.invalidateQueries({ queryKey: ['vpn-devices', username] }),
+  });
+}
+
+/** Descarga el paquete de conexion (zip Windows / tar.gz Linux) y lo guarda en el navegador. */
+export function useDownloadVpnDevicePackage() {
+  return useMutation({
+    mutationFn: async (username: string) => {
+      const res = await api.get<Blob>(`/vpn-devices/${encodeURIComponent(username)}/package`, {
+        responseType: 'blob',
+      });
+      const disposition = res.headers['content-disposition'] as string | undefined;
+      const filename = disposition?.match(/filename="([^"]+)"/)?.[1] ?? `${username}.zip`;
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    },
+  });
+}
+
 export function useDecommissionVpnDevice() {
   const qc = useQueryClient();
   return useMutation({
@@ -766,5 +808,42 @@ export function useDecommissionVpnDevice() {
       qc.invalidateQueries({ queryKey: ['vpn-devices'] });
       qc.invalidateQueries({ queryKey: ['vpn-devices', username] });
     },
+  });
+}
+
+/* --------------------------- Alertas VPN (panel) ---------------------- */
+
+export interface RenewalFailingAlert {
+  username: string;
+  platform: 'windows' | 'linux';
+  notAfter: string | null;
+  critical: boolean;
+}
+
+export interface AndroidExpiringAlert {
+  username: string;
+  notAfter: string;
+}
+
+export interface CaExpiringAlert {
+  id: number;
+  subjectCn: string | null;
+  notAfter: string;
+}
+
+export interface VpnAlerts {
+  renewalFailing: RenewalFailingAlert[];
+  androidExpiringSoon: AndroidExpiringAlert[];
+  caExpiringSoon: CaExpiringAlert[];
+  estRejectionsLastHour: number;
+  estRejectionsThreshold: number;
+}
+
+export function useVpnAlerts(enabled: boolean) {
+  return useQuery({
+    queryKey: ['vpn-alerts'],
+    enabled,
+    queryFn: async () => (await api.get<VpnAlerts>('/vpn-alerts')).data,
+    refetchInterval: 60_000,
   });
 }

@@ -1,7 +1,7 @@
 import type { Request } from 'express';
 import { panelPool } from '../db/pools.js';
 
-type AuditAction = 'create' | 'update' | 'delete' | 'disconnect' | 'login';
+type AuditAction = 'create' | 'update' | 'delete' | 'disconnect' | 'login' | 'reject';
 
 /**
  * Registra una operacion de escritura en panel_audit_log.
