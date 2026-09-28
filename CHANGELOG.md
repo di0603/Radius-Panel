@@ -26,6 +26,20 @@ Este proyecto usa versionado semantico.
   y `GET /pki/crl.pem` (CRL con `nextUpdate` a 7 dias, regenerada al importar y
   a diario); la pagina incluye el script y la unidad systemd de ejemplo para que
   el host de FreeRADIUS la sincronice cada hora.
+- **Seccion "VPN > Dispositivos"** (solo admin): alta en una unica operacion
+  (asigna la primera IP libre del pool revisando `radreply` de todos los
+  usuarios, `radcheck` con `Service-Type == Framed-User`, `radusergroup` = `vpn`
+  y la ficha en `panel_vpn_devices`; si falla el paso del panel se deshacen a
+  mano las filas RADIUS ya confirmadas, porque panel y radius pueden vivir en
+  servidores MySQL distintos). Ficha del dispositivo con historial de
+  certificados, sesiones (reutiliza `/users/:u/activity`), ultima emision y
+  proxima renovacion esperada. Token de alta de un solo uso (24h, solo se
+  guarda su hash; generar uno nuevo invalida el anterior). Activar/desactivar
+  reutiliza `Auth-Type := Reject` + desconexion CoA existentes. Revocar
+  certificado regenera la CRL de la CA que lo firmo (`vpn_certificates.ca_serial`)
+  y desconecta la sesion. Dar de baja revoca, desconecta, borra las filas RADIUS
+  (libera la IP) y conserva el historial de certificados. El editor generico de
+  usuarios avisa si el usuario es un dispositivo VPN y enlaza a su ficha.
 - **Sistema de temas**: modo claro, oscuro y automatico (el del sistema) mas siete
   colores de acento, con la preferencia guardada en el navegador.
 - **Seguridad del panel**:

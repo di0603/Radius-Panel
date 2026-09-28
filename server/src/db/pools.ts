@@ -115,6 +115,24 @@ export async function pkiCaExtendedSchemaExists(): Promise<boolean> {
   return rows.length > 0;
 }
 
+/** Comprueba si sql/panel-schema-vpn-devices.sql ya esta aplicada (owner, tunnel_mode, ...). */
+export async function vpnDevicesExtendedSchemaExists(): Promise<boolean> {
+  const [rows] = await panelPool.query<RowDataPacket[]>(
+    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'panel_vpn_devices' AND COLUMN_NAME = 'owner'`,
+  );
+  return rows.length > 0;
+}
+
+/** Comprueba si sql/radius-schema-vpn-issuer.sql ya esta aplicada (vpn_certificates.ca_serial). */
+export async function vpnCertificateIssuerColumnExists(): Promise<boolean> {
+  const [rows] = await radiusPool.query<RowDataPacket[]>(
+    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'vpn_certificates' AND COLUMN_NAME = 'ca_serial'`,
+  );
+  return rows.length > 0;
+}
+
 const VPN_RADIUS_TABLES = ['vpn_certificates'];
 const VPN_PANEL_TABLES = [
   'panel_vpn_devices',

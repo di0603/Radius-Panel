@@ -231,13 +231,25 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
   todavía no hay enlace entre `vpn_certificates` y la CA que firmó cada uno (ver
   ítem de emisión de certificados de dispositivo, más abajo) — hasta entonces la
   CRL se publica vacía pero válida.
+- [x] Sección "VPN > Dispositivos" (solo admin): alta en una única operación
+  (asigna la primera IP libre del pool comprobando `radreply` de todos los
+  usuarios, `radcheck` con `Service-Type == Framed-User`, `radusergroup` = `vpn`,
+  ficha en `panel_vpn_devices`; si falla la ficha del panel se deshacen a mano
+  las filas RADIUS ya confirmadas, porque panel y radius pueden vivir en
+  servidores MySQL distintos). Ficha con historial de certificados, sesiones
+  (reutiliza `/users/:u/activity`), última emisión y próxima renovación
+  esperada. Token de alta EST de un solo uso (24h, solo se guarda el hash).
+  Activar/desactivar reutiliza `Auth-Type := Reject` + desconexión CoA.
+  Revocar certificado regenera la CRL de su CA (`vpn_certificates.ca_serial`,
+  ver más abajo) y desconecta la sesión. Dar de baja revoca, desconecta y
+  borra las filas RADIUS liberando la IP, conservando el historial. El editor
+  de usuarios genérico avisa si el usuario es un dispositivo VPN.
+- [x] `vpn_certificates.ca_serial`: enlaza cada certificado con el serial de la
+  CA que lo firmó, para que revocar regenere la CRL correcta. Sigue sin
+  rellenarse hasta que exista emisión automática de certificados (ítem
+  siguiente); mientras tanto vale NULL, como en el dispositivo de prueba `vps`.
 - [ ] Módulo de emisión/renovación de certificados de dispositivo firmados por la
-  CA intermedia (y enlazar cada `vpn_certificates` con la CA que lo firmó, para
-  que su revocación aparezca en la CRL correcta).
+  CA intermedia (usa el token de alta EST ya existente y `ca_serial`).
 - [ ] Endpoint EST (RFC 7030) para alta y renovación automática de dispositivos.
-- [ ] Alta de dispositivo desde el panel: genera token de un solo uso, crea el
-  usuario RADIUS (`radcheck` con `Service-Type == Framed-User`, `radreply` con
-  `Framed-IP-Address` del pool, `radusergroup` = `vpn`).
-- [ ] Revocación de certificado de dispositivo y baja de dispositivo.
 - [ ] Página de ajustes del módulo VPN (FQDN, rango de IPs, días de vigencia/renovación).
 - [ ] Retirar el dispositivo de prueba `vps` cuando exista la CA intermedia real.

@@ -9,6 +9,7 @@ import { reportsRouter } from './reports.js';
 import { adminsRouter } from './admins.js';
 import { auditRouter } from './audit.js';
 import { pkiRouter } from './pki.js';
+import { vpnDevicesRouter } from './vpnDevices.js';
 
 export const apiRouter = Router();
 
@@ -22,3 +23,4 @@ apiRouter.use('/reports', reportsRouter);
 apiRouter.use('/admins', adminsRouter);
 apiRouter.use('/audit', auditRouter);
 apiRouter.use('/pki', pkiRouter);
+apiRouter.use('/vpn-devices', vpnDevicesRouter);

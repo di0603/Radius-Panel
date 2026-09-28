@@ -362,14 +362,43 @@ export async function buildCrl(input: {
 }
 
 /**
- * De momento no hay enlace entre radius.vpn_certificates y la CA que firmo
- * cada certificado de dispositivo: ese modulo (emision/renovacion, ver
- * ideas.md) todavia no existe. Hasta entonces la CRL se publica vacia pero
- * valida y firmada; cuando exista ese enlace, aqui se filtraran los
- * certificados revocados que emitio esta CA en concreto.
+ * `vpn_certificates.ca_serial` (sql/radius-schema-vpn-issuer.sql) enlaza cada
+ * certificado con el serial de la CA que lo firmo. Sigue vacio para los
+ * certificados sin CA gestionada (p.ej. el dispositivo de prueba "vps",
+ * firmado directamente por la raiz): esos nunca aparecen en ninguna CRL
+ * automatica. Se degrada a "sin revocados" si la columna todavia no existe
+ * (migracion no aplicada) o si `caSerial` es null.
  */
-async function getRevokedEntriesForCa(_caSerial: string | null): Promise<CrlEntryInput[]> {
-  return [];
+async function getRevokedEntriesForCa(caSerial: string | null): Promise<CrlEntryInput[]> {
+  if (!caSerial) return [];
+  try {
+    const [rows] = await radiusPool.query<RowDataPacket[]>(
+      `SELECT serial, revoked_at FROM vpn_certificates WHERE ca_serial = :caSerial AND status = 'revoked'`,
+      { caSerial },
+    );
+    return rows.map((r) => ({
+      serialNumber: String(r.serial),
+      revocationDate: new Date(String(r.revoked_at).replace(' ', 'T') + 'Z'),
+    }));
+  } catch (err) {
+    if ((err as { code?: string } | undefined)?.code === 'ER_BAD_FIELD_ERROR') return [];
+    throw err;
+  }
+}
+
+/**
+ * Regenera la CRL de la CA cuyo serial firmo un certificado dado, tras
+ * revocarlo. No-op silencioso si ese serial no corresponde a ninguna CA
+ * gestionada por el panel (ver `getRevokedEntriesForCa`) o si ya no esta
+ * activa/retirandose.
+ */
+export async function regenerateCrlBySerial(caSerial: string): Promise<void> {
+  const [[row]] = await panelPool.query<RowDataPacket[]>(
+    `SELECT id FROM panel_pki_ca WHERE role = 'intermediate' AND serial = :serial
+       AND status IN ('active', 'retiring') LIMIT 1`,
+    { serial: caSerial },
+  );
+  if (row) await regenerateCrl(Number(row.id));
 }
 
 /** Regenera y guarda la CRL de una CA intermedia activa o en retirada. */

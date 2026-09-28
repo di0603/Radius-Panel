@@ -634,3 +634,127 @@ export function useRegenerateCrl() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['pki-status'] }),
   });
 }
+
+/* --------------------------- Dispositivos VPN ------------------------ */
+
+export type DevicePlatform = 'windows' | 'android' | 'linux';
+export type TunnelMode = 'full' | 'split';
+export type DeviceStatus = 'pending' | 'active' | 'disabled' | 'revoked';
+
+export interface VpnDevice {
+  id: number;
+  username: string;
+  owner: string | null;
+  platform: DevicePlatform;
+  tunnelMode: TunnelMode;
+  notes: string | null;
+  certDays: number | null;
+  renewAfterDays: number | null;
+  framedIp: string | null;
+  status: DeviceStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DeviceCertificateSummary {
+  serial: string;
+  status: 'active' | 'superseded' | 'revoked';
+  notBefore: string;
+  notAfter: string;
+  createdAt: string;
+  revokedAt: string | null;
+  revokeReason: string | null;
+}
+
+export interface VpnDeviceDetail extends VpnDevice {
+  certificates: DeviceCertificateSummary[];
+  lastIssuedAt: string | null;
+  nextRenewalExpectedAt: string | null;
+}
+
+export function useVpnDevices() {
+  return useQuery({
+    queryKey: ['vpn-devices'],
+    queryFn: async () => (await api.get<VpnDevice[]>('/vpn-devices')).data,
+  });
+}
+
+export function useVpnDevice(username: string | null) {
+  return useQuery({
+    queryKey: ['vpn-devices', username],
+    enabled: !!username,
+    queryFn: async () =>
+      (await api.get<VpnDeviceDetail>(`/vpn-devices/${encodeURIComponent(username!)}`)).data,
+  });
+}
+
+export interface CreateVpnDeviceInput {
+  name: string;
+  owner: string | null;
+  platform: DevicePlatform;
+  tunnelMode?: TunnelMode;
+  notes: string | null;
+  certDays: number | null;
+  renewAfterDays: number | null;
+}
+
+export function useCreateVpnDevice() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: CreateVpnDeviceInput) =>
+      (await api.post<VpnDevice>('/vpn-devices', input)).data,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['vpn-devices'] }),
+  });
+}
+
+export function useGenerateEnrollToken() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (username: string) =>
+      (
+        await api.post<{ id: number; token: string; expiresAt: string }>(
+          `/vpn-devices/${encodeURIComponent(username)}/enroll-token`,
+        )
+      ).data,
+    onSuccess: (_data, username) => qc.invalidateQueries({ queryKey: ['vpn-devices', username] }),
+  });
+}
+
+export function useSetVpnDeviceEnabled() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ username, enabled }: { username: string; enabled: boolean }) => {
+      await api.patch(`/vpn-devices/${encodeURIComponent(username)}/enabled`, { enabled });
+    },
+    onSuccess: (_data, { username }) => {
+      qc.invalidateQueries({ queryKey: ['vpn-devices'] });
+      qc.invalidateQueries({ queryKey: ['vpn-devices', username] });
+    },
+  });
+}
+
+export function useRevokeVpnDeviceCertificate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ username, reason }: { username: string; reason: string }) => {
+      await api.post(`/vpn-devices/${encodeURIComponent(username)}/revoke`, { reason });
+    },
+    onSuccess: (_data, { username }) => {
+      qc.invalidateQueries({ queryKey: ['vpn-devices'] });
+      qc.invalidateQueries({ queryKey: ['vpn-devices', username] });
+    },
+  });
+}
+
+export function useDecommissionVpnDevice() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (username: string) => {
+      await api.delete(`/vpn-devices/${encodeURIComponent(username)}`);
+    },
+    onSuccess: (_data, username) => {
+      qc.invalidateQueries({ queryKey: ['vpn-devices'] });
+      qc.invalidateQueries({ queryKey: ['vpn-devices', username] });
+    },
+  });
+}

@@ -16,6 +16,7 @@ import { useDisclosure } from '@mantine/hooks';
 import {
   IconCertificate,
   IconChartBar,
+  IconDevices,
   IconHistory,
   IconLogout,
   IconPlugConnected,
@@ -58,12 +59,19 @@ const NAV_SECTIONS: { label: string; adminOnly?: boolean; items: NavItem[] }[] =
     ],
   },
   {
+    label: 'VPN',
+    adminOnly: true,
+    items: [
+      { to: '/vpn-devices', label: 'Dispositivos', icon: IconDevices },
+      { to: '/pki', label: 'PKI', icon: IconCertificate },
+    ],
+  },
+  {
     label: 'Sistema',
     adminOnly: true,
     items: [
       { to: '/admins', label: 'Administradores', icon: IconShieldLock },
       { to: '/audit', label: 'Auditoria', icon: IconHistory },
-      { to: '/pki', label: 'PKI (VPN)', icon: IconCertificate },
     ],
   },
 ];

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { RowDataPacket } from 'mysql2';
 import { panelPool } from '../db/pools.js';
+import { isValidIpv4, ipv4ToInt } from '../lib/ipv4.js';
 import { logger } from '../lib/logger.js';
 
 /**
@@ -29,20 +30,7 @@ export const DEFAULT_VPN_SETTINGS: VpnSettings = {
   androidCertDays: 365,
 };
 
-function isValidIpv4(ip: string): boolean {
-  const parts = ip.split('.');
-  return parts.length === 4 && parts.every((p) => /^\d{1,3}$/.test(p) && Number(p) <= 255);
-}
-
 const ipv4 = z.string().refine(isValidIpv4, 'Direccion IPv4 invalida');
-
-/** Convierte "a.b.c.d" a un entero de 32 bits, para poder comparar rangos. */
-function ipv4ToInt(ip: string): number {
-  return ip
-    .split('.')
-    .map(Number)
-    .reduce((acc, octet) => acc * 256 + octet, 0);
-}
 
 /**
  * Valida los ajustes del modulo VPN. `renewAfterDays` tiene que ser menor que
