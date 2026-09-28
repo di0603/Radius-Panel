@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
+  Alert,
   Badge,
   Button,
   Card,
@@ -23,6 +24,7 @@ import {
 import { modals } from '@mantine/modals';
 import { useSearchParams } from 'react-router-dom';
 import {
+  IconAlertTriangle,
   IconCertificate,
   IconDownload,
   IconKey,
@@ -36,18 +38,24 @@ import { SectionCard } from '../components/SectionCard';
 import { TableSkeleton } from '../components/TableSkeleton';
 import { EmptyState } from '../components/EmptyState';
 import {
+  useAddDeviceRule,
   useCreateVpnDevice,
   useDecommissionVpnDevice,
+  useDeleteDeviceRule,
+  useDeviceRules,
   useDownloadVpnDevicePackage,
   useGenerateEnrollToken,
   useIssueAndroidCertificate,
   useRevokeVpnDeviceCertificate,
+  useSetDeviceOverrides,
   useSetVpnDeviceEnabled,
   useUserActivity,
   useVpnDevice,
   useVpnDevices,
   type CreateVpnDeviceInput,
   type DevicePlatform,
+  type DeviceRuleKind,
+  type DeviceRuleProtocol,
   type TunnelMode,
 } from '../api/hooks';
 import { formatBytes, formatDateTime, formatDuration } from '../lib/format';
@@ -210,6 +218,218 @@ function CreateDeviceModal({ opened, onClose }: { opened: boolean; onClose: () =
         </Group>
       </Stack>
     </Modal>
+  );
+}
+
+const RULE_KIND_LABEL: Record<DeviceRuleKind, string> = {
+  internet: 'Internet',
+  lan: 'Toda la LAN',
+  custom: 'Destino concreto',
+};
+
+function ruleDescription(rule: { kind: DeviceRuleKind; destCidr: string | null; protocol: DeviceRuleProtocol | null; port: number | null }): string {
+  if (rule.kind !== 'custom') return RULE_KIND_LABEL[rule.kind];
+  const proto = rule.protocol && rule.protocol !== 'any' ? ` ${rule.protocol}` : '';
+  const port = rule.port ? `:${rule.port}` : '';
+  return `${rule.destCidr}${proto}${port}`;
+}
+
+function DeviceRulesSection({
+  username,
+  allowRadiusHost,
+  allowMariadbHost,
+}: {
+  username: string;
+  allowRadiusHost: boolean;
+  allowMariadbHost: boolean;
+}) {
+  const rules = useDeviceRules(username);
+  const addRule = useAddDeviceRule();
+  const deleteRule = useDeleteDeviceRule();
+  const setOverrides = useSetDeviceOverrides();
+
+  const [kind, setKind] = useState<DeviceRuleKind>('internet');
+  const [destCidr, setDestCidr] = useState('');
+  const [protocol, setProtocol] = useState<DeviceRuleProtocol | ''>('');
+  const [port, setPort] = useState<number | ''>('');
+
+  const submitRule = async () => {
+    try {
+      await addRule.mutateAsync({
+        username,
+        input: {
+          kind,
+          destCidr: kind === 'custom' ? destCidr.trim() : undefined,
+          protocol: kind === 'custom' && protocol ? protocol : undefined,
+          port: kind === 'custom' && port !== '' ? port : undefined,
+        },
+      });
+      setDestCidr('');
+      setProtocol('');
+      setPort('');
+      notifyOk('Permiso anadido');
+    } catch (err) {
+      notifyError(err);
+    }
+  };
+
+  const removeRule = async (ruleId: number) => {
+    try {
+      await deleteRule.mutateAsync({ username, ruleId });
+      notifyOk('Permiso eliminado');
+    } catch (err) {
+      notifyError(err);
+    }
+  };
+
+  const confirmOverride = (field: 'allowRadiusHost' | 'allowMariadbHost', label: string, host: string) => {
+    modals.openConfirmModal({
+      title: `Permitir acceso a ${label}`,
+      children: (
+        <Stack gap="xs">
+          <Alert color="red" icon={<IconAlertTriangle size={16} />}>
+            {host} esta bloqueado para todos los clientes VPN por defecto. Esta excepcion es
+            explicita: el dispositivo podra llegar a {label} desde la VPN.
+          </Alert>
+        </Stack>
+      ),
+      labels: { confirm: 'Permitir de todas formas', cancel: 'Cancelar' },
+      confirmProps: { color: 'red' },
+      onConfirm: async () => {
+        try {
+          await setOverrides.mutateAsync({ username, overrides: { [field]: true } });
+          notifyOk('Excepcion activada');
+        } catch (err) {
+          notifyError(err);
+        }
+      },
+    });
+  };
+
+  const disableOverride = async (field: 'allowRadiusHost' | 'allowMariadbHost') => {
+    try {
+      await setOverrides.mutateAsync({ username, overrides: { [field]: false } });
+      notifyOk('Excepcion desactivada');
+    } catch (err) {
+      notifyError(err);
+    }
+  };
+
+  return (
+    <div>
+      <Text size="xs" fw={650} c="dimmed" tt="uppercase" mb={4}>
+        Permisos de red (firewall)
+      </Text>
+      <Stack gap="xs">
+        <Text size="xs" c="dimmed">
+          El acceso a EST (para darse de alta/renovar) siempre esta permitido. RADIUS
+          (192.168.10.28) y MariaDB (192.168.10.30) estan siempre bloqueados salvo excepcion
+          explicita.
+        </Text>
+
+        {rules.data?.length ? (
+          <Table verticalSpacing={4}>
+            <Table.Tbody>
+              {rules.data.map((r) => (
+                <Table.Tr key={r.id}>
+                  <Table.Td>
+                    <Badge size="sm" variant="light">
+                      {ruleDescription(r)}
+                    </Badge>
+                  </Table.Td>
+                  <Table.Td ta="right">
+                    <Button
+                      size="compact-xs"
+                      variant="subtle"
+                      color="red"
+                      onClick={() => removeRule(r.id)}
+                    >
+                      Quitar
+                    </Button>
+                  </Table.Td>
+                </Table.Tr>
+              ))}
+            </Table.Tbody>
+          </Table>
+        ) : (
+          <Text size="sm" c="dimmed">
+            Sin permisos: este dispositivo solo puede llegar a EST.
+          </Text>
+        )}
+
+        <Group grow align="flex-end">
+          <Select
+            label="Anadir permiso"
+            data={[
+              { value: 'internet', label: 'Internet' },
+              { value: 'lan', label: 'Toda la LAN' },
+              { value: 'custom', label: 'Destino concreto' },
+            ]}
+            value={kind}
+            onChange={(v) => setKind((v as DeviceRuleKind) ?? 'internet')}
+            allowDeselect={false}
+          />
+          {kind === 'custom' && (
+            <>
+              <TextInput
+                label="Destino"
+                placeholder="1.2.3.4 o 1.2.3.0/24"
+                value={destCidr}
+                onChange={(e) => setDestCidr(e.currentTarget.value)}
+              />
+              <Select
+                label="Protocolo"
+                placeholder="cualquiera"
+                data={[
+                  { value: 'tcp', label: 'TCP' },
+                  { value: 'udp', label: 'UDP' },
+                ]}
+                value={protocol || null}
+                onChange={(v) => setProtocol((v as DeviceRuleProtocol) ?? '')}
+                clearable
+              />
+              <NumberInput
+                label="Puerto"
+                placeholder="todos"
+                value={port}
+                onChange={(v) => setPort(v === '' ? '' : Number(v))}
+                min={1}
+                max={65535}
+              />
+            </>
+          )}
+          <Button
+            size="sm"
+            loading={addRule.isPending}
+            disabled={kind === 'custom' && !destCidr.trim()}
+            onClick={submitRule}
+          >
+            Anadir
+          </Button>
+        </Group>
+
+        <Group grow mt="xs">
+          <Switch
+            label="Permitir RADIUS (192.168.10.28)"
+            checked={allowRadiusHost}
+            onChange={(e) =>
+              e.currentTarget.checked
+                ? confirmOverride('allowRadiusHost', 'RADIUS', '192.168.10.28')
+                : disableOverride('allowRadiusHost')
+            }
+          />
+          <Switch
+            label="Permitir MariaDB (192.168.10.30)"
+            checked={allowMariadbHost}
+            onChange={(e) =>
+              e.currentTarget.checked
+                ? confirmOverride('allowMariadbHost', 'MariaDB', '192.168.10.30')
+                : disableOverride('allowMariadbHost')
+            }
+          />
+        </Group>
+      </Stack>
+    </div>
   );
 }
 
@@ -530,6 +750,14 @@ function DeviceDrawer({ username, onClose }: { username: string | null; onClose:
                 </Button>
               )}
             </Group>
+          )}
+
+          {device.status !== 'decommissioned' && (
+            <DeviceRulesSection
+              username={device.username}
+              allowRadiusHost={device.allowRadiusHost}
+              allowMariadbHost={device.allowMariadbHost}
+            />
           )}
 
           <div>

@@ -661,6 +661,8 @@ export interface VpnDevice {
   framedIp: string | null;
   enabled: boolean;
   status: DeviceStatus;
+  allowRadiusHost: boolean;
+  allowMariadbHost: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -845,5 +847,111 @@ export function useVpnAlerts(enabled: boolean) {
     enabled,
     queryFn: async () => (await api.get<VpnAlerts>('/vpn-alerts')).data,
     refetchInterval: 60_000,
+  });
+}
+
+/* ------------------------ Permisos de red (firewall) ------------------- */
+
+export type DeviceRuleKind = 'internet' | 'lan' | 'custom';
+export type DeviceRuleProtocol = 'tcp' | 'udp' | 'any';
+
+export interface DeviceRule {
+  id: number;
+  kind: DeviceRuleKind;
+  destCidr: string | null;
+  protocol: DeviceRuleProtocol | null;
+  port: number | null;
+  createdAt: string;
+}
+
+export interface AddDeviceRuleInput {
+  kind: DeviceRuleKind;
+  destCidr?: string | null;
+  protocol?: DeviceRuleProtocol | null;
+  port?: number | null;
+}
+
+export function useDeviceRules(username: string | null) {
+  return useQuery({
+    queryKey: ['vpn-devices', username, 'rules'],
+    enabled: !!username,
+    queryFn: async () =>
+      (await api.get<DeviceRule[]>(`/vpn-devices/${encodeURIComponent(username!)}/rules`)).data,
+  });
+}
+
+export function useAddDeviceRule() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ username, input }: { username: string; input: AddDeviceRuleInput }) =>
+      (
+        await api.post<DeviceRule>(`/vpn-devices/${encodeURIComponent(username)}/rules`, input)
+      ).data,
+    onSuccess: (_data, { username }) => {
+      qc.invalidateQueries({ queryKey: ['vpn-devices', username, 'rules'] });
+    },
+  });
+}
+
+export function useDeleteDeviceRule() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ username, ruleId }: { username: string; ruleId: number }) => {
+      await api.delete(`/vpn-devices/${encodeURIComponent(username)}/rules/${ruleId}`);
+    },
+    onSuccess: (_data, { username }) => {
+      qc.invalidateQueries({ queryKey: ['vpn-devices', username, 'rules'] });
+    },
+  });
+}
+
+export function useSetDeviceOverrides() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      username,
+      overrides,
+    }: {
+      username: string;
+      overrides: { allowRadiusHost?: boolean; allowMariadbHost?: boolean };
+    }) => {
+      await api.patch(`/vpn-devices/${encodeURIComponent(username)}/overrides`, overrides);
+    },
+    onSuccess: (_data, { username }) => {
+      qc.invalidateQueries({ queryKey: ['vpn-devices'] });
+      qc.invalidateQueries({ queryKey: ['vpn-devices', username] });
+    },
+  });
+}
+
+/* ------------------------------ Ajustes VPN ----------------------------- */
+
+export interface VpnSettingsView {
+  vpnFqdn: string;
+  aaaId: string;
+  poolStart: string;
+  poolEnd: string;
+  lanCidr: string;
+  dns: string;
+  deviceCertDays: number;
+  renewAfterDays: number;
+  overlapHours: number;
+  androidCertDays: number;
+  estUrl: string;
+  gatewayTokenSet: boolean;
+}
+
+export function useVpnSettings() {
+  return useQuery({
+    queryKey: ['vpn-settings'],
+    queryFn: async () => (await api.get<VpnSettingsView>('/vpn-settings')).data,
+  });
+}
+
+export function useGenerateGatewayToken() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async () => (await api.post<{ token: string }>('/vpn-settings/gateway-token')).data,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['vpn-settings'] }),
   });
 }

@@ -339,7 +339,40 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
   El `UPDATE` que copiaba el hash ahora comprueba antes en
   `information_schema.COLUMNS` y solo se ejecuta (vía `PREPARE`/`EXECUTE`) si
   `token_hash` existe de verdad.
-- [ ] Página de ajustes del módulo VPN (FQDN, identidad AAA, rango de IPs, días
-  de vigencia/renovación, URL de EST, red LAN para la descarga Android, umbral
-  de alerta de rechazos EST).
+- [x] **Firewall de la VM VPN generado desde el panel** (192.168.10.29, en vez
+  de reglas nftables a mano): permisos por dispositivo en su ficha
+  ("internet", "toda la LAN" o destino/protocolo/puerto concretos); el
+  acceso a EST se añade siempre y RADIUS (192.168.10.28)/MariaDB
+  (192.168.10.30) quedan siempre bloqueados salvo excepción explícita por
+  dispositivo (con aviso). `GET /vpn/gateway/firewall.nft` genera la tabla
+  `inet vpn_clients` completa, autenticado con un token de la puerta de
+  enlace (pestaña "VPN > Ajustes", nueva). `deploy/vpn-gateway-agent.sh` +
+  timer systemd descargan, validan con `nft -c -f` y aplican el fichero,
+  conservando el anterior si algo falla.
+- [x] **Página "VPN > Ajustes"** (nueva, mínima por ahora): solo el token de
+  la puerta de enlace del firewall. El resto de ajustes (FQDN, identidad
+  AAA, rango de IPs, días de vigencia/renovación, URL de EST, red LAN,
+  umbral de alerta de rechazos EST) sigue pendiente de una página completa.
 - [ ] Retirar el dispositivo de prueba `vps` cuando exista la CA intermedia real.
+- [x] **Cierre del modulo**: seccion "VPN y certificados" en el `README.md`
+  (arquitectura, variables, migraciones en orden, puesta en marcha de la CA
+  intermedia, alta por plataforma, firewall de la puerta de enlace) y
+  `SECURITY.md` nuevo (modelo de amenazas, copias de seguridad de
+  `panel_pki_ca`/`PKI_MASTER_KEY` por separado, procedimiento de revocacion de
+  la intermedia). Revision de seguridad de todo el codigo del modulo: ver el
+  detalle de lo corregido en el CHANGELOG.
+- [ ] Boton "revocar todos los certificados de esta CA" en la pagina PKI (hoy
+  requiere SQL directo, ver `SECURITY.md` → "Procedimiento si hay que revocar
+  la CA intermedia"), y una ruta para pasar una intermedia `retiring` a
+  `retired` a mano sin esperar a que expire su CRL.
+- [x] **Correccion 10.5 (firewall de la puerta de enlace)**: `buildFirewallRuleset`
+  no era idempotente (`nft -f` duplicaba reglas en cada ejecucion del
+  agente), la cadena `forward` no aceptaba el trafico de vuelta ni el resto
+  del forward de la maquina (la VPN se habria caido para todos), "internet"
+  no excluia redes privadas/CGNAT/link-local, el agente descargaba el
+  fichero por HTTP en claro (token expuesto, y el puerto ni siquiera esta
+  abierto en el firewall real), `trust proxy` seguia siendo un numero de
+  saltos (no comprueba direcciones) y el `Content-Type` de EST llevaba un
+  `charset` de mas. Validado con `nft -c -f` real (WSL) sobre un fichero de
+  ejemplo con dos dispositivos, revisado antes de fusionar. Detalle completo
+  en el CHANGELOG.

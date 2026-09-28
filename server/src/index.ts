@@ -7,6 +7,7 @@ import { pinoHttp } from 'pino-http';
 import { config } from './config.js';
 import { apiRouter } from './routes/index.js';
 import { pkiPublicRouter } from './routes/pkiPublic.js';
+import { vpnGatewayRouter } from './routes/vpnGateway.js';
 import { errorHandler, notFoundHandler } from './middleware/error.js';
 import {
   assertDbConnectivity,
@@ -18,6 +19,7 @@ import {
 } from './db/pools.js';
 import { logger } from './lib/logger.js';
 import { metricsMiddleware, registry } from './lib/metrics.js';
+import { TRUSTED_PROXIES } from './lib/trustProxy.js';
 import { purgeOldTokens } from './services/auth.js';
 import { regenerateDueCrls, retireStaleRsaIntermediates } from './services/pki.js';
 import { purgeExpiredAndroidDownloads } from './services/androidCert.js';
@@ -27,7 +29,22 @@ import { APP_VERSION } from './version.js';
 
 const app = express();
 
-app.set('trust proxy', 1);
+/**
+ * Lista explicita de proxies de confianza, no un numero de saltos: con un
+ * numero (p.ej. 2), Express se fia de los dos ultimos valores de
+ * X-Forwarded-For que traiga la peticion SIN comprobar de quien vino en
+ * realidad — si algo pudiera llegar a Node sin pasar por los dos proxies
+ * reales (nginx local no deja pasar nada por fuera de el, pero un fallo de
+ * ese firewall lo dejaria expuesto), bastaria con mandar esa cabecera con
+ * dos IPs inventadas por delante para que `req.ip` se creyera cualquier
+ * cosa. Con la lista de `lib/trustProxy.ts`, Express solo sigue el
+ * encadenado de X-Forwarded-For mientras cada salto, de derecha a
+ * izquierda, sea una IP conocida; en cuanto aparece una que no lo es, esa es
+ * la IP real del cliente y ahi se para — una peticion que llegue
+ * directamente desde una IP no confiada nunca puede hacer que se use su
+ * propio X-Forwarded-For inventado.
+ */
+app.set('trust proxy', TRUSTED_PROXIES);
 app.disable('x-powered-by');
 
 app.use((req, res, next) => {
@@ -119,6 +136,10 @@ if (config.metricsEnabled) {
 // Sin autenticacion, fuera de /api: cadena de CA y CRL de la VPN (RFC 5280),
 // las consultan strongSwan/FreeRADIUS y los dispositivos, no solo el panel.
 app.use('/pki', pkiPublicRouter);
+
+// Sin requireAuth, fuera de /api: lo llama deploy/vpn-gateway-agent (una
+// maquina), autenticado con el token de la puerta de enlace, no una sesion.
+app.use('/vpn', vpnGatewayRouter);
 
 app.use('/api', apiRouter);
 

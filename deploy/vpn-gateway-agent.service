@@ -1,0 +1,8 @@
+[Unit]
+Description=Descarga y aplica el firewall de la VPN generado por Radius Panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/vpn-gateway-agent.sh

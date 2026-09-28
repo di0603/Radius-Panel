@@ -241,8 +241,166 @@ Este proyecto usa versionado semantico.
   metricas Prometheus en `/metrics` y comprobacion del esquema de la base de datos
   al iniciar.
 - **Calidad**: ESLint integrado en el CI y tests del cifrado y del flujo TOTP.
+- **Firewall de la VM VPN generado desde el panel** (192.168.10.29, `tabla
+  inet vpn_clients`): sustituye las reglas nftables editadas a mano por un
+  fichero generado a partir de los permisos de cada dispositivo.
+  - En la ficha del dispositivo, permisos de red: "internet" (`0.0.0.0/0`),
+    "toda la LAN" (`panel_vpn_settings.lan_cidr`) o un destino concreto
+    (IP/CIDR, protocolo y puerto opcionales). El acceso a EST
+    (`192.168.10.28`, el puerto de `EST_PORT`) se anade siempre, sin
+    depender de ningun permiso.
+  - `192.168.10.28` (RADIUS) y `192.168.10.30` (MariaDB) estan siempre
+    bloqueados para los clientes VPN -incluso si un permiso como "toda la
+    LAN" los incluiria- salvo que un admin active la excepcion explicita
+    para ese dispositivo concreto (con aviso en la interfaz antes de
+    confirmar). El orden de las reglas generadas es critico: el bloqueo va
+    antes que los permisos propios del dispositivo, porque nftables aplica
+    el veredicto de la primera regla que hace match.
+  - `GET /vpn/gateway/firewall.nft` genera el fichero completo a partir de
+    todos los dispositivos activos (con IP asignada). Sin `requireAuth`
+    -lo consulta la VM VPN, no un admin con sesion-, autenticado con un
+    token de la puerta de enlace (`Authorization: Bearer`, solo su hash en
+    `panel_vpn_settings.gateway_token_sha256`) que se genera desde la nueva
+    pagina "VPN > Ajustes" y se ensena una unica vez.
+  - `deploy/vpn-gateway-agent.sh` + unidad systemd (`.service`/`.timer`,
+    cada 5 min) para la VM VPN: descarga el fichero, lo valida con
+    `nft -c -f` y solo entonces lo aplica (`nft -f`); si la descarga, la
+    validacion o la aplicacion fallan, conserva el firewall que ya estaba
+    cargado.
+  - Tests: generacion del fichero para varios casos (uno o varios
+    dispositivos, cada tipo de permiso, la excepcion de RADIUS/MariaDB) y,
+    si esta disponible, `nft -c -f` sobre la sintaxis generada de verdad;
+    `shellcheck` sobre `vpn-gateway-agent.sh`.
+
+- **Cierre del modulo VPN**: documentacion y revision de seguridad de todo el
+  codigo nuevo (PKI, EST, dispositivos, paquetes de conexion, Android,
+  firewall de la puerta de enlace), como si fuera una revision externa.
+  - `README.md`: seccion nueva "VPN y certificados" (arquitectura, paginas
+    del panel, variables de entorno, las 8 migraciones en el orden correcto
+    con la base de cada una, puesta en marcha paso a paso de la CA
+    intermedia, alta de un dispositivo por plataforma, instalacion del
+    firewall de la puerta de enlace, mantenimiento periodico).
+  - `SECURITY.md` (nuevo): modelo de amenazas (panel comprometido, token de
+    alta filtrado, certificado de dispositivo robado, dispositivo
+    perdido/robado, VPS comprometido, solo la base de datos comprometida) con
+    que mitiga cada caso; copias de seguridad de `panel_pki_ca` y de
+    `PKI_MASTER_KEY` **por separado** (y por que no deben acabar juntas);
+    procedimiento completo si hay que revocar la CA intermedia (emitir una
+    nueva, revocar en bloque los certificados de la comprometida, regenerar
+    su CRL, marcarla `retired`, re-enrolar cada dispositivo afectado).
+  - **Correcciones encontradas en la revision**:
+    - Condicion de carrera al asignar la IP de un dispositivo nuevo: el
+      `SELECT` de las IPs ya usadas en `radreply` no bloqueaba esas filas
+      (`FOR UPDATE`), asi que dos altas simultaneas podian elegir la misma IP
+      libre — el `UNIQUE` de `panel_vpn_devices.framed_ip` lo detectaba
+      despues (sin corrupcion silenciosa), pero dejaba un momento con dos
+      cuentas RADIUS con la misma `Framed-IP-Address` y la peticion que
+      perdia la carrera fallaba con un error de clave duplicada en vez de un
+      mensaje claro. Ahora el `SELECT` bloquea esas filas dentro de la misma
+      transaccion.
+    - El certificado de dispositivo emitido copiaba el `subject` completo del
+      CSR (no solo el CN ya validado): un CSR podia pedir RDNs adicionales
+      (`O`, `OU`...) que acababan en el certificado firmado sin validacion
+      propia. Sin impacto real hoy (la identidad que usan strongSwan/RADIUS
+      es el SAN `dNSName`, que siempre fija el servidor, no el subject), pero
+      se corrige por defecto en profundidad: el subject emitido es siempre
+      exactamente `CN=<username validado>`.
+    - `simplereenroll`/`status` no tenian ningun rate-limit (a diferencia de
+      `simpleenroll`, la descarga de Android o el firewall de la puerta de
+      enlace): un certificado de dispositivo robado se podia usar para
+      bombardear el endpoint con verificaciones X.509 completas y
+      transacciones con filas bloqueadas. Anadido un limite (120 peticiones /
+      15 min) generoso para no afectar el uso normal con varios dispositivos
+      detras de la misma IP (NAT).
+    - `deploy/vpn-gateway-agent.config.sh.example` documentaba `PANEL_URL`
+      como el listener EST (puerto 8443), pero `GET /vpn/gateway/firewall.nft`
+      vive en la API principal (otro servidor Express, otro puerto): con la
+      configuracion de ejemplo tal como estaba, el agente de la puerta de
+      enlace nunca habria conseguido descargar el fichero (404 constante) y
+      el firewall generado desde el panel nunca se habria llegado a aplicar
+      en produccion. Corregido el ejemplo (LAN directa a la API principal,
+      `http://192.168.10.28:1003`) y anadidos los bloques
+      `location /pki/`/`location /vpn/` que faltaban en
+      `deploy/nginx-radius-panel.conf` para quien prefiera la URL publica en
+      vez de la LAN directa.
+    - `app.set('trust proxy', 1)` (`server/src/index.ts`) solo contaba un
+      salto de proxy, pero la topologia real (confirmada con el usuario) tiene
+      dos: Nginx Proxy Manager en **otra maquina**, delante del nginx local de
+      `deploy/nginx-radius-panel.conf`, que es quien reenvia a la API. Con
+      solo 1, `req.ip` resolvia a la IP de NPM en vez de la del cliente real
+      para **toda** la API (no solo la VPN): rompia el rate-limit por IP en
+      general y, en este modulo, la restriccion "solo desde la VPN o la LAN"
+      de la descarga de Android y su propio rate-limit. Corregido a `2`
+      primero y, en el prompt 10.5, revisado otra vez a una lista explicita
+      de proxies de confianza (ver mas abajo): un numero de saltos no
+      comprueba de quien viene cada salto, solo cuenta, y eso tiene su
+      propio problema de seguridad.
 
 ### Corregido
+
+- **Firewall de la puerta de enlace VPN (correccion 10.5)**: la revision de
+  seguridad del cierre del modulo (prompt 10) no detecto estos fallos porque
+  ninguno era "logica de negocio" comprobable sin conocer nftables/HTTP a
+  fondo; revisados aparte con tests que los habrian detectado.
+  - **No era idempotente**: `nft -f` sobre un script que solo declara
+    `table X { chain Y { reglas } }` **anade** esas reglas cada vez, no las
+    reemplaza — cada ejecucion del agente (cada 5 min) iba duplicando todas
+    las reglas, y las de un dispositivo borrado no desaparecian nunca.
+    Ahora el fichero generado borra y vuelve a definir la tabla entera en la
+    misma ejecucion de `nft -f` (`table inet vpn_clients {}` para que el
+    `delete` no falle la primera vez, `delete table inet vpn_clients`, y
+    solo entonces la definicion completa).
+  - **La VPN se habria caido para todos los dispositivos**: la cadena
+    `forward` con `policy drop` solo tenia reglas `ip saddr <cliente> ...`;
+    el trafico de vuelta (respuestas de internet/LAN hacia el cliente) no
+    coincidia con ninguna y se habria descartado, porque en nftables un
+    paquete tiene que ser aceptado por todas las cadenas base del mismo
+    hook. Anadidas `ct state invalid drop` y
+    `ct state established,related accept` al principio de la cadena.
+  - **La misma tabla habria afectado a todo el forward de la maquina**, no
+    solo a los clientes VPN (p.ej. el MSS clamp de `/etc/nftables.conf`),
+    por tener su propia `policy drop` en el mismo hook. Primera regla de la
+    cadena: `ip saddr != <pool VPN> ip daddr != <pool VPN> accept` — el
+    trafico ajeno al pool de la VPN se acepta aqui sin mirarlo, y sigue
+    evaluandose por su cuenta en las demas tablas.
+  - **El permiso "internet" equivalia a "cualquier red", incluida toda la
+    LAN**: `ip daddr 0.0.0.0/0 accept` no excluia nada. Ahora excluye
+    RFC 1918 (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), CGNAT
+    (`100.64.0.0/10`) y link-local (`169.254.0.0/16`) con un set anonimo
+    (`ip daddr != { ... } accept`); quien quiera dar acceso a la LAN tiene
+    el permiso "toda la LAN" aparte, sin mezclarlo con "internet".
+  - **El agente descargaba el fichero por HTTP en claro**
+    (`PANEL_URL=http://192.168.10.28:1003`): el token de la puerta de
+    enlace viajaba sin cifrar por la cabecera `Authorization`, y ademas ese
+    puerto no esta abierto desde la VM VPN en el firewall real de la .28
+    (no habria funcionado de todas formas). `deploy/vpn-gateway-agent.sh`
+    ahora exige HTTPS (se niega a arrancar si `PANEL_URL` no empieza por
+    `https://`) y usa `curl --proto '=https' --tlsv1.2` con validacion
+    normal del certificado; el ejemplo de configuracion apunta a la URL
+    publica del panel a traves de Nginx Proxy Manager
+    (`https://radius.didev.es`), restringible por IP en el propio NPM.
+    `deploy/nginx-radius-panel.conf` mantiene el bloque `location /vpn/`
+    (ahora imprescindible: es el unico camino hasta la API para el agente) y
+    se ha quitado el `location /pki/` que se habia anadido en el prompt 10
+    sin ningun consumidor real (FreeRADIUS lee la cadena de CA/CRL por
+    loopback, en la misma maquina).
+  - **`trust proxy` como numero de saltos**, corregido en el prompt 10 de
+    `1` a `2`, sigue sin comprobar de que direcciones vienen esos saltos —
+    cuenta a ciegas. Cambiado a una lista explicita
+    (`server/src/lib/trustProxy.ts`: `['loopback', '192.168.10.38']`, la IP
+    real de Nginx Proxy Manager): Express solo sigue el `X-Forwarded-For`
+    mientras cada salto, de derecha a izquierda, sea una de esas direcciones
+    conocidas: en cuanto aparece una que no lo es, esa es la IP real del
+    cliente y ahi se para, sin creerse ninguna cabecera que un cliente
+    directo (o uno que llegara a saltarse nginx) intentara inventarse.
+  - **`Content-Type` de las respuestas binarias de EST llevaba
+    `; charset=utf-8`** (`cacerts`, `simpleenroll`, `simplereenroll`):
+    Express se lo anade a cualquier Content-Type cuando el cuerpo es un
+    string, sin mirar si el tipo es binario — RFC 7030 exige exactamente
+    `application/pkcs7-mime; smime-type=certs-only`, sin nada mas. Corregido
+    enviando el cuerpo como `Buffer` en vez de `string` (evita esa rama de
+    Express por completo); tests con igualdad estricta del header, no solo
+    un `match` que habria dejado pasar el sufijo de mas.
 
 - **EST (correccion)**:
   - `GET /.well-known/est/status` validaba unicamente que el certificado

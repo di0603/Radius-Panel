@@ -1,5 +1,5 @@
 import type { TLSSocket } from 'node:tls';
-import { Router, type Request } from 'express';
+import { Router, type Request, type Response } from 'express';
 import rateLimit from 'express-rate-limit';
 import { asyncHandler, unauthorized } from '../lib/http.js';
 import { writeAudit } from '../middleware/audit.js';
@@ -22,6 +22,18 @@ import {
 export const estRouter = Router();
 
 const PKCS7_MIME = 'application/pkcs7-mime; smime-type=certs-only';
+
+/**
+ * RFC 7030 exige este Content-Type exacto. `res.type(PKCS7_MIME).send(body)`
+ * con `body` como STRING no basta: Express le anade "; charset=utf-8" a
+ * cualquier Content-Type cuando el cuerpo es una cadena (lib/response.js,
+ * `send()`), sin mirar si el tipo es binario o no. Pasando un Buffer en vez
+ * de un string se evita esa rama por completo, y el Content-Type se manda
+ * tal cual.
+ */
+function sendPkcs7(res: Response, base64Body: string): void {
+  res.type(PKCS7_MIME).send(Buffer.from(base64Body, 'utf8'));
+}
 
 function peerCertDer(req: Request): Buffer | null {
   const socket = req.socket as TLSSocket;
@@ -76,7 +88,7 @@ estRouter.get(
       res.status(404).json({ error: 'La PKI de la VPN todavia no esta configurada' });
       return;
     }
-    res.type(PKCS7_MIME).send(body);
+    sendPkcs7(res, body);
   }),
 );
 
@@ -88,6 +100,23 @@ const enrollLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Demasiadas peticiones de alta, prueba de nuevo en unos minutos' },
+});
+
+/**
+ * simplereenroll/status exigen un certificado de cliente valido, pero un
+ * certificado robado (o un dispositivo con un bug) podria usarse para
+ * bombardear el endpoint: cada intento hace una verificacion X.509 completa
+ * y, en simplereenroll, abre una transaccion con las filas del dispositivo
+ * bloqueadas. Limite generoso (pensado para muchos dispositivos distintos
+ * detras de la misma IP, p.ej. varios clientes VPN por NAT) para no estorbar
+ * el uso normal.
+ */
+const renewLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiadas peticiones, prueba de nuevo en unos minutos' },
 });
 
 estRouter.post(
@@ -112,7 +141,7 @@ estRouter.post(
         ip: clientIp(req),
       });
       logger.info({ device: auth.username, serial: result.serial }, 'EST: alta emitida');
-      res.type(PKCS7_MIME).send(certToPkcs7Base64(result.certPem));
+      sendPkcs7(res, certToPkcs7Base64(result.certPem));
     } catch (err) {
       estEnrollments.inc({ result: 'rejected' });
       if (err instanceof EstRejection) await auditAndReject(req, 'simpleenroll', auth.username, err);
@@ -125,6 +154,7 @@ estRouter.post(
 
 estRouter.post(
   '/simplereenroll',
+  renewLimiter,
   asyncHandler(async (req, res) => {
     const der = peerCertDer(req);
     let deviceForAudit = 'desconocido';
@@ -135,7 +165,7 @@ estRouter.post(
       estRenewals.inc({ result: 'ok' });
       await writeAudit(req, 'create', 'vpn_est_simplereenroll', result.serial, { ip: clientIp(req) });
       logger.info({ serial: result.serial }, 'EST: renovacion emitida');
-      res.type(PKCS7_MIME).send(certToPkcs7Base64(result.certPem));
+      sendPkcs7(res, certToPkcs7Base64(result.certPem));
     } catch (err) {
       estRenewals.inc({ result: 'rejected' });
       if (err instanceof EstRejection) await auditAndReject(req, 'simplereenroll', deviceForAudit, err);
@@ -148,6 +178,7 @@ estRouter.post(
 
 estRouter.get(
   '/status',
+  renewLimiter,
   asyncHandler(async (req, res) => {
     const der = peerCertDer(req);
     try {

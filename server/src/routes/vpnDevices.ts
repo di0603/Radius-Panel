@@ -4,6 +4,7 @@ import { asyncHandler } from '../lib/http.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { writeAudit } from '../middleware/audit.js';
 import { issueAndroidCertificate } from '../services/androidCert.js';
+import { addDeviceRule, deleteDeviceRule, listDeviceRules } from '../services/vpnDeviceRules.js';
 import { buildDevicePackage } from '../services/vpnClientPackages.js';
 import {
   NAME_PART_RE,
@@ -14,6 +15,7 @@ import {
   listDevices,
   revokeDeviceCertificate,
   setDeviceEnabled,
+  setDeviceOverrides,
 } from '../services/vpnDevices.js';
 
 /**
@@ -134,6 +136,64 @@ vpnDevicesRouter.delete(
   asyncHandler(async (req, res) => {
     await decommissionDevice(req.params.username);
     await writeAudit(req, 'delete', 'vpn_device', req.params.username);
+    res.json({ ok: true });
+  }),
+);
+
+/* -------------------------- Permisos de red (firewall) ------------------------- */
+
+const addRuleSchema = z.object({
+  kind: z.enum(['internet', 'lan', 'custom']),
+  destCidr: z.string().max(45).nullable().optional(),
+  protocol: z.enum(['tcp', 'udp', 'any']).nullable().optional(),
+  port: z.number().int().min(1).max(65535).nullable().optional(),
+});
+
+vpnDevicesRouter.get(
+  '/:username/rules',
+  asyncHandler(async (req, res) => {
+    res.json(await listDeviceRules(req.params.username));
+  }),
+);
+
+vpnDevicesRouter.post(
+  '/:username/rules',
+  asyncHandler(async (req, res) => {
+    const input = addRuleSchema.parse(req.body);
+    const rule = await addDeviceRule(req.params.username, input, req.auth!.sub);
+    await writeAudit(req, 'create', 'vpn_device_rule', req.params.username, {
+      kind: rule.kind,
+      destCidr: rule.destCidr,
+      protocol: rule.protocol,
+      port: rule.port,
+    });
+    res.status(201).json(rule);
+  }),
+);
+
+vpnDevicesRouter.delete(
+  '/:username/rules/:ruleId',
+  asyncHandler(async (req, res) => {
+    const ruleId = Number(req.params.ruleId);
+    await deleteDeviceRule(req.params.username, ruleId);
+    await writeAudit(req, 'delete', 'vpn_device_rule', req.params.username, { ruleId });
+    res.json({ ok: true });
+  }),
+);
+
+const overridesSchema = z.object({
+  allowRadiusHost: z.boolean().optional(),
+  allowMariadbHost: z.boolean().optional(),
+});
+
+vpnDevicesRouter.patch(
+  '/:username/overrides',
+  asyncHandler(async (req, res) => {
+    const input = overridesSchema.parse(req.body);
+    await setDeviceOverrides(req.params.username, input);
+    // Decision de seguridad real (permite lo que por defecto esta siempre
+    // prohibido): se audita completa, no solo que "se actualizo algo".
+    await writeAudit(req, 'update', 'vpn_device_overrides', req.params.username, input);
     res.json({ ok: true });
   }),
 );

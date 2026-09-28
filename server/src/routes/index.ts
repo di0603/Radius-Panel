@@ -12,6 +12,7 @@ import { pkiRouter } from './pki.js';
 import { vpnDevicesRouter } from './vpnDevices.js';
 import { vpnAndroidDownloadRouter } from './vpnAndroidDownload.js';
 import { vpnAlertsRouter } from './vpnAlerts.js';
+import { vpnSettingsRouter } from './vpnSettings.js';
 
 export const apiRouter = Router();
 
@@ -28,3 +29,4 @@ apiRouter.use('/pki', pkiRouter);
 apiRouter.use('/vpn-devices', vpnDevicesRouter);
 apiRouter.use('/vpn-android', vpnAndroidDownloadRouter);
 apiRouter.use('/vpn-alerts', vpnAlertsRouter);
+apiRouter.use('/vpn-settings', vpnSettingsRouter);
