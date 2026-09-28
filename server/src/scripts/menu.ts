@@ -21,6 +21,11 @@ import {
   radiusPool,
   closePools,
   userMetaTableExists,
+  vpnModuleTablesExist,
+  pkiCaExtendedSchemaExists,
+  vpnDevicesExtendedSchemaExists,
+  vpnCertificateIssuerColumnExists,
+  vpnSettingsExtendedSchemaExists,
 } from '../db/pools.js';
 import { createUser, deleteUser, listUsers } from '../services/radiusUsers.js';
 import { createAdmin, listAdmins, updateAdmin } from '../services/admins.js';
@@ -125,6 +130,69 @@ async function schemaStatus(): Promise<void> {
   }
 }
 
+/** Comprueba si esta completo el esquema del modulo VPN (PKI + enrolamiento). */
+async function vpnMigrationStatus(): Promise<void> {
+  if (await vpnModuleTablesExist()) {
+    console.log('\x1b[32m✔\x1b[0m modulo VPN activo (tablas presentes en radius y radius_panel)');
+  } else {
+    console.log(
+      '\x1b[33m!\x1b[0m modulo VPN incompleto: el panel lo anuncia desactivado en /api/meta.\n' +
+        `  Aplica: mysql -u root -p ${config.radiusDb.database} < sql/radius-schema-vpn.sql\n` +
+        `  Aplica: mysql -u root -p ${config.panelDb.database} < sql/panel-schema-vpn.sql`,
+    );
+  }
+}
+
+/** Comprueba si panel_pki_ca tiene el esquema de CLAUDE.md (correccion 4.5). */
+async function pkiCaMigrationStatus(): Promise<void> {
+  if (await pkiCaExtendedSchemaExists()) {
+    console.log(
+      '\x1b[32m✔\x1b[0m panel_pki_ca en el esquema correcto (root_cert_pem, ECDSA P-384)',
+    );
+  } else {
+    console.log(
+      '\x1b[33m!\x1b[0m panel_pki_ca tiene el esquema anterior (role/subject_cn): la pagina PKI\n' +
+        '  fallara al usarla.\n' +
+        `  Aplica: mysql -u root -p ${config.panelDb.database} < sql/panel-schema-vpn-pki.sql`,
+    );
+  }
+}
+
+/** Comprueba si panel_vpn_devices y vpn_certificates.ca_id tienen el esquema de CLAUDE.md. */
+async function vpnDevicesMigrationStatus(): Promise<void> {
+  if (await vpnDevicesExtendedSchemaExists()) {
+    console.log(
+      '\x1b[32m✔\x1b[0m panel_vpn_devices en el esquema correcto (owner_user, device_label...)',
+    );
+  } else {
+    console.log(
+      '\x1b[33m!\x1b[0m panel_vpn_devices tiene el esquema anterior: la seccion Dispositivos fallara.\n' +
+        `  Aplica: mysql -u root -p ${config.panelDb.database} < sql/panel-schema-vpn-devices.sql`,
+    );
+  }
+  if (await vpnCertificateIssuerColumnExists()) {
+    console.log('\x1b[32m✔\x1b[0m vpn_certificates.ca_id existe (enlace con la CA emisora)');
+  } else {
+    console.log(
+      '\x1b[33m!\x1b[0m falta vpn_certificates.ca_id: revocar un certificado no podra regenerar\n' +
+        '  la CRL de su CA automaticamente.\n' +
+        `  Aplica: mysql -u root -p ${config.radiusDb.database} < sql/radius-schema-vpn-issuer.sql`,
+    );
+  }
+}
+
+/** Comprueba si panel_vpn_settings/panel_vpn_enroll_tokens tienen el esquema de CLAUDE.md. */
+async function vpnSettingsMigrationStatus(): Promise<void> {
+  if (await vpnSettingsExtendedSchemaExists()) {
+    console.log('\x1b[32m✔\x1b[0m panel_vpn_settings tiene aaa_id/est_url');
+  } else {
+    console.log(
+      '\x1b[33m!\x1b[0m falta panel_vpn_settings.aaa_id/est_url.\n' +
+        `  Aplica: mysql -u root -p ${config.panelDb.database} < sql/panel-schema-vpn-4.5.sql`,
+    );
+  }
+}
+
 async function schemaMenu(): Promise<void> {
   for (;;) {
     heading('Esquema / migraciones');
@@ -134,10 +202,20 @@ async function schemaMenu(): Promise<void> {
         ` 3) Aplicar sql/panel-schema-security.sql (refresh tokens, 2FA, bloqueo de cuenta)\n` +
         ` 4) Aplicar sql/panel-schema-google.sql (login con Google, opcional)\n` +
         ` 5) Aplicar sql/panel-schema-user-meta.sql (email/notas de usuarios RADIUS, opcional)\n` +
-        ` 6) Estado de las tablas\n` +
-        ` 7) Estado de la migracion de seguridad\n` +
-        ` 8) Estado de la migracion de Google\n` +
-        ` 9) Estado de email/notas de usuarios\n` +
+        ` 6) Aplicar sql/radius-schema-vpn.sql (tabla de certificados VPN, opcional)\n` +
+        ` 7) Aplicar sql/panel-schema-vpn.sql (dispositivos/PKI/ajustes VPN, opcional)\n` +
+        ` 8) Aplicar sql/panel-schema-vpn-pki.sql (esquema correcto de panel_pki_ca, opcional)\n` +
+        ` 9) Aplicar sql/panel-schema-vpn-devices.sql (esquema correcto de panel_vpn_devices, opcional)\n` +
+        ` 10) Aplicar sql/radius-schema-vpn-issuer.sql (vpn_certificates.ca_id, opcional)\n` +
+        ` 11) Aplicar sql/panel-schema-vpn-4.5.sql (aaa_id/est_url, token_sha256, opcional)\n` +
+        ` 12) Estado de las tablas\n` +
+        ` 13) Estado de la migracion de seguridad\n` +
+        ` 14) Estado de la migracion de Google\n` +
+        ` 15) Estado de email/notas de usuarios\n` +
+        ` 16) Estado del modulo VPN\n` +
+        ` 17) Estado de la CA intermedia (PKI)\n` +
+        ` 18) Estado de dispositivos VPN\n` +
+        ` 19) Estado de ajustes VPN\n` +
         ` 0) Volver`,
     );
     const c = (await ask('> ')).trim();
@@ -164,15 +242,84 @@ async function schemaMenu(): Promise<void> {
             `Requiere que "${config.panelDb.database}" ya exista.`,
         );
         await runSqlFile('panel-schema-user-meta.sql', config.panelDb, true);
-      } else if (c === '6') await schemaStatus();
-      else if (c === '7') await securityMigrationStatus();
-      else if (c === '8') await googleMigrationStatus();
-      else if (c === '9') await userMetaMigrationStatus();
+      } else if (c === '6') {
+        console.log(
+          'Idempotente. Crea/completa vpn_certificates en la base de FreeRADIUS. No toca\n' +
+            'radcheck/radreply/radusergroup ni la fila de prueba "vps" si ya existe.',
+        );
+        await runSqlFile('radius-schema-vpn.sql', config.radiusDb, true);
+      } else if (c === '7') {
+        console.log(
+          'Idempotente. Crea dispositivos/tokens de alta/PKI/ajustes del modulo VPN.\n' +
+            `Requiere que "${config.panelDb.database}" ya exista.`,
+        );
+        await runSqlFile('panel-schema-vpn.sql', config.panelDb, true);
+      } else if (c === '8') {
+        console.log(
+          'Idempotente, pero recrea panel_pki_ca vacia con el esquema correcto (correccion 4.5):\n' +
+            'no hay ninguna CA intermedia real desplegada todavia. No toca radius.vpn_certificates.',
+        );
+        const ok = await askDefault('Continuar? (s/n)', 's');
+        if (ok.toLowerCase() === 's')
+          await runSqlFile('panel-schema-vpn-pki.sql', config.panelDb, true);
+      } else if (c === '9') {
+        console.log(
+          'Idempotente, pero recrea panel_vpn_devices vacia con el esquema correcto (correccion\n' +
+            '4.5): no hay ningun dispositivo real dado de alta por el panel todavia. No toca\n' +
+            'radcheck/radreply/radusergroup ni radius.vpn_certificates.',
+        );
+        const ok = await askDefault('Continuar? (s/n)', 's');
+        if (ok.toLowerCase() === 's')
+          await runSqlFile('panel-schema-vpn-devices.sql', config.panelDb, true);
+      } else if (c === '10') {
+        console.log(
+          'Idempotente. Sustituye vpn_certificates.ca_serial por ca_id (INT). No toca la fila de\n' +
+            'prueba "vps" (queda con ca_id NULL).',
+        );
+        await runSqlFile('radius-schema-vpn-issuer.sql', config.radiusDb, true);
+      } else if (c === '11') {
+        console.log(
+          'Idempotente. Anade aaa_id/est_url a panel_vpn_settings (conserva la fila existente) y\n' +
+            'recrea panel_vpn_enroll_tokens vacia con la columna token_sha256.',
+        );
+        await runSqlFile('panel-schema-vpn-4.5.sql', config.panelDb, true);
+      } else if (c === '12') await schemaStatus();
+      else if (c === '13') await securityMigrationStatus();
+      else if (c === '14') await googleMigrationStatus();
+      else if (c === '15') await userMetaMigrationStatus();
+      else if (c === '16') await vpnMigrationStatus();
+      else if (c === '17') await pkiCaMigrationStatus();
+      else if (c === '18') await vpnDevicesMigrationStatus();
+      else if (c === '19') await vpnSettingsMigrationStatus();
       else if (c === '0') return;
     } catch (err) {
       console.log(`\x1b[31merror:\x1b[0m ${(err as Error).message}`);
     }
-    if (['1', '2', '3', '4', '5', '6', '7', '8', '9'].includes(c)) await pause();
+    if (
+      [
+        '1',
+        '2',
+        '3',
+        '4',
+        '5',
+        '6',
+        '7',
+        '8',
+        '9',
+        '10',
+        '11',
+        '12',
+        '13',
+        '14',
+        '15',
+        '16',
+        '17',
+        '18',
+        '19',
+      ].includes(c)
+    ) {
+      await pause();
+    }
   }
 }
 

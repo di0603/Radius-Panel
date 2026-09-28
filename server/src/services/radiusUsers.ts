@@ -60,7 +60,8 @@ function applyPassword(input: UserWriteInput): AttrRow[] {
   return checks;
 }
 
-async function usernameExists(username: string): Promise<boolean> {
+/** Exportada: la reutiliza vpnDevices.ts para comprobar unicidad antes de crear un dispositivo. */
+export async function usernameExists(username: string): Promise<boolean> {
   const [rows] = await radiusPool.query<RowDataPacket[]>(
     `SELECT 1 FROM radcheck WHERE username = :u
      UNION SELECT 1 FROM radreply WHERE username = :u

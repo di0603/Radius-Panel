@@ -101,6 +101,78 @@ export async function userMetaTableExists(): Promise<boolean> {
   return rows.length > 0;
 }
 
+/**
+ * Comprueba si panel_pki_ca ya tiene el esquema de CLAUDE.md (una fila por
+ * intermedia, con `root_cert_pem`) en vez del esquema anterior (`role`,
+ * CA raiz como fila propia). No lanza: solo informa en el menu de
+ * administracion, igual que `userMetaTableExists`.
+ */
+export async function pkiCaExtendedSchemaExists(): Promise<boolean> {
+  const [rows] = await panelPool.query<RowDataPacket[]>(
+    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'panel_pki_ca' AND COLUMN_NAME = 'root_cert_pem'`,
+  );
+  return rows.length > 0;
+}
+
+/** Comprueba si panel_vpn_devices ya tiene el esquema de CLAUDE.md (owner_user, device_label, enabled...). */
+export async function vpnDevicesExtendedSchemaExists(): Promise<boolean> {
+  const [rows] = await panelPool.query<RowDataPacket[]>(
+    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'panel_vpn_devices' AND COLUMN_NAME = 'owner_user'`,
+  );
+  return rows.length > 0;
+}
+
+/** Comprueba si vpn_certificates ya tiene `ca_id` (modelo de CLAUDE.md) en vez de `ca_serial`. */
+export async function vpnCertificateIssuerColumnExists(): Promise<boolean> {
+  const [rows] = await radiusPool.query<RowDataPacket[]>(
+    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'vpn_certificates' AND COLUMN_NAME = 'ca_id'`,
+  );
+  return rows.length > 0;
+}
+
+/** Comprueba si panel_vpn_settings tiene aaa_id/est_url (correccion 4.5). */
+export async function vpnSettingsExtendedSchemaExists(): Promise<boolean> {
+  const [rows] = await panelPool.query<RowDataPacket[]>(
+    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'panel_vpn_settings' AND COLUMN_NAME = 'aaa_id'`,
+  );
+  return rows.length > 0;
+}
+
+const VPN_RADIUS_TABLES = ['vpn_certificates'];
+const VPN_PANEL_TABLES = [
+  'panel_vpn_devices',
+  'panel_vpn_enroll_tokens',
+  'panel_pki_ca',
+  'panel_vpn_settings',
+];
+
+async function tablesExist(pool: typeof radiusPool, tables: string[]): Promise<boolean> {
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT TABLE_NAME FROM information_schema.TABLES
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN (?)`,
+    [tables],
+  );
+  return tables.every((t) => rows.some((row) => String(row.TABLE_NAME) === t));
+}
+
+/**
+ * El modulo VPN (PKI + enrolamiento de dispositivos) es opcional, igual que
+ * panel_user_meta: sin las tablas de sql/radius-schema-vpn.sql y
+ * sql/panel-schema-vpn.sql, el panel arranca igual y el modulo se anuncia
+ * desactivado en /api/meta en vez de romper el arranque.
+ */
+export async function vpnModuleTablesExist(): Promise<boolean> {
+  const [radiusOk, panelOk] = await Promise.all([
+    tablesExist(radiusPool, VPN_RADIUS_TABLES),
+    tablesExist(panelPool, VPN_PANEL_TABLES),
+  ]);
+  return radiusOk && panelOk;
+}
+
 export async function closePools(): Promise<void> {
   await Promise.allSettled([radiusPool.end(), panelPool.end()]);
 }

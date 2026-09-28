@@ -4,7 +4,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { config } from '../config.js';
 import { APP_NAME, APP_VERSION } from '../version.js';
 import { KNOWN_ATTRIBUTES, RADIUS_DICT } from '../lib/radiusDict.js';
-import { radiusPool, panelPool } from '../db/pools.js';
+import { radiusPool, panelPool, vpnModuleTablesExist } from '../db/pools.js';
 
 export const metaRouter = Router();
 
@@ -17,12 +17,16 @@ metaRouter.get(
     } catch {
       dbOk = false;
     }
+    // Sin las tablas de sql/radius-schema-vpn.sql / sql/panel-schema-vpn.sql el
+    // modulo VPN se anuncia desactivado en vez de romper /api/meta.
+    const vpnEnabled = dbOk && (await vpnModuleTablesExist().catch(() => false));
     res.json({
       name: APP_NAME,
       version: APP_VERSION,
       coaEnabled: config.coa.enabled,
       testAuthEnabled: config.testAuth.enabled,
       googleEnabled: config.google.enabled,
+      vpnEnabled,
       dbOk,
     });
   }),

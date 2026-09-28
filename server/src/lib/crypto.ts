@@ -14,8 +14,13 @@ import { config } from '../config.js';
  */
 const key = scryptSync(config.jwtSecret, 'radius-panel-secret-box-v1', 32);
 
-/** Cifra un secreto para guardarlo en la BD. Formato: iv.tag.datos (base64url). */
-export function encryptSecret(plain: string): string {
+/**
+ * Cifra `plain` con AES-256-GCM bajo la clave dada. Formato: iv.tag.datos
+ * (base64url). Primitiva generica: `encryptSecret`/`decryptSecret` la usan
+ * con la clave derivada de JWT_SECRET; otros modulos (p.ej. la PKI de la VPN,
+ * ver lib/pkiCrypto.ts) la usan con una clave distinta.
+ */
+export function boxWithKey(key: Buffer, plain: string): string {
   const iv = randomBytes(12);
   const cipher = createCipheriv('aes-256-gcm', key, iv);
   const data = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()]);
@@ -26,8 +31,8 @@ export function encryptSecret(plain: string): string {
   ].join('.');
 }
 
-/** Descifra lo guardado por `encryptSecret`. Lanza si el dato fue manipulado. */
-export function decryptSecret(payload: string): string {
+/** Descifra lo guardado por `boxWithKey` con la misma clave. Lanza si el dato fue manipulado. */
+export function unboxWithKey(key: Buffer, payload: string): string {
   const [ivPart, tagPart, dataPart] = payload.split('.');
   if (!ivPart || !tagPart || !dataPart) throw new Error('Secreto cifrado con formato invalido');
   const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(ivPart, 'base64url'));
@@ -36,6 +41,16 @@ export function decryptSecret(payload: string): string {
     decipher.update(Buffer.from(dataPart, 'base64url')),
     decipher.final(),
   ]).toString('utf8');
+}
+
+/** Cifra un secreto para guardarlo en la BD, con la clave derivada de JWT_SECRET. */
+export function encryptSecret(plain: string): string {
+  return boxWithKey(key, plain);
+}
+
+/** Descifra lo guardado por `encryptSecret`. Lanza si el dato fue manipulado. */
+export function decryptSecret(payload: string): string {
+  return unboxWithKey(key, payload);
 }
 
 /** Token opaco de 256 bits para refresh tokens. */
