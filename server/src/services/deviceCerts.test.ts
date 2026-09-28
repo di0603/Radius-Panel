@@ -114,6 +114,8 @@ test('signDeviceCsr: emite un certificado con el perfil fijo (ignora lo pedido e
   const san = cert.getExtension(x509.SubjectAlternativeNameExtension);
   assert.equal(san?.names.items.length, 1);
   assert.equal(san?.names.items[0]!.value, 'vpn-juan-laptop');
+  // No critica (RFC 5280 4.2.1.6): el subject ya lleva un CN no vacio.
+  assert.equal(san?.critical, false);
 
   assert.ok(cert.getExtension(x509.AuthorityKeyIdentifierExtension));
   assert.ok(cert.getExtension(x509.SubjectKeyIdentifierExtension));

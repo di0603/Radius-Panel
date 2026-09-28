@@ -92,7 +92,8 @@ export async function signDeviceCsr(input: SignDeviceCsrInput): Promise<SignedDe
       new x509.BasicConstraintsExtension(false, undefined, true),
       new x509.KeyUsagesExtension(x509.KeyUsageFlags.digitalSignature, true),
       new x509.ExtendedKeyUsageExtension([x509.ExtendedKeyUsage.clientAuth], true),
-      new x509.SubjectAlternativeNameExtension([{ type: 'dns', value: cn }], true),
+      // No critica (RFC 5280 4.2.1.6): el subject ya lleva un CN no vacio.
+      new x509.SubjectAlternativeNameExtension([{ type: 'dns', value: cn }], false),
       authorityKeyId,
       subjectKeyId,
     ],
