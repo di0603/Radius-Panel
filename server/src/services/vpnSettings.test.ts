@@ -16,6 +16,7 @@ test('parseVpnSettingsRow: mapea una fila snake_case de MySQL', () => {
     aaa_id: 'CN=radius.example.com',
     pool_start: '192.168.10.75',
     pool_end: '192.168.10.99',
+    lan_cidr: '10.0.0.0/8',
     dns: '1.1.1.1',
     device_cert_days: '30',
     renew_after_days: '20',
@@ -28,6 +29,7 @@ test('parseVpnSettingsRow: mapea una fila snake_case de MySQL', () => {
     aaaId: 'CN=radius.example.com',
     poolStart: '192.168.10.75',
     poolEnd: '192.168.10.99',
+    lanCidr: '10.0.0.0/8',
     dns: '1.1.1.1',
     deviceCertDays: 30,
     renewAfterDays: 20,
@@ -51,6 +53,13 @@ test('parseVpnSettingsRow: se degrada a aaaId/estUrl por defecto si faltan (migr
   const parsed = parseVpnSettingsRow(row as never);
   assert.equal(parsed.aaaId, DEFAULT_VPN_SETTINGS.aaaId);
   assert.equal(parsed.estUrl, DEFAULT_VPN_SETTINGS.estUrl);
+  assert.equal(parsed.lanCidr, DEFAULT_VPN_SETTINGS.lanCidr);
+});
+
+test('vpnSettingsSchema: rechaza un CIDR invalido para lanCidr', () => {
+  assert.throws(() => vpnSettingsSchema.parse({ ...DEFAULT_VPN_SETTINGS, lanCidr: '192.168.10.0' }));
+  assert.throws(() => vpnSettingsSchema.parse({ ...DEFAULT_VPN_SETTINGS, lanCidr: '192.168.10.0/33' }));
+  assert.doesNotThrow(() => vpnSettingsSchema.parse({ ...DEFAULT_VPN_SETTINGS, lanCidr: '10.0.0.0/8' }));
 });
 
 test('vpnSettingsSchema: rechaza renewAfterDays >= deviceCertDays', () => {

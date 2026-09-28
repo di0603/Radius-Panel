@@ -756,6 +756,29 @@ export function useRevokeVpnDeviceCertificate() {
   });
 }
 
+export interface AndroidCertIssued {
+  password: string;
+  downloadToken: string;
+  expiresAt: string;
+}
+
+/**
+ * Emite (o renueva) el certificado de un dispositivo Android: excepcion
+ * documentada en la que el panel genera la clave (la app de Android no sabe
+ * renovarse sola por EST). Devuelve la contrasena del .p12 y el token de
+ * descarga en claro una unica vez.
+ */
+export function useIssueAndroidCertificate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (username: string) =>
+      (
+        await api.post<AndroidCertIssued>(`/vpn-devices/${encodeURIComponent(username)}/android-cert`)
+      ).data,
+    onSuccess: (_data, username) => qc.invalidateQueries({ queryKey: ['vpn-devices', username] }),
+  });
+}
+
 /** Descarga el paquete de conexion (zip Windows / tar.gz Linux) y lo guarda en el navegador. */
 export function useDownloadVpnDevicePackage() {
   return useMutation({

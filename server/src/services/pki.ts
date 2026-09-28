@@ -559,6 +559,27 @@ export async function getCaChainPem(): Promise<string | null> {
   return parts.join('\n');
 }
 
+/**
+ * La raiz offline (autofirmada), para el perfil .sswan de Android: ese
+ * formato solo admite un unico certificado de confianza (`remote.cert`), y
+ * el servidor IKE ya envia la intermedia dentro del propio handshake, asi
+ * que a los clientes les basta con confiar en la raiz. `null` si la PKI
+ * todavia no esta configurada.
+ */
+export async function getRootCaCert(): Promise<x509.X509Certificate | null> {
+  let rows: RowDataPacket[] = [];
+  try {
+    [rows] = await panelPool.query<RowDataPacket[]>(
+      `SELECT root_cert_pem FROM panel_pki_ca WHERE status IN ('active', 'retiring') AND root_cert_pem IS NOT NULL LIMIT 1`,
+    );
+  } catch (err) {
+    if (isMissingTable(err)) return null;
+    throw err;
+  }
+  if (!rows.length) return null;
+  return new x509.X509Certificate(String(rows[0].root_cert_pem).trim());
+}
+
 /** GET /pki/crl.pem: CRL vigente de cada intermedia activa o en retirada. `null` si no hay ninguna. */
 export async function getCrlBundlePem(): Promise<string | null> {
   let rows: RowDataPacket[] = [];

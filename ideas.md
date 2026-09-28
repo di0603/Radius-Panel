@@ -298,6 +298,22 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
   comprobar que la conexión arranca con los nuevos. Ningún paquete contiene
   claves ni el token de alta (tests que descomprimen el zip/tar.gz de
   verdad y comprueban que ningún fichero lleva material secreto).
+- [x] **Certificado Android emitido por el panel** (excepción documentada: la
+  app de strongSwan para Android no sabe renovarse sola por EST, así que solo
+  para estos dispositivos genera la clave el propio panel). Botón "Emitir
+  certificado": clave ECDSA P-256, mismo perfil/vigencia (`android_cert_days`)
+  y mismo solapamiento que una renovación EST si ya había un certificado
+  activo; construye un `.p12` (AES-256-CBC/PBKDF2/SHA-256, verificado con
+  `openssl pkcs12 -info`) protegido con una contraseña aleatoria de 20
+  caracteres mostrada una única vez, y un perfil `.sswan` (formato de
+  importación de Android, comprobado contra la documentación oficial de
+  strongSwan) con el `.p12` embebido, la raíz de la CA y las propuestas
+  `aes256gcm16-prfsha384-ecp384`/`aes256gcm16-ecp384` en full tunnel. Enlace
+  de descarga público pero de un solo uso, caduca a los 15 minutos y solo
+  funciona desde la LAN o el rango de la VPN
+  (`panel_vpn_settings.lan_cidr`, columna nueva); borra la fila al servirlo y
+  purga a diario los enlaces caducados sin descargar. Detalle completo en el
+  CHANGELOG.
 - [ ] Página de ajustes del módulo VPN (FQDN, identidad AAA, rango de IPs, días
-  de vigencia/renovación, URL de EST).
+  de vigencia/renovación, URL de EST, red LAN para la descarga Android).
 - [ ] Retirar el dispositivo de prueba `vps` cuando exista la CA intermedia real.

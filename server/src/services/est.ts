@@ -176,7 +176,7 @@ async function getLastCertificateAt(username: string): Promise<Date | null> {
   return new Date(`${String(row.created_at).replace(' ', 'T')}Z`);
 }
 
-async function insertCertificate(input: {
+export async function insertCertificate(input: {
   username: string;
   caId: number;
   serial: string;
@@ -198,7 +198,7 @@ async function insertCertificate(input: {
   );
 }
 
-async function supersedeCertificate(serial: string, overlapHours: number): Promise<void> {
+export async function supersedeCertificate(serial: string, overlapHours: number): Promise<void> {
   const supersededUntil = formatUtcDateTime(new Date(Date.now() + overlapHours * 60 * 60 * 1000));
   await radiusPool.query(
     `UPDATE vpn_certificates SET status = 'superseded', superseded_until = :until WHERE serial = :serial`,

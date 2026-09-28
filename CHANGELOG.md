@@ -143,6 +143,44 @@ Este proyecto usa versionado semantico.
     (no solo "no lanza"): se listan los ficheros esperados, se comprueban
     los permisos ejecutables del `.tar.gz` y se busca en cada fichero
     cualquier rastro de clave privada o secreto.
+- **Certificado Android emitido por el panel (excepcion documentada)**: la
+  app de strongSwan para Android no sabe renovarse sola por EST (RFC 7030),
+  asi que para estos dispositivos -y solo para ellos- es el panel quien
+  genera la clave privada, en vez de limitarse a firmar un CSR ajeno como en
+  el resto del modulo. Boton "Emitir certificado" en la ficha del
+  dispositivo (mismo perfil de certificado que un alta por EST, vigencia
+  `android_cert_days`, con el mismo solapamiento de una renovacion normal si
+  ya habia un certificado activo):
+  - Genera una clave ECDSA P-256 y construye un `.p12` (estructura
+    equivalente a `openssl pkcs12 -export`: `PKCS8ShroudedKeyBag` +
+    `SafeContents` cifrado, AES-256-CBC/PBKDF2/SHA-256, con el mismo
+    `localKeyId` en la bolsa de la clave y la del certificado para que el
+    importador -incluido el de Android- los empareje) protegido con una
+    contrasena aleatoria de 20 caracteres, que se ensena una unica vez en el
+    panel y no se guarda en ningun sitio.
+  - La descarga real es un perfil `.sswan` (formato de importacion del
+    cliente strongSwan para Android, verificado contra
+    `docs.strongswan.org/docs/latest/os/androidVpnClientProfiles.html`:
+    `type: "ikev2-eap-tls"`, con el `.p12` embebido en `local.p12` en base64
+    y la raiz de la CA en `remote.cert` -el servidor ya envia la intermedia
+    durante el handshake IKE, y el formato solo admite un certificado de
+    confianza-, con `ike-proposal`/`esp-proposal` fijos a
+    `aes256gcm16-prfsha384-ecp384`/`aes256gcm16-ecp384` y siempre full
+    tunnel). El `.p12` se cifra ademas en reposo con `PKI_MASTER_KEY`
+    mientras espera su descarga: dos secretos independientes (la contrasena
+    del `.p12` y la master key del servidor), ninguno de los dos vive en la
+    base de datos.
+  - El enlace de descarga es deliberadamente publico (sin sesion de admin:
+    quien lo abre puede ser el propio telefono del usuario final, que no
+    tiene por que estar dado de alta en el panel), pero de un solo uso,
+    caduca a los 15 minutos y solo funciona desde el rango de la VPN o la
+    LAN (`panel_vpn_settings.lan_cidr`, columna nueva). Al servirlo se borra
+    la fila entera -el `.p12` no sigue viviendo en la base de datos-; los
+    enlaces caducados que nunca llegan a descargarse se purgan a diario.
+  - Probado de extremo a extremo con `openssl pkcs12 -info` sobre los bytes
+    reales generados (abre con la contrasena mostrada, la rechaza con
+    cualquier otra) y con la base de datos simulada: el enlace no sirve dos
+    veces ni caducado, y solo dentro del rango de IP configurado.
 - **Sistema de temas**: modo claro, oscuro y automatico (el del sistema) mas siete
   colores de acento, con la preferencia guardada en el navegador.
 - **Seguridad del panel**:

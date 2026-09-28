@@ -10,6 +10,7 @@ import { adminsRouter } from './admins.js';
 import { auditRouter } from './audit.js';
 import { pkiRouter } from './pki.js';
 import { vpnDevicesRouter } from './vpnDevices.js';
+import { vpnAndroidDownloadRouter } from './vpnAndroidDownload.js';
 
 export const apiRouter = Router();
 
@@ -24,3 +25,4 @@ apiRouter.use('/admins', adminsRouter);
 apiRouter.use('/audit', auditRouter);
 apiRouter.use('/pki', pkiRouter);
 apiRouter.use('/vpn-devices', vpnDevicesRouter);
+apiRouter.use('/vpn-android', vpnAndroidDownloadRouter);

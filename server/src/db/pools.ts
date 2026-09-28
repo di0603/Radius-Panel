@@ -142,6 +142,20 @@ export async function vpnSettingsExtendedSchemaExists(): Promise<boolean> {
   return rows.length > 0;
 }
 
+/** Comprueba si esta aplicada sql/panel-schema-vpn-android.sql (lan_cidr + tabla de descargas). */
+export async function vpnAndroidSchemaExists(): Promise<boolean> {
+  const [columns] = await panelPool.query<RowDataPacket[]>(
+    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'panel_vpn_settings' AND COLUMN_NAME = 'lan_cidr'`,
+  );
+  if (!columns.length) return false;
+  const [tables] = await panelPool.query<RowDataPacket[]>(
+    `SELECT 1 FROM information_schema.TABLES
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'panel_vpn_android_downloads'`,
+  );
+  return tables.length > 0;
+}
+
 const VPN_RADIUS_TABLES = ['vpn_certificates'];
 const VPN_PANEL_TABLES = [
   'panel_vpn_devices',

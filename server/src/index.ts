@@ -20,6 +20,7 @@ import { logger } from './lib/logger.js';
 import { metricsMiddleware, registry } from './lib/metrics.js';
 import { purgeOldTokens } from './services/auth.js';
 import { regenerateDueCrls, retireStaleRsaIntermediates } from './services/pki.js';
+import { purgeExpiredAndroidDownloads } from './services/androidCert.js';
 import { startEstServer } from './estServer.js';
 import { APP_VERSION } from './version.js';
 
@@ -176,10 +177,24 @@ async function main(): Promise<void> {
   );
   crlTimer.unref();
 
+  // Enlaces de descarga de .p12 de Android caducados sin usar (15 min de vida):
+  // se purgan a diario igual que el resto de limpiezas periodicas, no hace
+  // falta nada mas fino ya que ya son inutilizables por su propia caducidad.
+  const androidDownloadsTimer = setInterval(
+    () => {
+      purgeExpiredAndroidDownloads()
+        .then((n) => n && logger.info({ removed: n }, 'enlaces de descarga Android caducados eliminados'))
+        .catch((err) => logger.warn({ err }, 'no se pudieron limpiar los enlaces de descarga Android'));
+    },
+    24 * 60 * 60 * 1000,
+  );
+  androidDownloadsTimer.unref();
+
   const shutdown = async (signal: string) => {
     logger.info(`${signal} recibido, cerrando...`);
     clearInterval(purgeTimer);
     clearInterval(crlTimer);
+    clearInterval(androidDownloadsTimer);
     server.close();
     estServer?.close();
     await closePools();

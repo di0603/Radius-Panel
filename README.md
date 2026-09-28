@@ -87,6 +87,18 @@ mysql -u root -p < sql/panel-schema.sql
 > porque necesita TLS mutuo real) en `server/.env`; sin ellos el resto del
 > panel funciona igual, solo que sin alta/renovacion automatica. Ver
 > `.env.example` para el resto de opciones (`EST_ENABLED`, `EST_BIND`).
+>
+> Para el boton "Emitir certificado" de los dispositivos **Android** (la app
+> de strongSwan para Android no sabe renovarse sola por EST, asi que el panel
+> genera la clave y la entrega una vez), aplica ademas:
+>
+> ```bash
+> mysql -u root -p radius_panel < sql/panel-schema-vpn-android.sql
+> ```
+>
+> Anade `panel_vpn_settings.lan_cidr` (por defecto `192.168.10.0/24`): el
+> enlace de descarga del `.p12` solo funciona desde esa red o desde el rango
+> de la VPN, ajustalo si tu LAN usa otro rango.
 
 Da permisos a un usuario MySQL sobre ambas bases, por ejemplo:
 

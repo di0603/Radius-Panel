@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { decryptSecret, encryptSecret, randomToken, safeEqual, sha256 } from './crypto.js';
+import { decryptSecret, encryptSecret, randomPassword, randomToken, safeEqual, sha256 } from './crypto.js';
 
 test('encryptSecret/decryptSecret: ida y vuelta', () => {
   const secret = 'JBSWY3DPEHPK3PXP';
@@ -33,6 +33,20 @@ test('randomToken: unico y sin caracteres problematicos en cookies', () => {
   const tokens = new Set(Array.from({ length: 50 }, () => randomToken()));
   assert.equal(tokens.size, 50);
   for (const t of tokens) assert.match(t, /^[A-Za-z0-9_-]+$/);
+});
+
+test('randomPassword: 20 caracteres por defecto, unica y solo base64url', () => {
+  const passwords = new Set(Array.from({ length: 50 }, () => randomPassword()));
+  assert.equal(passwords.size, 50);
+  for (const p of passwords) {
+    assert.equal(p.length, 20);
+    assert.match(p, /^[A-Za-z0-9_-]+$/);
+  }
+});
+
+test('randomPassword: respeta una longitud distinta', () => {
+  assert.equal(randomPassword(12).length, 12);
+  assert.equal(randomPassword(32).length, 32);
 });
 
 test('safeEqual: compara sin filtrar por longitud', () => {
