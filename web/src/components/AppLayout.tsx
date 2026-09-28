@@ -23,6 +23,7 @@ import {
   IconRadar2,
   IconReportAnalytics,
   IconRouter,
+  IconSettings,
   IconShieldLock,
   IconUserCog,
   IconUsers,
@@ -64,6 +65,7 @@ const NAV_SECTIONS: { label: string; adminOnly?: boolean; items: NavItem[] }[] =
     items: [
       { to: '/vpn-devices', label: 'Dispositivos', icon: IconDevices },
       { to: '/pki', label: 'PKI', icon: IconCertificate },
+      { to: '/vpn-settings', label: 'Ajustes', icon: IconSettings },
     ],
   },
   {

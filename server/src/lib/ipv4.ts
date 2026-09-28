@@ -40,3 +40,13 @@ export function isIpv4InCidr(ip: string, cidr: string): boolean {
   const ipInt = ipv4ToInt(ip);
   return ipInt >= networkStart && ipInt < networkStart + blockSize;
 }
+
+/** `true` si `value` es una IPv4 suelta ("1.2.3.4") o un CIDR valido ("1.2.3.0/24"), para el destino de una regla de firewall. */
+export function isValidIpv4OrCidr(value: string): boolean {
+  const [ip, prefixText] = value.split('/');
+  if (!ip || !isValidIpv4(ip)) return false;
+  if (prefixText === undefined) return true;
+  if (!/^\d{1,2}$/.test(prefixText)) return false;
+  const prefix = Number(prefixText);
+  return prefix >= 0 && prefix <= 32;
+}

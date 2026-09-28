@@ -34,6 +34,9 @@ export interface VpnDevice {
   framedIp: string | null;
   enabled: boolean;
   status: DeviceStatus;
+  /** Excepciones explicitas (marcadas por un admin, con aviso) al bloqueo permanente de RADIUS/MariaDB para clientes VPN. */
+  allowRadiusHost: boolean;
+  allowMariadbHost: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -92,6 +95,8 @@ function toDevice(row: RowDataPacket): VpnDevice {
     framedIp,
     enabled,
     status: deviceStatus(enabled, framedIp),
+    allowRadiusHost: Boolean(row.allow_radius_host),
+    allowMariadbHost: Boolean(row.allow_mariadb_host),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -414,4 +419,33 @@ export async function decommissionDevice(username: string): Promise<void> {
       .map(Number),
   );
   for (const caId of caIds) await regenerateCrl(caId);
+}
+
+/**
+ * Excepcion explicita al bloqueo permanente de RADIUS/MariaDB para clientes
+ * VPN (192.168.10.28/.30, ver services/vpnFirewall.ts): por defecto los dos
+ * en `false`. Activarlas es una decision de seguridad real -el admin debe
+ * confirmarla con el aviso que muestra la interfaz-, asi que quien la llama
+ * es responsable de auditarla (ver routes/vpnDevices.ts).
+ */
+export async function setDeviceOverrides(
+  username: string,
+  overrides: { allowRadiusHost?: boolean; allowMariadbHost?: boolean },
+): Promise<void> {
+  await requireDeviceRow(username);
+  const fields: string[] = [];
+  const params: Record<string, unknown> = { u: username };
+  if (overrides.allowRadiusHost !== undefined) {
+    fields.push('allow_radius_host = :allowRadiusHost');
+    params.allowRadiusHost = overrides.allowRadiusHost ? 1 : 0;
+  }
+  if (overrides.allowMariadbHost !== undefined) {
+    fields.push('allow_mariadb_host = :allowMariadbHost');
+    params.allowMariadbHost = overrides.allowMariadbHost ? 1 : 0;
+  }
+  if (!fields.length) return;
+  await panelPool.query(
+    `UPDATE panel_vpn_devices SET ${fields.join(', ')} WHERE username = :u`,
+    params as Record<string, string | number>,
+  );
 }

@@ -1,0 +1,10 @@
+# Copiar a /etc/vpn-gateway-agent/config.sh en la VM VPN (192.168.10.29),
+# con permisos 600 (lleva un secreto): chmod 600 /etc/vpn-gateway-agent/config.sh
+#
+# PANEL_URL: host y puerto del listener EST (el mismo que .well-known/est/cacerts).
+PANEL_URL='https://pki.vlc.didev.es:8443'
+
+# GATEWAY_TOKEN: se genera en el panel (VPN > Ajustes > "Generar token de
+# la puerta de enlace"). Se ensena una unica vez al generarlo: si se pierde,
+# hay que generar uno nuevo (invalida el anterior).
+GATEWAY_TOKEN='pega-aqui-el-token'

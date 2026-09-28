@@ -193,6 +193,20 @@ export async function vpnAndroidSchemaExists(): Promise<boolean> {
   return tables.length > 0;
 }
 
+/** Comprueba si esta aplicada sql/panel-schema-vpn-firewall.sql (permisos por dispositivo + token de gateway). */
+export async function vpnFirewallSchemaExists(): Promise<boolean> {
+  const [columns] = await panelPool.query<RowDataPacket[]>(
+    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'panel_vpn_devices' AND COLUMN_NAME = 'allow_radius_host'`,
+  );
+  if (!columns.length) return false;
+  const [tables] = await panelPool.query<RowDataPacket[]>(
+    `SELECT 1 FROM information_schema.TABLES
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'panel_vpn_device_rules'`,
+  );
+  return tables.length > 0;
+}
+
 const VPN_RADIUS_TABLES = ['vpn_certificates'];
 const VPN_PANEL_TABLES = [
   'panel_vpn_devices',

@@ -27,6 +27,7 @@ import {
   vpnCertificateIssuerColumnExists,
   vpnSettingsExtendedSchemaExists,
   vpnAndroidSchemaExists,
+  vpnFirewallSchemaExists,
 } from '../db/pools.js';
 import { createUser, deleteUser, listUsers } from '../services/radiusUsers.js';
 import { createAdmin, listAdmins, updateAdmin } from '../services/admins.js';
@@ -207,6 +208,21 @@ async function vpnAndroidMigrationStatus(): Promise<void> {
   }
 }
 
+/** Comprueba si esta aplicada la migracion del firewall de la VM VPN. */
+async function vpnFirewallMigrationStatus(): Promise<void> {
+  if (await vpnFirewallSchemaExists()) {
+    console.log(
+      '\x1b[32m✔\x1b[0m allow_radius_host/allow_mariadb_host y panel_vpn_device_rules existen',
+    );
+  } else {
+    console.log(
+      '\x1b[33m!\x1b[0m falta el esquema del firewall: los permisos de red por dispositivo y\n' +
+        '  GET /vpn/gateway/firewall.nft fallaran.\n' +
+        `  Aplica: mysql -u root -p ${config.panelDb.database} < sql/panel-schema-vpn-firewall.sql`,
+    );
+  }
+}
+
 async function schemaMenu(): Promise<void> {
   for (;;) {
     heading('Esquema / migraciones');
@@ -223,15 +239,17 @@ async function schemaMenu(): Promise<void> {
         ` 10) Aplicar sql/radius-schema-vpn-issuer.sql (vpn_certificates.ca_id, opcional)\n` +
         ` 11) Aplicar sql/panel-schema-vpn-4.5.sql (aaa_id/est_url, token_sha256, opcional)\n` +
         ` 12) Aplicar sql/panel-schema-vpn-android.sql (descarga de .p12 para Android, opcional)\n` +
-        ` 13) Estado de las tablas\n` +
-        ` 14) Estado de la migracion de seguridad\n` +
-        ` 15) Estado de la migracion de Google\n` +
-        ` 16) Estado de email/notas de usuarios\n` +
-        ` 17) Estado del modulo VPN\n` +
-        ` 18) Estado de la CA intermedia (PKI)\n` +
-        ` 19) Estado de dispositivos VPN\n` +
-        ` 20) Estado de ajustes VPN\n` +
-        ` 21) Estado de la descarga de .p12 para Android\n` +
+        ` 13) Aplicar sql/panel-schema-vpn-firewall.sql (permisos y gateway del firewall, opcional)\n` +
+        ` 14) Estado de las tablas\n` +
+        ` 15) Estado de la migracion de seguridad\n` +
+        ` 16) Estado de la migracion de Google\n` +
+        ` 17) Estado de email/notas de usuarios\n` +
+        ` 18) Estado del modulo VPN\n` +
+        ` 19) Estado de la CA intermedia (PKI)\n` +
+        ` 20) Estado de dispositivos VPN\n` +
+        ` 21) Estado de ajustes VPN\n` +
+        ` 22) Estado de la descarga de .p12 para Android\n` +
+        ` 23) Estado del firewall de la VPN\n` +
         ` 0) Volver`,
     );
     const c = (await ask('> ')).trim();
@@ -305,15 +323,23 @@ async function schemaMenu(): Promise<void> {
             '(descarga de un solo uso del .p12 de dispositivos Android).',
         );
         await runSqlFile('panel-schema-vpn-android.sql', config.panelDb, true);
-      } else if (c === '13') await schemaStatus();
-      else if (c === '14') await securityMigrationStatus();
-      else if (c === '15') await googleMigrationStatus();
-      else if (c === '16') await userMetaMigrationStatus();
-      else if (c === '17') await vpnMigrationStatus();
-      else if (c === '18') await pkiCaMigrationStatus();
-      else if (c === '19') await vpnDevicesMigrationStatus();
-      else if (c === '20') await vpnSettingsMigrationStatus();
-      else if (c === '21') await vpnAndroidMigrationStatus();
+      } else if (c === '13') {
+        console.log(
+          'Idempotente. Anade panel_vpn_devices.allow_radius_host/allow_mariadb_host y\n' +
+            'panel_vpn_settings.gateway_token_sha256, y crea panel_vpn_device_rules (permisos de\n' +
+            'red por dispositivo para el firewall de la VM VPN).',
+        );
+        await runSqlFile('panel-schema-vpn-firewall.sql', config.panelDb, true);
+      } else if (c === '14') await schemaStatus();
+      else if (c === '15') await securityMigrationStatus();
+      else if (c === '16') await googleMigrationStatus();
+      else if (c === '17') await userMetaMigrationStatus();
+      else if (c === '18') await vpnMigrationStatus();
+      else if (c === '19') await pkiCaMigrationStatus();
+      else if (c === '20') await vpnDevicesMigrationStatus();
+      else if (c === '21') await vpnSettingsMigrationStatus();
+      else if (c === '22') await vpnAndroidMigrationStatus();
+      else if (c === '23') await vpnFirewallMigrationStatus();
       else if (c === '0') return;
     } catch (err) {
       console.log(`\x1b[31merror:\x1b[0m ${(err as Error).message}`);
@@ -341,6 +367,8 @@ async function schemaMenu(): Promise<void> {
         '19',
         '20',
         '21',
+        '22',
+        '23',
       ].includes(c)
     ) {
       await pause();

@@ -99,6 +99,17 @@ mysql -u root -p < sql/panel-schema.sql
 > Anade `panel_vpn_settings.lan_cidr` (por defecto `192.168.10.0/24`): el
 > enlace de descarga del `.p12` solo funciona desde esa red o desde el rango
 > de la VPN, ajustalo si tu LAN usa otro rango.
+>
+> Para generar el firewall de la VM VPN desde el panel (en vez de editar
+> nftables a mano), aplica ademas:
+>
+> ```bash
+> mysql -u root -p radius_panel < sql/panel-schema-vpn-firewall.sql
+> ```
+>
+> Genera el token de la puerta de enlace en "VPN > Ajustes" y configura
+> `deploy/vpn-gateway-agent.sh` en la VM VPN (192.168.10.29) -ver la seccion
+> de despliegue mas abajo-.
 
 Da permisos a un usuario MySQL sobre ambas bases, por ejemplo:
 
@@ -309,6 +320,22 @@ regeneracion de la CRL; ver `npm run vpn:jobs` mas abajo):
 cp deploy/radius-panel-vpn-jobs.service deploy/radius-panel-vpn-jobs.timer /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now radius-panel-vpn-jobs.timer   # lo ejecuta cada 15 min
+```
+
+Si ademas usas el firewall de la VM VPN generado desde el panel, esto va en
+la **otra maquina** (192.168.10.29, no en la `.28`):
+
+```bash
+cp deploy/vpn-gateway-agent.sh /usr/local/bin/
+chmod +x /usr/local/bin/vpn-gateway-agent.sh
+mkdir -p /etc/vpn-gateway-agent
+cp deploy/vpn-gateway-agent.config.sh.example /etc/vpn-gateway-agent/config.sh
+# edita /etc/vpn-gateway-agent/config.sh: PANEL_URL y el token generado en "VPN > Ajustes"
+chmod 600 /etc/vpn-gateway-agent/config.sh
+
+cp deploy/vpn-gateway-agent.service deploy/vpn-gateway-agent.timer /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now vpn-gateway-agent.timer   # lo ejecuta cada 5 min
 ```
 
 **5. Comprobar que funciona:**

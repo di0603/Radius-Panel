@@ -241,6 +241,36 @@ Este proyecto usa versionado semantico.
   metricas Prometheus en `/metrics` y comprobacion del esquema de la base de datos
   al iniciar.
 - **Calidad**: ESLint integrado en el CI y tests del cifrado y del flujo TOTP.
+- **Firewall de la VM VPN generado desde el panel** (192.168.10.29, `tabla
+  inet vpn_clients`): sustituye las reglas nftables editadas a mano por un
+  fichero generado a partir de los permisos de cada dispositivo.
+  - En la ficha del dispositivo, permisos de red: "internet" (`0.0.0.0/0`),
+    "toda la LAN" (`panel_vpn_settings.lan_cidr`) o un destino concreto
+    (IP/CIDR, protocolo y puerto opcionales). El acceso a EST
+    (`192.168.10.28`, el puerto de `EST_PORT`) se anade siempre, sin
+    depender de ningun permiso.
+  - `192.168.10.28` (RADIUS) y `192.168.10.30` (MariaDB) estan siempre
+    bloqueados para los clientes VPN -incluso si un permiso como "toda la
+    LAN" los incluiria- salvo que un admin active la excepcion explicita
+    para ese dispositivo concreto (con aviso en la interfaz antes de
+    confirmar). El orden de las reglas generadas es critico: el bloqueo va
+    antes que los permisos propios del dispositivo, porque nftables aplica
+    el veredicto de la primera regla que hace match.
+  - `GET /vpn/gateway/firewall.nft` genera el fichero completo a partir de
+    todos los dispositivos activos (con IP asignada). Sin `requireAuth`
+    -lo consulta la VM VPN, no un admin con sesion-, autenticado con un
+    token de la puerta de enlace (`Authorization: Bearer`, solo su hash en
+    `panel_vpn_settings.gateway_token_sha256`) que se genera desde la nueva
+    pagina "VPN > Ajustes" y se ensena una unica vez.
+  - `deploy/vpn-gateway-agent.sh` + unidad systemd (`.service`/`.timer`,
+    cada 5 min) para la VM VPN: descarga el fichero, lo valida con
+    `nft -c -f` y solo entonces lo aplica (`nft -f`); si la descarga, la
+    validacion o la aplicacion fallan, conserva el firewall que ya estaba
+    cargado.
+  - Tests: generacion del fichero para varios casos (uno o varios
+    dispositivos, cada tipo de permiso, la excepcion de RADIUS/MariaDB) y,
+    si esta disponible, `nft -c -f` sobre la sintaxis generada de verdad;
+    `shellcheck` sobre `vpn-gateway-agent.sh`.
 
 ### Corregido
 

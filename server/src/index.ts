@@ -7,6 +7,7 @@ import { pinoHttp } from 'pino-http';
 import { config } from './config.js';
 import { apiRouter } from './routes/index.js';
 import { pkiPublicRouter } from './routes/pkiPublic.js';
+import { vpnGatewayRouter } from './routes/vpnGateway.js';
 import { errorHandler, notFoundHandler } from './middleware/error.js';
 import {
   assertDbConnectivity,
@@ -119,6 +120,10 @@ if (config.metricsEnabled) {
 // Sin autenticacion, fuera de /api: cadena de CA y CRL de la VPN (RFC 5280),
 // las consultan strongSwan/FreeRADIUS y los dispositivos, no solo el panel.
 app.use('/pki', pkiPublicRouter);
+
+// Sin requireAuth, fuera de /api: lo llama deploy/vpn-gateway-agent (una
+// maquina), autenticado con el token de la puerta de enlace, no una sesion.
+app.use('/vpn', vpnGatewayRouter);
 
 app.use('/api', apiRouter);
 

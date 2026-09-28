@@ -339,7 +339,18 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
   El `UPDATE` que copiaba el hash ahora comprueba antes en
   `information_schema.COLUMNS` y solo se ejecuta (vía `PREPARE`/`EXECUTE`) si
   `token_hash` existe de verdad.
-- [ ] Página de ajustes del módulo VPN (FQDN, identidad AAA, rango de IPs, días
-  de vigencia/renovación, URL de EST, red LAN para la descarga Android, umbral
-  de alerta de rechazos EST).
+- [x] **Firewall de la VM VPN generado desde el panel** (192.168.10.29, en vez
+  de reglas nftables a mano): permisos por dispositivo en su ficha
+  ("internet", "toda la LAN" o destino/protocolo/puerto concretos); el
+  acceso a EST se añade siempre y RADIUS (192.168.10.28)/MariaDB
+  (192.168.10.30) quedan siempre bloqueados salvo excepción explícita por
+  dispositivo (con aviso). `GET /vpn/gateway/firewall.nft` genera la tabla
+  `inet vpn_clients` completa, autenticado con un token de la puerta de
+  enlace (pestaña "VPN > Ajustes", nueva). `deploy/vpn-gateway-agent.sh` +
+  timer systemd descargan, validan con `nft -c -f` y aplican el fichero,
+  conservando el anterior si algo falla.
+- [x] **Página "VPN > Ajustes"** (nueva, mínima por ahora): solo el token de
+  la puerta de enlace del firewall. El resto de ajustes (FQDN, identidad
+  AAA, rango de IPs, días de vigencia/renovación, URL de EST, red LAN,
+  umbral de alerta de rechazos EST) sigue pendiente de una página completa.
 - [ ] Retirar el dispositivo de prueba `vps` cuando exista la CA intermedia real.

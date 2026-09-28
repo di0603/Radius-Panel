@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { intToIpv4, ipv4ToInt, isIpv4InCidr, isIpv4InRange, isValidIpv4 } from './ipv4.js';
+import {
+  intToIpv4,
+  ipv4ToInt,
+  isIpv4InCidr,
+  isIpv4InRange,
+  isValidIpv4,
+  isValidIpv4OrCidr,
+} from './ipv4.js';
 
 test('isValidIpv4: acepta IPv4 validas', () => {
   assert.equal(isValidIpv4('192.168.10.75'), true);
@@ -59,4 +66,17 @@ test('isIpv4InCidr: rechaza un CIDR con formato invalido', () => {
   assert.equal(isIpv4InCidr('192.168.10.1', '192.168.10.0'), false);
   assert.equal(isIpv4InCidr('192.168.10.1', '192.168.10.0/33'), false);
   assert.equal(isIpv4InCidr('192.168.10.1', 'no-es-un-cidr'), false);
+});
+
+test('isValidIpv4OrCidr: acepta una IP suelta o un CIDR', () => {
+  assert.equal(isValidIpv4OrCidr('192.168.10.75'), true);
+  assert.equal(isValidIpv4OrCidr('192.168.10.0/24'), true);
+  assert.equal(isValidIpv4OrCidr('0.0.0.0/0'), true);
+});
+
+test('isValidIpv4OrCidr: rechaza formatos invalidos', () => {
+  assert.equal(isValidIpv4OrCidr('no-es-una-ip'), false);
+  assert.equal(isValidIpv4OrCidr('192.168.10.0/33'), false);
+  assert.equal(isValidIpv4OrCidr('192.168.10.0/'), false);
+  assert.equal(isValidIpv4OrCidr('300.1.1.1'), false);
 });
