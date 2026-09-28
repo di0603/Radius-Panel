@@ -15,6 +15,20 @@ import { getVpnSettings } from './vpnSettings.js';
 export const RADIUS_HOST = '192.168.10.28';
 export const MARIADB_HOST = '192.168.10.30';
 
+/**
+ * RFC 1918 (privadas) + RFC 6598 (CGNAT) + RFC 3927 (link-local): el permiso
+ * "internet" las excluye, para que no equivalga por accidente a "toda la
+ * LAN" (o a cualquier otra red privada/CGNAT alcanzable) — quien quiera dar
+ * acceso a la LAN de casa tiene el permiso "lan" para eso, aparte.
+ */
+export const PRIVATE_RANGES = [
+  '10.0.0.0/8',
+  '172.16.0.0/12',
+  '192.168.0.0/16',
+  '100.64.0.0/10',
+  '169.254.0.0/16',
+];
+
 export type DeviceRuleKind = 'internet' | 'lan' | 'custom';
 export type DeviceRuleProtocol = 'tcp' | 'udp' | 'any';
 
@@ -66,7 +80,7 @@ function deviceLines(device: DeviceFirewallInput, estPort: number, lanCidr: stri
 
   for (const rule of device.rules) {
     if (rule.kind === 'internet') {
-      lines.push(ruleLine(device.framedIp, '0.0.0.0/0', 'accept'));
+      lines.push(ruleLine(device.framedIp, `!= { ${PRIVATE_RANGES.join(', ')} }`, 'accept'));
     } else if (rule.kind === 'lan') {
       lines.push(ruleLine(device.framedIp, lanCidr, 'accept'));
     } else if (rule.kind === 'custom' && rule.destCidr) {
@@ -84,20 +98,49 @@ function deviceLines(device: DeviceFirewallInput, estPort: number, lanCidr: stri
  */
 export function buildFirewallRuleset(
   devices: DeviceFirewallInput[],
-  options: { estPort: number; lanCidr: string },
+  options: { estPort: number; lanCidr: string; poolStart: string; poolEnd: string },
 ): string {
   const body = devices
     .flatMap((d) => deviceLines(d, options.estPort, options.lanCidr))
     .join('\n');
+  const pool = `${options.poolStart}-${options.poolEnd}`;
 
   return `#!/usr/sbin/nft -f
 # Generado por Radius Panel (GET /vpn/gateway/firewall.nft) - NO EDITAR A MANO
 # Se sobrescribe en cada descarga de deploy/vpn-gateway-agent.
 # Generado: ${new Date().toISOString()}
 
+# Idempotente: "nft -f" sobre un script que solo declara "table X { chain Y {
+# reglas } }" ANADE esas reglas cada vez (no reemplaza), asi que sin este
+# borrado previo cada ejecucion del agente (cada 5 min) duplicaria todas las
+# reglas y las de dispositivos ya borrados no desaparecerian nunca. La tabla
+# vacia de la linea siguiente solo existe para que el "delete" no falle la
+# primera vez (no se puede borrar una tabla que no existe todavia); las dos
+# lineas y la definicion completa de abajo van en el mismo "nft -f", asi que
+# nunca hay una ventana sin tabla cargada.
+table inet vpn_clients {}
+delete table inet vpn_clients
+
 table inet vpn_clients {
 \tchain forward {
 \t\ttype filter hook forward priority filter; policy drop;
+
+\t\t# Esta cadena solo decide sobre trafico que entra O sale del pool de la
+\t\t# VPN (${pool}): todo lo demas se acepta aqui sin mirarlo, para no
+\t\t# interferir con el resto del forward de esta maquina -p.ej. la tabla
+\t\t# "inet filter" de /etc/nftables.conf (MSS clamp, etc.), que se sigue
+\t\t# evaluando por su cuenta-. En netfilter, todas las cadenas base del
+\t\t# mismo hook tienen que aceptar un paquete para que pase; que ESTA
+\t\t# cadena lo acepte no le impide a la otra tabla rechazarlo, y viceversa.
+\t\tip saddr != ${pool} ip daddr != ${pool} accept
+
+\t\t# A partir de aqui, trafico que toca al menos una IP del pool. Sin estas
+\t\t# dos lineas, las respuestas de vuelta (internet/LAN hacia el cliente)
+\t\t# no coinciden con ninguna regla de mas abajo (todas son "ip saddr
+\t\t# <cliente>") y la policy drop las descartaria: la VPN dejaria de
+\t\t# funcionar para todos los dispositivos.
+\t\tct state invalid drop
+\t\tct state established,related accept
 
 ${body}
 \t}
@@ -157,5 +200,10 @@ async function getActiveDevicesWithRules(): Promise<DeviceFirewallInput[]> {
 /** GET /vpn/gateway/firewall.nft: fichero completo a partir de todos los dispositivos activos. */
 export async function generateFirewallConfig(): Promise<string> {
   const [devices, settings] = await Promise.all([getActiveDevicesWithRules(), getVpnSettings()]);
-  return buildFirewallRuleset(devices, { estPort: config.est.port, lanCidr: settings.lanCidr });
+  return buildFirewallRuleset(devices, {
+    estPort: config.est.port,
+    lanCidr: settings.lanCidr,
+    poolStart: settings.poolStart,
+    poolEnd: settings.poolEnd,
+  });
 }

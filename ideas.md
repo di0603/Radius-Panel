@@ -365,3 +365,14 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
   requiere SQL directo, ver `SECURITY.md` → "Procedimiento si hay que revocar
   la CA intermedia"), y una ruta para pasar una intermedia `retiring` a
   `retired` a mano sin esperar a que expire su CRL.
+- [x] **Correccion 10.5 (firewall de la puerta de enlace)**: `buildFirewallRuleset`
+  no era idempotente (`nft -f` duplicaba reglas en cada ejecucion del
+  agente), la cadena `forward` no aceptaba el trafico de vuelta ni el resto
+  del forward de la maquina (la VPN se habria caido para todos), "internet"
+  no excluia redes privadas/CGNAT/link-local, el agente descargaba el
+  fichero por HTTP en claro (token expuesto, y el puerto ni siquiera esta
+  abierto en el firewall real), `trust proxy` seguia siendo un numero de
+  saltos (no comprueba direcciones) y el `Content-Type` de EST llevaba un
+  `charset` de mas. Validado con `nft -c -f` real (WSL) sobre un fichero de
+  ejemplo con dos dispositivos, revisado antes de fusionar. Detalle completo
+  en el CHANGELOG.

@@ -1,18 +1,23 @@
 # Copiar a /etc/vpn-gateway-agent/config.sh en la VM VPN (192.168.10.29),
 # con permisos 600 (lleva un secreto): chmod 600 /etc/vpn-gateway-agent/config.sh
 #
-# PANEL_URL: donde escucha la API PRINCIPAL del panel (server/src/index.ts),
-# NO el listener EST (server/src/estServer.ts, puerto 8443): son dos servidores
-# HTTPS distintos y /vpn/gateway/firewall.nft solo existe en el primero. El
-# panel corre en la misma maquina que FreeRADIUS (192.168.10.28, ver
-# CLAUDE.md), asi que lo mas simple y fiable es apuntar directamente por LAN
-# al puerto de la API (PORT en server/.env; 1003 en el deploy documentado en
-# el README), sin depender de DNS publico ni de Nginx Proxy Manager:
-PANEL_URL='http://192.168.10.28:1003'
-# Alternativa: la URL publica del panel (si prefieres pasar por HTTPS/Nginx
-# Proxy Manager), pero entonces hay que anadir tambien un bloque
-# "location /vpn/" en deploy/nginx-radius-panel.conf que proxye a la API,
-# igual que ya existe para "location /api/".
+# PANEL_URL: la URL PUBLICA del panel, por HTTPS, a traves de Nginx Proxy
+# Manager (NPM). Obligatorio HTTPS: el token de la puerta de enlace viaja en
+# la cabecera Authorization, y en claro por HTTP cualquiera en la LAN podria
+# leerlo y servir un firewall.nft propio que esta maquina aplicaria como
+# root (deploy/vpn-gateway-agent.sh se niega a arrancar si esto no empieza
+# por "https://"). NO es el listener EST (server/src/estServer.ts, puerto
+# 8443): son dos servidores HTTPS distintos y /vpn/gateway/firewall.nft solo
+# existe en la API principal.
+#
+# No apuntes por LAN directa a 192.168.10.28 aunque el panel viva ahi: en
+# produccion el firewall de la .28 (ufw) no deja pasar el puerto de la API
+# (1003) desde la .29, y aunque lo dejara, seria HTTP sin cifrar. Usa la
+# misma URL publica que ya tiene NPM delante (deploy/nginx-radius-panel.conf
+# necesita el bloque "location /vpn/" para esto, ya incluido); en NPM
+# restringe el acceso a esa URL a la IP publica de casa (donde estan .28/.29),
+# ya que el token es el unico secreto que la protege de fuera de esa lista.
+PANEL_URL='https://radius.didev.es'
 
 # GATEWAY_TOKEN: se genera en el panel (VPN > Ajustes > "Generar token de
 # la puerta de enlace"). Se ensena una unica vez al generarlo: si se pierde,

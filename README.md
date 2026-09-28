@@ -406,20 +406,37 @@ raiz, e importar el resultado.
 
 ### Firewall de la puerta de enlace VPN (192.168.10.29)
 
-El panel genera el fichero nftables completo (`GET /vpn/gateway/firewall.nft`)
-a partir de los permisos de red de cada dispositivo ("internet", "toda la
-LAN" o un destino/protocolo/puerto concreto); RADIUS (`192.168.10.28`) y
-MariaDB (`192.168.10.30`) quedan siempre bloqueados para los clientes VPN,
-salvo excepcion explicita por dispositivo.
+El panel genera el fichero nftables completo (`GET /vpn/gateway/firewall.nft`,
+tabla `inet vpn_clients`) a partir de los permisos de red de cada dispositivo:
+
+- **"internet"**: acceso a cualquier destino salvo las redes privadas
+  (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), CGNAT (`100.64.0.0/10`) y
+  link-local (`169.254.0.0/16`) — para eso esta el permiso "toda la LAN"
+  aparte, sin mezclarlo con "internet".
+- **"toda la LAN"**: el `lan_cidr` configurado (`panel_vpn_settings`).
+- **Destino concreto**: IP/CIDR y, opcionalmente, protocolo/puerto.
+
+RADIUS (`192.168.10.28`) y MariaDB (`192.168.10.30`) quedan siempre
+bloqueados para los clientes VPN, salvo excepcion explicita por dispositivo.
+El fichero es idempotente (borra y vuelve a definir la tabla en la misma
+ejecucion de `nft -f`, para que el timer de 5 minutos no vaya acumulando
+reglas) y su cadena `forward` solo decide sobre trafico que toca el pool de
+IPs de la VPN — el resto del trafico de esa maquina (p.ej. lo que ya
+gestione `/etc/nftables.conf`) se acepta sin mirarlo y sigue evaluandose por
+su cuenta en sus propias tablas.
 
 1. **Panel → VPN > Ajustes → "Generar token de la puerta de enlace"**: se
    ensena una unica vez.
 2. En la VM VPN (192.168.10.29), instala `deploy/vpn-gateway-agent.sh` (ver
    "Deploy automatico en el VPS" mas abajo) y su configuracion
-   (`deploy/vpn-gateway-agent.config.sh.example`): **`PANEL_URL` debe apuntar
-   a la API principal del panel** (`http://192.168.10.28:1003` por LAN
-   directa, no a `EST_PORT`/8443 — ese es un servidor HTTPS distinto que solo
-   entiende `/.well-known/est/*`) y `GATEWAY_TOKEN` es el token del paso 1.
+   (`deploy/vpn-gateway-agent.config.sh.example`): **`PANEL_URL` tiene que
+   ser la URL publica del panel por HTTPS** (p.ej. `https://radius.didev.es`,
+   a traves de Nginx Proxy Manager — el agente se niega a arrancar si no
+   empieza por `https://`, porque el token de la puerta de enlace viaja en
+   la cabecera `Authorization` y no debe salir en claro por HTTP), no la
+   LAN directa a la API ni `EST_PORT`/8443 (ese es un servidor HTTPS
+   distinto que solo entiende `/.well-known/est/*`). `GATEWAY_TOKEN` es el
+   token del paso 1. En NPM, restringe esa URL publica a la IP de casa.
 3. El timer systemd (`vpn-gateway-agent.timer`, cada 5 min) descarga el
    fichero, lo valida con `nft -c -f` y solo entonces lo aplica; si algo
    falla, conserva el firewall que ya estaba cargado.
