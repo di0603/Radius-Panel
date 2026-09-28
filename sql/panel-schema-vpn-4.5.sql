@@ -14,6 +14,15 @@
 -- token real emitido todavia (el modulo no se ha desplegado), pero por si
 -- hubiera alguno de pruebas, su hash se copia a la columna nueva antes de
 -- retirar la antigua en vez de recrear la tabla.
+--
+-- Correccion 8.6: en una instalacion nueva, panel-schema-vpn.sql ya crea
+-- panel_vpn_enroll_tokens con token_sha256 desde el principio y sin
+-- token_hash (ese nombre solo existio en el esquema anterior a la
+-- correccion 4.5). El UPDATE de mas abajo referenciaba token_hash sin
+-- condicion, asi que fallaba con "Unknown column 'token_hash' in 'WHERE'"
+-- en cualquier instalacion que nunca tuvo esa columna. Se comprueba antes en
+-- information_schema.COLUMNS y solo se prepara/ejecuta el UPDATE si existe;
+-- si no, se prepara un SELECT 1 inocuo. Sigue sin borrar nada.
 -- ---------------------------------------------------------------------------
 
 ALTER TABLE panel_vpn_settings
@@ -23,9 +32,20 @@ ALTER TABLE panel_vpn_settings
 ALTER TABLE panel_vpn_enroll_tokens
   ADD COLUMN IF NOT EXISTS token_sha256 CHAR(64) NULL DEFAULT NULL;
 
-UPDATE panel_vpn_enroll_tokens
-   SET token_sha256 = token_hash
- WHERE token_sha256 IS NULL AND token_hash IS NOT NULL;
+SET @vpn45_token_hash_exists = (
+  SELECT COUNT(*) FROM information_schema.COLUMNS
+   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'panel_vpn_enroll_tokens' AND COLUMN_NAME = 'token_hash'
+);
+
+SET @vpn45_copy_token_hash_sql = IF(
+  @vpn45_token_hash_exists > 0,
+  'UPDATE panel_vpn_enroll_tokens SET token_sha256 = token_hash WHERE token_sha256 IS NULL AND token_hash IS NOT NULL',
+  'SELECT 1'
+);
+
+PREPARE vpn45_copy_token_hash_stmt FROM @vpn45_copy_token_hash_sql;
+EXECUTE vpn45_copy_token_hash_stmt;
+DEALLOCATE PREPARE vpn45_copy_token_hash_stmt;
 
 ALTER TABLE panel_vpn_enroll_tokens
   MODIFY COLUMN token_sha256 CHAR(64) NOT NULL,

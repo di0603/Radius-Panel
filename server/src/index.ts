@@ -20,6 +20,9 @@ import { logger } from './lib/logger.js';
 import { metricsMiddleware, registry } from './lib/metrics.js';
 import { purgeOldTokens } from './services/auth.js';
 import { regenerateDueCrls, retireStaleRsaIntermediates } from './services/pki.js';
+import { purgeExpiredAndroidDownloads } from './services/androidCert.js';
+import { getVpnAlerts } from './services/vpnAlerts.js';
+import { startEstServer } from './estServer.js';
 import { APP_VERSION } from './version.js';
 
 const app = express();
@@ -105,6 +108,9 @@ app.get('/health', async (_req, res) => {
 
 if (config.metricsEnabled) {
   app.get('/metrics', async (_req, res) => {
+    // Los Gauges de alertas VPN se recalculan en cada scrape (sin timer propio);
+    // un fallo aqui no debe tumbar el resto de metricas.
+    await getVpnAlerts().catch((err) => logger.warn({ err }, 'no se pudieron calcular las alertas VPN'));
     res.set('Content-Type', registry.contentType);
     res.send(await registry.metrics());
   });
@@ -144,6 +150,13 @@ async function main(): Promise<void> {
     logger.info(`API escuchando en http://localhost:${config.port}`);
   });
 
+  let estServer: Awaited<ReturnType<typeof startEstServer>> = null;
+  try {
+    estServer = await startEstServer();
+  } catch (err) {
+    logger.error({ err }, 'no se pudo arrancar el listener EST');
+  }
+
   // Limpieza diaria de refresh tokens caducados.
   const purgeTimer = setInterval(
     () => {
@@ -155,12 +168,14 @@ async function main(): Promise<void> {
   );
   purgeTimer.unref();
 
-  // Regenera la CRL de la VPN antes de que caduque (nextUpdate a 7 dias, se
-  // reintenta a diario cuando falta menos de 1 dia). No-op si el modulo VPN
-  // todavia no esta configurado.
+  // Red de seguridad diaria por si `npm run vpn:jobs` (deploy/radius-panel-
+  // vpn-jobs.timer, cada 15 min) no llegara a desplegarse en este servidor:
+  // sin ella, la CRL dejaria de regenerarse en silencio. El propio vpn:jobs
+  // hace lo mismo con un margen mas amplio (3 dias) y mucha mas frecuencia,
+  // ademas de las otras tareas de mantenimiento del modulo VPN.
   const crlTimer = setInterval(
     () => {
-      regenerateDueCrls()
+      regenerateDueCrls(3)
         .then((n) => n && logger.info({ regenerated: n }, 'CRL de la VPN regenerada'))
         .catch((err) => logger.warn({ err }, 'no se pudo regenerar la CRL de la VPN'));
     },
@@ -168,11 +183,26 @@ async function main(): Promise<void> {
   );
   crlTimer.unref();
 
+  // Enlaces de descarga de .p12 de Android caducados sin usar (15 min de vida):
+  // se purgan a diario igual que el resto de limpiezas periodicas, no hace
+  // falta nada mas fino ya que ya son inutilizables por su propia caducidad.
+  const androidDownloadsTimer = setInterval(
+    () => {
+      purgeExpiredAndroidDownloads()
+        .then((n) => n && logger.info({ removed: n }, 'enlaces de descarga Android caducados eliminados'))
+        .catch((err) => logger.warn({ err }, 'no se pudieron limpiar los enlaces de descarga Android'));
+    },
+    24 * 60 * 60 * 1000,
+  );
+  androidDownloadsTimer.unref();
+
   const shutdown = async (signal: string) => {
     logger.info(`${signal} recibido, cerrando...`);
     clearInterval(purgeTimer);
     clearInterval(crlTimer);
+    clearInterval(androidDownloadsTimer);
     server.close();
+    estServer?.close();
     await closePools();
     process.exit(0);
   };

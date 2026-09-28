@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { asyncHandler } from '../lib/http.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { writeAudit } from '../middleware/audit.js';
+import { issueAndroidCertificate } from '../services/androidCert.js';
+import { buildDevicePackage } from '../services/vpnClientPackages.js';
 import {
   NAME_PART_RE,
   createDevice,
@@ -71,6 +73,27 @@ vpnDevicesRouter.post(
       framedIp: device.framedIp,
     });
     res.status(201).json(device);
+  }),
+);
+
+vpnDevicesRouter.get(
+  '/:username/package',
+  asyncHandler(async (req, res) => {
+    const pkg = await buildDevicePackage(req.params.username);
+    res.set('Content-Disposition', `attachment; filename="${pkg.filename}"`);
+    res.type(pkg.contentType).send(pkg.buffer);
+  }),
+);
+
+vpnDevicesRouter.post(
+  '/:username/android-cert',
+  asyncHandler(async (req, res) => {
+    const result = await issueAndroidCertificate(req.params.username, req.auth!.sub);
+    // Nunca se audita la contrasena del .p12 ni el token de descarga en claro.
+    await writeAudit(req, 'create', 'vpn_android_cert', req.params.username, {
+      expiresAt: result.expiresAt,
+    });
+    res.status(201).json(result);
   }),
 );
 

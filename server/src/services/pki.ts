@@ -422,17 +422,66 @@ export async function buildCrl(input: {
   });
 }
 
+export interface CaSigningMaterial {
+  id: number;
+  cert: x509.X509Certificate;
+  signingKey: CryptoKey;
+}
+
+async function loadSigningMaterial(row: RowDataPacket): Promise<CaSigningMaterial> {
+  if (!row.cert_pem || !row.private_key_encrypted) {
+    throw badRequest('Esta CA intermedia todavia no tiene un certificado importado');
+  }
+  return {
+    id: Number(row.id),
+    cert: new x509.X509Certificate(row.cert_pem),
+    signingKey: await importEcPrivateKeyPem(decryptPkiPrivateKey(row.private_key_encrypted), 'P-384'),
+  };
+}
+
+/**
+ * La CA intermedia que firma los certificados de dispositivo nuevos (EST
+ * simpleenroll/simplereenroll). Solo puede haber una 'active' a la vez.
+ */
+export async function getActiveIntermediate(): Promise<CaSigningMaterial> {
+  const [[row]] = await panelPool.query<RowDataPacket[]>(
+    `SELECT * FROM panel_pki_ca WHERE status = 'active' LIMIT 1`,
+  );
+  if (!row) {
+    throw conflict('No hay ninguna CA intermedia activa: genera e importa una desde la pagina PKI');
+  }
+  return loadSigningMaterial(row);
+}
+
+/** Certificado (sin la clave privada) de una CA por su id. `null` si no existe o no tiene cert_pem. */
+export async function getCaCertById(caId: number): Promise<x509.X509Certificate | null> {
+  const [[row]] = await panelPool.query<RowDataPacket[]>(
+    `SELECT cert_pem FROM panel_pki_ca WHERE id = :id`,
+    { id: caId },
+  );
+  if (!row?.cert_pem) return null;
+  return new x509.X509Certificate(row.cert_pem);
+}
+
 /**
  * `vpn_certificates.ca_id` (sql/radius-schema-vpn-issuer.sql) enlaza cada
  * certificado con el id de `panel_pki_ca` que lo firmo. Sigue vacio para los
  * certificados sin CA gestionada (p.ej. el dispositivo de prueba "vps",
  * firmado directamente por la raiz): esos nunca aparecen en ninguna CRL
  * automatica. Se degrada a "sin revocados" si la columna todavia no existe.
+ *
+ * Excluye los que ya han caducado por si solos (`not_after` pasado): un
+ * certificado caducado se rechaza igualmente aunque no apareciera en la CRL
+ * (RFC 5280), asi que mantenerlo aqui para siempre solo hincha el fichero
+ * sin anadir proteccion real. `npm run vpn:jobs` fuerza una regeneracion en
+ * cuanto un revocado cruza su fecha de caducidad, para que no tarde hasta el
+ * siguiente ciclo normal de la CRL en desaparecer.
  */
 async function getRevokedEntriesForCa(caId: number): Promise<CrlEntryInput[]> {
   try {
     const [rows] = await radiusPool.query<RowDataPacket[]>(
-      `SELECT serial, revoked_at FROM vpn_certificates WHERE ca_id = :caId AND status = 'revoked'`,
+      `SELECT serial, revoked_at FROM vpn_certificates
+        WHERE ca_id = :caId AND status = 'revoked' AND not_after > UTC_TIMESTAMP()`,
       { caId },
     );
     return rows.map((r) => ({
@@ -479,14 +528,20 @@ export async function regenerateCrl(caId: number): Promise<string> {
   return crlPem;
 }
 
-/** Regenera la CRL de toda CA cuya proxima actualizacion vence en menos de un dia. Uso: tarea diaria. */
-export async function regenerateDueCrls(): Promise<number> {
+/**
+ * Regenera la CRL de toda CA cuya proxima actualizacion vence en menos de
+ * `withinDays`. La llama tanto el timer de respaldo de server/src/index.ts
+ * (por si `npm run vpn:jobs` no llega a desplegarse) como el propio
+ * `vpn:jobs` (con un margen mas amplio y mucha mas frecuencia).
+ */
+export async function regenerateDueCrls(withinDays = 1): Promise<number> {
   let rows: RowDataPacket[] = [];
   try {
     [rows] = await panelPool.query<RowDataPacket[]>(
       `SELECT id FROM panel_pki_ca
         WHERE status IN ('active', 'retiring')
-          AND (crl_next_update IS NULL OR crl_next_update <= DATE_ADD(NOW(), INTERVAL 1 DAY))`,
+          AND (crl_next_update IS NULL OR crl_next_update <= DATE_ADD(UTC_TIMESTAMP(), INTERVAL :withinDays DAY))`,
+      { withinDays },
     );
   } catch (err) {
     if (isMissingTable(err)) return 0;
@@ -516,6 +571,27 @@ export async function getCaChainPem(): Promise<string | null> {
   const rootPem = rows.find((r) => r.root_cert_pem)?.root_cert_pem;
   if (rootPem) parts.push(String(rootPem).trim());
   return parts.join('\n');
+}
+
+/**
+ * La raiz offline (autofirmada), para el perfil .sswan de Android: ese
+ * formato solo admite un unico certificado de confianza (`remote.cert`), y
+ * el servidor IKE ya envia la intermedia dentro del propio handshake, asi
+ * que a los clientes les basta con confiar en la raiz. `null` si la PKI
+ * todavia no esta configurada.
+ */
+export async function getRootCaCert(): Promise<x509.X509Certificate | null> {
+  let rows: RowDataPacket[] = [];
+  try {
+    [rows] = await panelPool.query<RowDataPacket[]>(
+      `SELECT root_cert_pem FROM panel_pki_ca WHERE status IN ('active', 'retiring') AND root_cert_pem IS NOT NULL LIMIT 1`,
+    );
+  } catch (err) {
+    if (isMissingTable(err)) return null;
+    throw err;
+  }
+  if (!rows.length) return null;
+  return new x509.X509Certificate(String(rows[0].root_cert_pem).trim());
 }
 
 /** GET /pki/crl.pem: CRL vigente de cada intermedia activa o en retirada. `null` si no hay ninguna. */

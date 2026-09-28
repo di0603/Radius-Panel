@@ -1,6 +1,7 @@
 import type { ResultSetHeader, RowDataPacket } from 'mysql2';
 import { panelPool, radiusPool } from '../db/pools.js';
 import { randomToken, sha256 } from '../lib/crypto.js';
+import { formatUtcDateTime } from '../lib/dates.js';
 import { conflict, notFound } from '../lib/http.js';
 import { intToIpv4, ipv4ToInt } from '../lib/ipv4.js';
 import { disconnectUserSessions } from './coa.js';
@@ -306,7 +307,7 @@ export async function generateEnrollToken(
     const [result] = await conn.query<ResultSetHeader>(
       `INSERT INTO panel_vpn_enroll_tokens (username, token_sha256, expires_at, created_by)
        VALUES (:u, :tokenSha256, :expiresAt, :createdBy)`,
-      { u: username, tokenSha256, expiresAt, createdBy },
+      { u: username, tokenSha256, expiresAt: formatUtcDateTime(expiresAt), createdBy },
     );
     await conn.commit();
     return { id: result.insertId, token, expiresAt: expiresAt.toISOString() };

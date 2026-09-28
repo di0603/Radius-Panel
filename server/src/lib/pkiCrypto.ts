@@ -38,3 +38,20 @@ export function encryptPkiPrivateKey(privateKeyPem: string): string {
 export function decryptPkiPrivateKey(payload: string): string {
   return decryptWithMasterKey(requireMasterKeySecret(), payload);
 }
+
+/**
+ * Cifra el .p12 (base64) de un certificado Android mientras espera su
+ * descarga de un solo uso (panel_vpn_android_downloads.p12_encrypted): el
+ * .p12 ya va protegido con su propia contrasena de 20 caracteres, pero se
+ * cifra tambien en reposo con PKI_MASTER_KEY -dos secretos independientes,
+ * ninguno de los dos vive en la base de datos- por el mismo motivo que la
+ * clave privada de la CA.
+ */
+export function encryptAndroidP12(p12Base64: string): string {
+  return encryptWithMasterKey(requireMasterKeySecret(), p12Base64);
+}
+
+/** Descifra lo guardado por `encryptAndroidP12`. Lanza si el dato fue manipulado. */
+export function decryptAndroidP12(payload: string): string {
+  return decryptWithMasterKey(requireMasterKeySecret(), payload);
+}

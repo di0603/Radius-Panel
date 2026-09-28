@@ -75,6 +75,17 @@ const envSchema = z.object({
    * intermedia falla con un mensaje claro en el momento de usarla.
    */
   PKI_MASTER_KEY: z.string().min(32, 'PKI_MASTER_KEY debe tener al menos 32 caracteres').optional(),
+
+  /**
+   * Listener EST (RFC 7030) propio, con TLS mutuo: no pasa por nginx porque
+   * necesita ver el certificado de cliente directamente. Opcional: sin
+   * EST_TLS_CERT/EST_TLS_KEY el panel arranca igual, sin este listener.
+   */
+  EST_ENABLED: bool('true'),
+  EST_PORT: port.default(8443),
+  EST_BIND: z.string().min(1).default('0.0.0.0'),
+  EST_TLS_CERT: z.string().optional(),
+  EST_TLS_KEY: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -149,6 +160,14 @@ export const config = {
 
   pki: {
     masterKey: env.PKI_MASTER_KEY,
+  },
+
+  est: {
+    enabled: env.EST_ENABLED && !!env.EST_TLS_CERT && !!env.EST_TLS_KEY,
+    port: env.EST_PORT,
+    bind: env.EST_BIND,
+    tlsCert: env.EST_TLS_CERT,
+    tlsKey: env.EST_TLS_KEY,
   },
 };
 

@@ -1,4 +1,4 @@
-import { Counter, Histogram, Registry, collectDefaultMetrics } from 'prom-client';
+import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from 'prom-client';
 import type { NextFunction, Request, Response } from 'express';
 import { config } from '../config.js';
 
@@ -34,6 +34,57 @@ export const coaRequests = new Counter({
   name: 'radius_panel_coa_requests_total',
   help: 'Paquetes CoA/Disconnect enviados a los NAS',
   labelNames: ['result'] as const,
+  registers: [registry],
+});
+
+export const estEnrollments = new Counter({
+  name: 'radius_panel_est_enrollments_total',
+  help: 'Altas EST (simpleenroll) atendidas',
+  labelNames: ['result'] as const,
+  registers: [registry],
+});
+
+export const estRenewals = new Counter({
+  name: 'radius_panel_est_renewals_total',
+  help: 'Renovaciones EST (simplereenroll) atendidas',
+  labelNames: ['result'] as const,
+  registers: [registry],
+});
+
+export const estRejections = new Counter({
+  name: 'radius_panel_est_rejections_total',
+  help: 'Peticiones EST rechazadas, por endpoint y motivo',
+  labelNames: ['endpoint', 'reason'] as const,
+  registers: [registry],
+});
+
+/**
+ * Gauges de alertas del modulo VPN (services/vpnAlerts.ts actualiza los
+ * valores; aqui solo se declaran, igual que el resto de metricas). Se
+ * refrescan en cada scrape de /metrics, no con un timer propio.
+ */
+export const vpnRenewalFailingGauge = new Gauge({
+  name: 'radius_panel_vpn_renewal_failing_devices',
+  help: 'Dispositivos Windows/Linux cuya renovacion automatica por EST deberia haber saltado y no lo ha hecho',
+  labelNames: ['severity'] as const,
+  registers: [registry],
+});
+
+export const vpnAndroidExpiringGauge = new Gauge({
+  name: 'radius_panel_vpn_android_expiring_soon',
+  help: 'Dispositivos Android cuyo certificado caduca dentro de la ventana de aviso',
+  registers: [registry],
+});
+
+export const vpnCaExpiringGauge = new Gauge({
+  name: 'radius_panel_vpn_ca_expiring_soon',
+  help: 'CAs intermedias de la VPN que caducan dentro de la ventana de aviso',
+  registers: [registry],
+});
+
+export const vpnEstRejectionsLastHourGauge = new Gauge({
+  name: 'radius_panel_vpn_est_rejections_last_hour',
+  help: 'Peticiones EST rechazadas en la ultima hora (segun panel_audit_log)',
   registers: [registry],
 });
 
