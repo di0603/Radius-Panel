@@ -81,7 +81,11 @@ export async function signDeviceCsr(input: SignDeviceCsrInput): Promise<SignedDe
 
   const cert = await x509.X509CertificateGenerator.create({
     serialNumber: serial,
-    subject: csr.subjectName,
+    // Solo el CN ya validado, nunca el subject completo del CSR: un CSR
+    // puede pedir RDNs adicionales (O, OU...) ademas del CN, y el unico dato
+    // de identidad que debe llevar el certificado es el que ya se ha
+    // comprobado (CN == username esperado).
+    subject: `CN=${cn}`,
     issuer: issuerCert.subject,
     notBefore,
     notAfter,

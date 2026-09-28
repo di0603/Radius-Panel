@@ -90,6 +90,23 @@ const enrollLimiter = rateLimit({
   message: { error: 'Demasiadas peticiones de alta, prueba de nuevo en unos minutos' },
 });
 
+/**
+ * simplereenroll/status exigen un certificado de cliente valido, pero un
+ * certificado robado (o un dispositivo con un bug) podria usarse para
+ * bombardear el endpoint: cada intento hace una verificacion X.509 completa
+ * y, en simplereenroll, abre una transaccion con las filas del dispositivo
+ * bloqueadas. Limite generoso (pensado para muchos dispositivos distintos
+ * detras de la misma IP, p.ej. varios clientes VPN por NAT) para no estorbar
+ * el uso normal.
+ */
+const renewLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiadas peticiones, prueba de nuevo en unos minutos' },
+});
+
 estRouter.post(
   '/simpleenroll',
   enrollLimiter,
@@ -125,6 +142,7 @@ estRouter.post(
 
 estRouter.post(
   '/simplereenroll',
+  renewLimiter,
   asyncHandler(async (req, res) => {
     const der = peerCertDer(req);
     let deviceForAudit = 'desconocido';
@@ -148,6 +166,7 @@ estRouter.post(
 
 estRouter.get(
   '/status',
+  renewLimiter,
   asyncHandler(async (req, res) => {
     const der = peerCertDer(req);
     try {

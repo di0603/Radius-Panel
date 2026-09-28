@@ -1,8 +1,18 @@
 # Copiar a /etc/vpn-gateway-agent/config.sh en la VM VPN (192.168.10.29),
 # con permisos 600 (lleva un secreto): chmod 600 /etc/vpn-gateway-agent/config.sh
 #
-# PANEL_URL: host y puerto del listener EST (el mismo que .well-known/est/cacerts).
-PANEL_URL='https://pki.vlc.didev.es:8443'
+# PANEL_URL: donde escucha la API PRINCIPAL del panel (server/src/index.ts),
+# NO el listener EST (server/src/estServer.ts, puerto 8443): son dos servidores
+# HTTPS distintos y /vpn/gateway/firewall.nft solo existe en el primero. El
+# panel corre en la misma maquina que FreeRADIUS (192.168.10.28, ver
+# CLAUDE.md), asi que lo mas simple y fiable es apuntar directamente por LAN
+# al puerto de la API (PORT en server/.env; 1003 en el deploy documentado en
+# el README), sin depender de DNS publico ni de Nginx Proxy Manager:
+PANEL_URL='http://192.168.10.28:1003'
+# Alternativa: la URL publica del panel (si prefieres pasar por HTTPS/Nginx
+# Proxy Manager), pero entonces hay que anadir tambien un bloque
+# "location /vpn/" en deploy/nginx-radius-panel.conf que proxye a la API,
+# igual que ya existe para "location /api/".
 
 # GATEWAY_TOKEN: se genera en el panel (VPN > Ajustes > "Generar token de
 # la puerta de enlace"). Se ensena una unica vez al generarlo: si se pierde,

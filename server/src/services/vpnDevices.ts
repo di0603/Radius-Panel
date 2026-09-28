@@ -208,8 +208,12 @@ export async function createDevice(input: CreateDeviceInput): Promise<VpnDevice>
   try {
     await conn.beginTransaction();
 
+    // FOR UPDATE: sin bloquear estas filas, dos altas simultaneas podrian
+    // leer el mismo hueco libre y las dos intentar la misma IP (la segunda
+    // solo se descubriria al chocar con el UNIQUE de panel_vpn_devices.framed_ip,
+    // dejando un momento con dos cuentas RADIUS con la misma Framed-IP-Address).
     const [ipRows] = await conn.query<RowDataPacket[]>(
-      `SELECT value FROM radreply WHERE attribute = 'Framed-IP-Address'`,
+      `SELECT value FROM radreply WHERE attribute = 'Framed-IP-Address' FOR UPDATE`,
     );
     const ip = firstFreeIp(
       settings.poolStart,

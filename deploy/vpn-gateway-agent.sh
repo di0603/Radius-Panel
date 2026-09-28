@@ -7,8 +7,9 @@
 #
 # Configuracion (no se versiona, crear a mano en la VM):
 #   /etc/vpn-gateway-agent/config.sh
-#     PANEL_URL='https://pki.vlc.didev.es:8443'
+#     PANEL_URL='http://192.168.10.28:1003'   # API principal, NO el listener EST (8443)
 #     GATEWAY_TOKEN='...'   # generado en el panel: VPN > Ajustes
+# Ver deploy/vpn-gateway-agent.config.sh.example para mas detalle.
 set -euo pipefail
 
 CONFIG_FILE="${VPN_GATEWAY_AGENT_CONFIG:-/etc/vpn-gateway-agent/config.sh}"
