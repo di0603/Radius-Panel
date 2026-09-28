@@ -220,36 +220,58 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
   tabla ya creada a mano y su fila de prueba `vps`) y `panel_vpn_devices` /
   `panel_vpn_enroll_tokens` / `panel_pki_ca` / `panel_vpn_settings` (base del panel).
   Migraciones idempotentes registradas en `npm run menu`; `/api/meta.vpnEnabled`
-  indica si el módulo está activo.
-- [x] Página "PKI" (solo admin): generar clave+CSR de la CA intermedia (clave
-  cifrada con `PKI_MASTER_KEY`, nunca en claro), importar el certificado firmado
-  offline por la raíz con validación completa (firma, vigencia, BasicConstraints,
-  KeyUsage, SPKI coincide con el CSR — una intermedia mal firmada no se puede
-  activar), rotación (la anterior pasa a "retirándose", sigue publicando CRL hasta
-  que caduca) y publicación pública `GET /pki/ca-chain.pem` / `GET /pki/crl.pem`
-  (CRL con `nextUpdate` a 7 días, regenerada al importar y a diario). Pendiente:
-  todavía no hay enlace entre `vpn_certificates` y la CA que firmó cada uno (ver
-  ítem de emisión de certificados de dispositivo, más abajo) — hasta entonces la
-  CRL se publica vacía pero válida.
+  indica si el módulo está activo. Ajustado en la corrección 4.5 al modelo exacto
+  de `CLAUDE.md` (ver más abajo).
+- [x] Página "PKI" (solo admin): generar clave+CSR de la CA intermedia en
+  **ECDSA P-384** (clave cifrada con `PKI_MASTER_KEY`, nunca en claro), importar
+  el certificado firmado offline por la raíz con validación completa (firma,
+  vigencia, `BasicConstraints CA:true` con `pathLenConstraint=0`, `KeyUsage
+  keyCertSign+cRLSign`, `ExtendedKeyUsage` únicamente `clientAuth`, clave ECDSA
+  P-384 y que la SPKI coincida con el CSR — una intermedia mal firmada, con
+  curva distinta o sin estos límites no se puede activar), rotación (la
+  anterior pasa a "retirándose", sigue publicando CRL hasta que caduca) y
+  publicación pública `GET /pki/ca-chain.pem` / `GET /pki/crl.pem` (CRL con
+  `nextUpdate` a 7 días, regenerada al importar y a diario). Una CA `pending`
+  generada en RSA por una versión anterior se retira sola al arrancar
+  (`retireStaleRsaIntermediates`), con aviso en la página.
+- [x] `signDeviceCsr` (librería, `server/src/services/deviceCerts.ts`): verifica
+  la firma del CSR, exige CN exacto, acepta solo ECDSA P-256/P-384 o RSA >= 3072,
+  ignora las extensiones pedidas y emite con serial aleatorio de 128 bits,
+  KeyUsage `digitalSignature`, EKU `clientAuth`, SAN `dNSName` = CN, AKI/SKI,
+  `notBefore` 5 minutos antes, fechas UTC. Probado con una cadena real
+  raíz → intermedia → dispositivo verificada con `openssl verify`. Todavía sin
+  endpoint HTTP que lo use (eso es el ítem de EST, más abajo).
 - [x] Sección "VPN > Dispositivos" (solo admin): alta en una única operación
   (asigna la primera IP libre del pool comprobando `radreply` de todos los
   usuarios, `radcheck` con `Service-Type == Framed-User`, `radusergroup` = `vpn`,
   ficha en `panel_vpn_devices`; si falla la ficha del panel se deshacen a mano
   las filas RADIUS ya confirmadas, porque panel y radius pueden vivir en
-  servidores MySQL distintos). Ficha con historial de certificados, sesiones
-  (reutiliza `/users/:u/activity`), última emisión y próxima renovación
-  esperada. Token de alta EST de un solo uso (24h, solo se guarda el hash).
-  Activar/desactivar reutiliza `Auth-Type := Reject` + desconexión CoA.
-  Revocar certificado regenera la CRL de su CA (`vpn_certificates.ca_serial`,
-  ver más abajo) y desconecta la sesión. Dar de baja revoca, desconecta y
-  borra las filas RADIUS liberando la IP, conservando el historial. El editor
-  de usuarios genérico avisa si el usuario es un dispositivo VPN.
-- [x] `vpn_certificates.ca_serial`: enlaza cada certificado con el serial de la
-  CA que lo firmó, para que revocar regenere la CRL correcta. Sigue sin
-  rellenarse hasta que exista emisión automática de certificados (ítem
-  siguiente); mientras tanto vale NULL, como en el dispositivo de prueba `vps`.
-- [ ] Módulo de emisión/renovación de certificados de dispositivo firmados por la
-  CA intermedia (usa el token de alta EST ya existente y `ca_serial`).
-- [ ] Endpoint EST (RFC 7030) para alta y renovación automática de dispositivos.
-- [ ] Página de ajustes del módulo VPN (FQDN, rango de IPs, días de vigencia/renovación).
+  servidores MySQL distintos). Usuario RADIUS = `vpn-<owner_user>-<device_label>`,
+  único. Ficha con historial de certificados, sesiones (reutiliza
+  `/users/:u/activity`), última emisión y próxima renovación esperada (el
+  `cert_days`/`renew_after_days` del dispositivo sobrescribe el general). Token
+  de alta EST de un solo uso (24h, solo se guarda el hash; generar uno nuevo
+  borra el anterior). Activar/desactivar reutiliza `Auth-Type := Reject` +
+  desconexión CoA. Revocar certificado regenera la CRL de su CA
+  (`vpn_certificates.ca_id`) y desconecta la sesión. Dar de baja revoca,
+  desconecta y borra las filas RADIUS liberando la IP, conservando el
+  historial. El editor de usuarios genérico avisa si el usuario es un
+  dispositivo VPN.
+- [x] `vpn_certificates.ca_id`: enlaza cada certificado con el id de `panel_pki_ca`
+  que lo firmó, para que revocar regenere la CRL correcta. Sigue sin rellenarse
+  hasta que exista emisión automática de certificados (ítem siguiente);
+  mientras tanto vale NULL, como en el dispositivo de prueba `vps`.
+- [x] **Corrección 4.5**: a mitad del desarrollo apareció un `CLAUDE.md` con el
+  modelo de datos y la criptografía obligatorios (ECDSA en vez de RSA para la
+  CA, `ca_id` en vez de `ca_serial`, `owner_user`/`device_label`/`enabled` en
+  vez de `owner`/`status`, `root_cert_pem` embebido en vez de una fila de CA
+  raíz aparte, `aaa_id`/`est_url` en los ajustes). Este ítem realineó todo lo de
+  arriba con ese modelo; como el módulo no se había desplegado en producción
+  todavía, `panel_pki_ca`/`panel_vpn_devices` se recrearon vacías en vez de
+  migrarse con ALTER/RENAME.
+- [ ] Endpoint EST (RFC 7030) para alta y renovación automática de dispositivos:
+  conecta `signDeviceCsr` con una ruta HTTP autenticada por token de alta,
+  rellena `vpn_certificates.ca_id` al firmar y usa `panel_vpn_settings.est_url`.
+- [ ] Página de ajustes del módulo VPN (FQDN, identidad AAA, rango de IPs, días
+  de vigencia/renovación, URL de EST).
 - [ ] Retirar el dispositivo de prueba `vps` cuando exista la CA intermedia real.
