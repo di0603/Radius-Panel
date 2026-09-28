@@ -28,7 +28,12 @@ import { APP_VERSION } from './version.js';
 
 const app = express();
 
-app.set('trust proxy', 1);
+// 2 saltos reales delante de Node: Nginx Proxy Manager (otra maquina) y el
+// nginx local de este VPS (deploy/nginx-radius-panel.conf), que es quien
+// reenvia aqui. Con solo 1, req.ip resolveria a la IP de NPM en vez de la
+// del cliente real, para toda la API (rate-limits por IP y, en el modulo
+// VPN, la restriccion "solo desde la LAN/VPN" de la descarga Android).
+app.set('trust proxy', 2);
 app.disable('x-powered-by');
 
 app.use((req, res, next) => {

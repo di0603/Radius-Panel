@@ -323,17 +323,14 @@ Este proyecto usa versionado semantico.
       `location /pki/`/`location /vpn/` que faltaban en
       `deploy/nginx-radius-panel.conf` para quien prefiera la URL publica en
       vez de la LAN directa.
-  - **Pendiente de confirmar con el usuario, no corregido en este cierre**:
-    `app.set('trust proxy', 1)` (`server/src/index.ts`) solo cuenta un salto
-    de proxy, pero la topologia documentada en el propio README tiene dos
-    (Nginx Proxy Manager delante del nginx local de
-    `deploy/nginx-radius-panel.conf`). Esto puede hacer que `req.ip` no sea
-    la IP real del cliente para el resto de la API (no solo para la VPN),
-    afectando en este modulo a la restriccion "solo desde la VPN o la LAN" y
-    al rate-limit de la descarga de Android — se deja sin tocar porque el
-    ajuste correcto depende de la topologia real de red del VPS (si Nginx
-    Proxy Manager corre en la misma maquina o no) y afecta a todo el panel,
-    no solo a la VPN.
+    - `app.set('trust proxy', 1)` (`server/src/index.ts`) solo contaba un
+      salto de proxy, pero la topologia real (confirmada con el usuario) tiene
+      dos: Nginx Proxy Manager en **otra maquina**, delante del nginx local de
+      `deploy/nginx-radius-panel.conf`, que es quien reenvia a la API. Con
+      solo 1, `req.ip` resolvia a la IP de NPM en vez de la del cliente real
+      para **toda** la API (no solo la VPN): rompia el rate-limit por IP en
+      general y, en este modulo, la restriccion "solo desde la VPN o la LAN"
+      de la descarga de Android y su propio rate-limit. Corregido a `2`.
 
 ### Corregido
 
