@@ -7,6 +7,60 @@ Este proyecto usa versionado semantico.
 
 ### Anadido
 
+- **Modulo VPN IKEv2/EAP-TLS (en curso)**: primer paso, esquema de base de datos.
+  `vpn_certificates` en la base `radius` (serial, huella de clave publica,
+  vigencia, estado activo/renovado/revocado) y, en la base del panel,
+  `panel_vpn_devices`, `panel_vpn_enroll_tokens` (solo hash del token de alta),
+  `panel_pki_ca` y `panel_vpn_settings` (FQDN, rango de IPs, dias de vigencia y
+  renovacion). Opcional como `panel_user_meta`: sin estas tablas el panel
+  arranca igual y `/api/meta` anuncia `vpnEnabled: false`. Migraciones
+  idempotentes, registradas en `npm run menu`.
+- **Pagina "PKI" de la VPN** (solo admin): genera la clave y el CSR de la CA
+  intermedia en **ECDSA P-384** (la clave se cifra con `PKI_MASTER_KEY`, nunca
+  sale del servidor ni se audita), importa el certificado firmado offline por
+  la raiz con validacion completa (firma, vigencia, `BasicConstraints CA:true`
+  con `pathLenConstraint=0`, `KeyUsage keyCertSign`+`cRLSign`, `ExtendedKeyUsage`
+  unicamente `clientAuth`, clave ECDSA P-384 y que la clave publica coincida
+  con el CSR generado — una intermedia mal firmada, con curva distinta o sin
+  estos limites no se puede activar) y soporta rotacion (la intermedia anterior
+  pasa a "retirandose": sigue publicando CRL hasta que caduca, pero deja de
+  firmar). Publica sin autenticacion `GET /pki/ca-chain.pem` y `GET /pki/crl.pem`
+  (CRL con `nextUpdate` a 7 dias, regenerada al importar y a diario); la pagina
+  incluye el script y la unidad systemd de ejemplo para que el host de
+  FreeRADIUS la sincronice cada hora.
+- **Emision de certificados de dispositivo** (libreria, todavia sin endpoint
+  HTTP): `signDeviceCsr` verifica la firma del CSR, exige que el CN coincida
+  con el username del dispositivo, acepta solo ECDSA P-256/P-384 o RSA >= 3072
+  e ignora cualquier extension pedida por el CSR — el certificado emitido
+  lleva siempre el mismo perfil (KeyUsage `digitalSignature`, EKU `clientAuth`,
+  SAN `dNSName` = CN, AKI/SKI, serial aleatorio de 128 bits, fechas UTC con
+  `notBefore` 5 minutos antes de la emision). Cadena raiz → intermedia →
+  dispositivo verificada con `openssl verify` en los tests.
+- **Seccion "VPN > Dispositivos"** (solo admin): alta en una unica operacion
+  (asigna la primera IP libre del pool revisando `radreply` de todos los
+  usuarios, `radcheck` con `Service-Type == Framed-User`, `radusergroup` = `vpn`
+  y la ficha en `panel_vpn_devices`; si falla el paso del panel se deshacen a
+  mano las filas RADIUS ya confirmadas, porque panel y radius pueden vivir en
+  servidores MySQL distintos). Usuario RADIUS = `vpn-<owner_user>-<device_label>`.
+  Ficha del dispositivo con historial de certificados, sesiones (reutiliza
+  `/users/:u/activity`), ultima emision y proxima renovacion esperada. Token de
+  alta de un solo uso (24h, solo se guarda su hash; generar uno nuevo borra el
+  anterior). Activar/desactivar reutiliza `Auth-Type := Reject` + desconexion
+  CoA existentes. Revocar certificado regenera la CRL de la CA que lo firmo
+  (`vpn_certificates.ca_id`) y desconecta la sesion. Dar de baja revoca,
+  desconecta, borra las filas RADIUS (libera la IP) y conserva el historial de
+  certificados. El editor generico de usuarios avisa si el usuario es un
+  dispositivo VPN y enlaza a su ficha.
+- **Correccion 4.5**: se detecto a mitad de desarrollo un `CLAUDE.md` con el
+  modelo de datos y la criptografia que debia seguir el modulo VPN, distintos
+  de lo ya construido en los prompts 1-4 (RSA en vez de ECDSA, `ca_serial` en
+  vez de `ca_id`, esquema de `panel_pki_ca`/`panel_vpn_devices` distinto). Este
+  commit realinea todo con ese modelo: vease el detalle en cada punto de
+  arriba. El modulo no se habia desplegado en produccion todavia, asi que
+  `panel_pki_ca` y `panel_vpn_devices` se recrean vacias con el esquema
+  correcto en vez de migrarse con ALTER/RENAME; `radius.vpn_certificates` (que
+  si tiene datos reales, la fila de prueba `vps`) se migra con ALTER
+  idempotente normal.
 - **Sistema de temas**: modo claro, oscuro y automatico (el del sistema) mas siete
   colores de acento, con la preferencia guardada en el navegador.
 - **Seguridad del panel**:

@@ -14,7 +14,9 @@ import {
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import {
+  IconCertificate,
   IconChartBar,
+  IconDevices,
   IconHistory,
   IconLogout,
   IconPlugConnected,
@@ -54,6 +56,14 @@ const NAV_SECTIONS: { label: string; adminOnly?: boolean; items: NavItem[] }[] =
       { to: '/groups', label: 'Grupos y perfiles', icon: IconUsersGroup },
       { to: '/sessions', label: 'Sesiones', icon: IconPlugConnected },
       { to: '/nas', label: 'NAS / clientes', icon: IconRouter },
+    ],
+  },
+  {
+    label: 'VPN',
+    adminOnly: true,
+    items: [
+      { to: '/vpn-devices', label: 'Dispositivos', icon: IconDevices },
+      { to: '/pki', label: 'PKI', icon: IconCertificate },
     ],
   },
   {

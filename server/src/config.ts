@@ -68,6 +68,13 @@ const envSchema = z.object({
   GOOGLE_ENABLED: bool('true'),
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
+
+  /**
+   * Cifra la clave privada de la CA intermedia de la VPN (panel_pki_ca).
+   * Opcional: sin ella, el panel arranca igual pero generar/usar la CA
+   * intermedia falla con un mensaje claro en el momento de usarla.
+   */
+  PKI_MASTER_KEY: z.string().min(32, 'PKI_MASTER_KEY debe tener al menos 32 caracteres').optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -138,6 +145,10 @@ export const config = {
     enabled: env.GOOGLE_ENABLED && !!env.GOOGLE_CLIENT_ID,
     clientId: env.GOOGLE_CLIENT_ID,
     clientSecret: env.GOOGLE_CLIENT_SECRET,
+  },
+
+  pki: {
+    masterKey: env.PKI_MASTER_KEY,
   },
 };
 

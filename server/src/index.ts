@@ -6,6 +6,7 @@ import cookieParser from 'cookie-parser';
 import { pinoHttp } from 'pino-http';
 import { config } from './config.js';
 import { apiRouter } from './routes/index.js';
+import { pkiPublicRouter } from './routes/pkiPublic.js';
 import { errorHandler, notFoundHandler } from './middleware/error.js';
 import {
   assertDbConnectivity,
@@ -18,6 +19,7 @@ import {
 import { logger } from './lib/logger.js';
 import { metricsMiddleware, registry } from './lib/metrics.js';
 import { purgeOldTokens } from './services/auth.js';
+import { regenerateDueCrls, retireStaleRsaIntermediates } from './services/pki.js';
 import { APP_VERSION } from './version.js';
 
 const app = express();
@@ -108,6 +110,10 @@ if (config.metricsEnabled) {
   });
 }
 
+// Sin autenticacion, fuera de /api: cadena de CA y CRL de la VPN (RFC 5280),
+// las consultan strongSwan/FreeRADIUS y los dispositivos, no solo el panel.
+app.use('/pki', pkiPublicRouter);
+
 app.use('/api', apiRouter);
 
 app.use(notFoundHandler);
@@ -122,6 +128,16 @@ async function main(): Promise<void> {
   } catch (err) {
     logger.fatal((err as Error).message);
     process.exit(1);
+  }
+
+  // Retira cualquier CA intermedia 'pending' generada en RSA con una version
+  // anterior del panel: ahora solo se admite ECDSA P-384. No-op si el modulo
+  // PKI todavia no esta configurado.
+  try {
+    const retired = await retireStaleRsaIntermediates();
+    if (retired) logger.warn({ retired }, 'CA(s) intermedia(s) RSA obsoletas retiradas');
+  } catch (err) {
+    logger.warn({ err }, 'no se pudo comprobar si hay CAs intermedias RSA obsoletas');
   }
 
   const server = app.listen(config.port, () => {
@@ -139,9 +155,23 @@ async function main(): Promise<void> {
   );
   purgeTimer.unref();
 
+  // Regenera la CRL de la VPN antes de que caduque (nextUpdate a 7 dias, se
+  // reintenta a diario cuando falta menos de 1 dia). No-op si el modulo VPN
+  // todavia no esta configurado.
+  const crlTimer = setInterval(
+    () => {
+      regenerateDueCrls()
+        .then((n) => n && logger.info({ regenerated: n }, 'CRL de la VPN regenerada'))
+        .catch((err) => logger.warn({ err }, 'no se pudo regenerar la CRL de la VPN'));
+    },
+    24 * 60 * 60 * 1000,
+  );
+  crlTimer.unref();
+
   const shutdown = async (signal: string) => {
     logger.info(`${signal} recibido, cerrando...`);
     clearInterval(purgeTimer);
+    clearInterval(crlTimer);
     server.close();
     await closePools();
     process.exit(0);

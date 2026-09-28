@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   ActionIcon,
+  Alert,
   Badge,
   Button,
   Checkbox,
@@ -26,7 +27,9 @@ import { DateInput } from '@mantine/dates';
 import { useDebouncedValue } from '@mantine/hooks';
 import { modals } from '@mantine/modals';
 import dayjs from 'dayjs';
+import { useNavigate } from 'react-router-dom';
 import {
+  IconAlertTriangle,
   IconDownload,
   IconEdit,
   IconPlayerPlay,
@@ -55,6 +58,7 @@ import {
   useTestUser,
   useUser,
   useUsers,
+  useVpnDevices,
   type TestAuthResult,
 } from '../api/hooks';
 import type { AttrRow, UserWriteInput } from '../api/types';
@@ -78,6 +82,9 @@ function UserEditor({ state, onClose }: { state: EditorState; onClose: () => voi
   const detail = useUser(isEdit ? state.username : null);
   const groups = useGroups();
   const save = useSaveUser(isEdit ? 'update' : 'create');
+  const navigate = useNavigate();
+  const vpnDevices = useVpnDevices();
+  const isVpnDevice = isEdit && vpnDevices.data?.some((d) => d.username === state.username);
 
   const [username, setUsername] = useState(state.username);
   const [password, setPassword] = useState('');
@@ -176,6 +183,27 @@ function UserEditor({ state, onClose }: { state: EditorState; onClose: () => voi
 
   return (
     <Stack>
+      {isVpnDevice && (
+        <Alert
+          color="orange"
+          icon={<IconAlertTriangle size={16} />}
+          title="Este usuario es un dispositivo VPN"
+        >
+          Se gestiona desde VPN › Dispositivos: la IP fija, el grupo <b>vpn</b> y su certificado se
+          pueden romper si lo editas aqui a mano.{' '}
+          <Text
+            span
+            fw={600}
+            style={{ cursor: 'pointer', textDecoration: 'underline' }}
+            onClick={() => {
+              modals.closeAll();
+              navigate(`/vpn-devices?open=${encodeURIComponent(state.username)}`);
+            }}
+          >
+            Ir a su ficha
+          </Text>
+        </Alert>
+      )}
       <Group grow align="flex-end">
         <TextInput
           label="Usuario"
