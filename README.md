@@ -418,11 +418,16 @@ raiz, e importar el resultado.
 ### Aprovisionamiento de apps (Windows/Android)
 
 Las apps propias (`didev-vpn-windows` y su equivalente de Android, en
-desarrollo aparte) se configuran importando el perfil `.didevvpn` firmado
-que genera el paso 2 de "Alta de un dispositivo". El panel firma ese perfil
-con una clave Ed25519 cuya clave publica va incrustada en cada app, para que
-ninguna acepte un perfil que no venga de este panel — la clave privada **no
-la genera el codigo**, es un paso manual, una unica vez:
+desarrollo aparte) son clientes **genericos**, como FortiClient: se
+compilan sin ninguna clave ni certificado de didev incrustados, y pueden
+gestionar varias conexiones/servidores distintos. Cada una se configura
+importando el perfil `.didevvpn` firmado que genera el paso 2 de "Alta de un
+dispositivo". El panel firma ese perfil con una clave Ed25519 — la clave
+privada **no la genera el codigo**, es un paso manual, una unica vez — pero,
+a diferencia de antes del prompt 12.5, la clave publica correspondiente **no
+va incrustada en la app**: viaja dentro del propio sobre (`signerPublicKey`)
+y la app la aprende y la fija la primera vez que ve cada servidor
+("confianza en el primer uso", TOFU — ver mas abajo).
 
 1. En la `.28`, como root, en un directorio fuera del arbol de git (para que
    el autodeploy nunca lo toque ni lo sobrescriba):
@@ -442,30 +447,34 @@ la genera el codigo**, es un paso manual, una unica vez:
    ```
    y reinicia el panel. Sin este paso, "Generar token de alta" sigue
    funcionando igual, solo que sin perfil firmado ni QR.
-3. Extrae la clave **publica** para incrustarla en el codigo de las apps
-   (este comando solo muestra la parte publica, es seguro pegarlo donde
-   haga falta):
-   ```bash
-   openssl pkey -in /etc/radius-panel/keys/vpn-profile-signing-ed25519.pem -pubout
-   ```
+3. Nada que extraer a mano: el panel calcula la clave publica y su huella
+   (`GET /vpn-settings`, ver "Huellas de confianza" abajo) el mismo cada
+   vez que hace falta, con `getSignerPublicKeySha256Hex()`
+   (`server/src/lib/vpnProfileSigning.ts`); las apps la reciben dentro del
+   sobre firmado, nunca hay que pegarla en ningun sitio.
 4. Aplica la migracion 24 (`panel-schema-vpn-provisioning.sql`) si no lo has
    hecho ya, para que `panel_vpn_settings.min_app_version` exista: `GET
    /.well-known/est/status` la publica en cada respuesta (junto al resto del
    estado del certificado) para que las apps puedan bloquear el alta y la
    renovacion si van por debajo de esa version.
 
-**Formato del perfil**: un sobre `{ payload, signature, keyId }` donde
-`payload` es el base64url de los bytes UTF-8 **exactos** de un JSON (nunca se
-re-serializa para verificar, para que comprobar la firma no dependa de
-reproducir bit a bit el mismo formateo en otro lenguaje/libreria) y
+**Formato del perfil**: un sobre `{ payload, signature, keyId, signerPublicKey }`
+donde `payload` es el base64url de los bytes UTF-8 **exactos** de un JSON
+(nunca se re-serializa para verificar, para que comprobar la firma no
+dependa de reproducir bit a bit el mismo formateo en otro lenguaje/libreria),
 `signature` es la firma Ed25519 (node:crypto, `sign(null, bytes, key)`) sobre
-esos mismos bytes. Verificar solo requiere decodificar `payload` en base64 y
-comprobar la firma con la clave publica del paso 3.
+esos mismos bytes, y `signerPublicKey` es la clave publica del panel (SPKI
+DER, base64url) que verifica esa firma. `signerPublicKey` va **fuera** del
+payload firmado a proposito (es informacion publica sobre quien firmo, no
+parte de lo firmado), pero el payload lleva su huella (`signerKeySha256`,
+ver abajo) para que no se pueda sustituir sin invalidar la firma.
 
 El JSON firmado lleva `version`, `variant` (`"full"` o `"qr"`, ver abajo),
 `cn` (username del dispositivo), `server` (`vpn_fqdn`), `aaaId`,
 `rootCaSha256` (SHA-256 en hex del DER de la raiz offline — **presente en las
-dos variantes**), `ike`/`esp` (propuestas, sintaxis strongSwan), `tunnelMode`,
+dos variantes**), `signerKeySha256` (SHA-256 en hex del SPKI DER de
+`signerPublicKey`, tambien presente en las dos variantes — liga esa clave al
+payload firmado), `ike`/`esp` (propuestas, sintaxis strongSwan), `tunnelMode`,
 `splitRoutes` (vacio en modo `full`), `dns`, `estBaseUrl`, `enrollToken` (el
 token de alta: el unico campo realmente secreto de todo el perfil) e
 `issuedAt`/`expiresAt`.
@@ -479,8 +488,57 @@ tanto su propia firma — no es el mismo JSON reetiquetado):
 - **`"qr"`** (codigo QR, nivel de correccion M): **sin** `caChainPem`. Meter
   la cadena completa en el QR lo deja en una version ~39 (con nivel L, que es
   menos robusto) — casi imposible de escanear desde una pantalla, y con
-  nombres un poco mas largos dejaria de caber sin avisar. La variante `qr` se
-  queda comodamente por debajo de la version 25 incluso con nombres largos.
+  nombres un poco mas largos dejaria de caber sin avisar. La variante `qr`
+  (con `signerPublicKey`/`signerKeySha256` desde el prompt 12.5) sale en
+  torno a la version 27 con nombres normales — sigue siendo razonablemente
+  escaneable, aunque ya no tan holgada como antes de anadir esos dos campos.
+
+### Confianza en el primer uso (TOFU) — obligatorio para toda app que consuma este perfil
+
+Desde que las apps son clientes genericos sin clave de didev incrustada, la
+app **aprende** la identidad del panel la primera vez que importa un perfil
+de un servidor, y a partir de ahi la exige exactamente igual:
+
+1. **Primera importacion de un servidor** (la app no tiene ningun ancla
+   guardada para el `server`/`aaaId` de este perfil): verificar la firma con
+   la `signerPublicKey` que trae el PROPIO sobre, comprobar que
+   `signerKeySha256` del payload es el SHA-256 exacto de esa
+   `signerPublicKey` (si no coincide, el sobre es incoherente: rechazar sin
+   preguntar nada, no es una decision del usuario), comprobar `variant`,
+   version de esquema, caducidad, y que la raiz de `caChainPem` (o la que
+   devuelva `GET cacerts` en la variante `qr`, ver el contrato de abajo)
+   tiene exactamente `rootCaSha256`. Solo si todo eso pasa, mostrar una
+   pantalla de confirmacion con el nombre del servidor y las dos huellas
+   (`signerKeySha256` y `rootCaSha256`, ver "Huellas de confianza" mas
+   abajo) y un texto explicito pidiendo comparar contra lo que muestra el
+   panel. Solo si el usuario confirma, guardar el ancla de confianza
+   (`signerKeySha256` + `rootCaSha256` para ese servidor) y continuar con el
+   alta.
+2. **Importaciones y renovaciones posteriores del mismo servidor**: el
+   perfil tiene que verificar igual que en el paso 1, Y su
+   `signerKeySha256`/`rootCaSha256` tienen que coincidir **exactamente** con
+   el ancla ya guardada. Si no coinciden, rechazar con un error claro ("la
+   identidad de este servidor ha cambiado") **sin ofrecer aceptar desde ese
+   dialogo** — cambiar de ancla exige un paso deliberado aparte (quitar la
+   conexion y volver a anadirla), nunca un simple "aceptar de todas formas"
+   en el flujo normal.
+3. El TLS de EST (`simpleenroll`/`simplereenroll`/`status`) se valida
+   siempre contra la raiz del ANCLA guardada, nunca contra la que traiga un
+   perfil nuevo hasta que ese perfil pase el paso 2.
+
+### Huellas de confianza (para comparar a ojo)
+
+El panel muestra dos huellas SHA-256 — la de su propia clave de firma
+(`signerKeySha256`) y la de la raiz offline (`rootCaSha256`) — en dos
+sitios: junto al QR/fichero al generar un token de alta, y en **VPN >
+Ajustes** (para volver a consultarlas sin generar un token nuevo). Formato
+(`server/src/lib/fingerprint.ts`, `GET /vpn-settings` y la respuesta de
+`POST /vpn-devices/:username/enroll-token`): grupos de 4 caracteres
+hexadecimales en MAYUSCULAS (`"ABCD EF01 ..."`), completos, mas un "codigo
+corto" = los primeros 8 grupos (32 caracteres) para comparar de un vistazo
+sin leer los 64 caracteres enteros. Quien da de alta un dispositivo debe
+poder pasarle estas huellas (de palabra, por otro canal, o ensenandole la
+pantalla) a quien esta confirmando la pantalla de TOFU de la app.
 
 **Contrato para quien consuma la variante `qr`** (obligatorio para los
 prompts 12 — Windows — y 13 — Android —, ya que esa variante no trae la

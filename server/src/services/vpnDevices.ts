@@ -3,6 +3,7 @@ import { panelPool, radiusPool } from '../db/pools.js';
 import { randomToken, sha256 } from '../lib/crypto.js';
 import { formatUtcDateTime } from '../lib/dates.js';
 import { conflict, notFound } from '../lib/http.js';
+import { formatFingerprint, type FormattedFingerprint } from '../lib/fingerprint.js';
 import { intToIpv4, ipv4ToInt } from '../lib/ipv4.js';
 import { logger } from '../lib/logger.js';
 import type { SignedProfileEnvelope } from '../lib/vpnProfileSigning.js';
@@ -294,6 +295,15 @@ export interface EnrollToken {
   profileQrDataUrl: string | null;
   /** Nombre sugerido para el fichero .didevvpn descargable (Windows). `null` si no hay perfil. */
   profileFilename: string | null;
+  /**
+   * Huellas para comparar a ojo con lo que muestra la app en la confirmacion
+   * de confianza-en-el-primer-uso (prompt 12.5): "del panel" es la clave
+   * Ed25519 que firma los perfiles, "de la raiz" es la raiz offline de la
+   * VPN. `null` junto con `profile` si la firma de perfiles no esta
+   * configurada.
+   */
+  panelKeyFingerprint: FormattedFingerprint | null;
+  rootCaFingerprint: FormattedFingerprint | null;
 }
 
 /**
@@ -347,6 +357,8 @@ export async function generateEnrollToken(
   let profile: SignedProfileEnvelope | null = null;
   let profileQrDataUrl: string | null = null;
   let profileFilename: string | null = null;
+  let panelKeyFingerprint: FormattedFingerprint | null = null;
+  let rootCaFingerprint: FormattedFingerprint | null = null;
   try {
     const signed = await buildSignedProvisioningProfiles({
       device: { username, tunnelMode: device.tunnel_mode },
@@ -358,6 +370,8 @@ export async function generateEnrollToken(
       profile = signed.full;
       profileFilename = signed.filename;
       profileQrDataUrl = await buildProvisioningQrDataUrl(signed.qr);
+      panelKeyFingerprint = formatFingerprint(signed.signerKeySha256);
+      rootCaFingerprint = formatFingerprint(signed.rootCaSha256);
     }
   } catch (err) {
     logger.warn(
@@ -366,7 +380,16 @@ export async function generateEnrollToken(
     );
   }
 
-  return { id: insertId, token, expiresAt: expiresAt.toISOString(), profile, profileQrDataUrl, profileFilename };
+  return {
+    id: insertId,
+    token,
+    expiresAt: expiresAt.toISOString(),
+    profile,
+    profileQrDataUrl,
+    profileFilename,
+    panelKeyFingerprint,
+    rootCaFingerprint,
+  };
 }
 
 /**

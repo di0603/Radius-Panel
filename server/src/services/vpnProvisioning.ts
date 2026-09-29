@@ -1,7 +1,12 @@
 import QRCode from 'qrcode';
 import { conflict } from '../lib/http.js';
 import { sha256Hex } from '../lib/x509.js';
-import { isProfileSigningConfigured, signProfilePayload, type SignedProfileEnvelope } from '../lib/vpnProfileSigning.js';
+import {
+  getSignerPublicKeySha256Hex,
+  isProfileSigningConfigured,
+  signProfilePayload,
+  type SignedProfileEnvelope,
+} from '../lib/vpnProfileSigning.js';
 import { getCaChainPem, getRootCaCert } from './pki.js';
 import { getVpnSettings, type VpnSettings } from './vpnSettings.js';
 
@@ -50,6 +55,16 @@ interface ProvisioningProfileBase {
   aaaId: string;
   /** SHA-256 (hex) del DER de la raiz offline: presente en las dos variantes, ver el comentario del fichero. */
   rootCaSha256: string;
+  /**
+   * SHA-256 (hex) del SPKI DER de la clave publica de firma (signerPublicKey
+   * del sobre, ver lib/vpnProfileSigning.ts). Va DENTRO del payload firmado
+   * a proposito: liga esa clave a lo firmado, para que un sobre no pueda
+   * traer una signerPublicKey distinta de la que realmente firmo sin que la
+   * firma deje de verificar. La app la usa para el TOFU: la primera vez que
+   * ve un servidor, la guarda como ancla junto a rootCaSha256; despues exige
+   * que coincida exactamente.
+   */
+  signerKeySha256: string;
   ike: typeof IKE_PROPOSAL;
   esp: typeof ESP_PROPOSAL;
   tunnelMode: 'full' | 'split';
@@ -90,6 +105,7 @@ interface ProfileContext {
   settings: VpnSettings;
   chainPem: string;
   rootCaSha256: string;
+  signerKeySha256: string;
 }
 
 async function loadProfileContext(): Promise<ProfileContext> {
@@ -101,7 +117,12 @@ async function loadProfileContext(): Promise<ProfileContext> {
   if (!chainPem || !rootCert) {
     throw conflict('La CA de la VPN todavia no esta configurada: no se puede construir el perfil');
   }
-  return { settings, chainPem, rootCaSha256: sha256Hex(rootCert.rawData) };
+  return {
+    settings,
+    chainPem,
+    rootCaSha256: sha256Hex(rootCert.rawData),
+    signerKeySha256: getSignerPublicKeySha256Hex(),
+  };
 }
 
 function buildPayload(ctx: ProfileContext, input: ProfileInput, variant: ProfileVariant): ProvisioningProfilePayload {
@@ -112,6 +133,7 @@ function buildPayload(ctx: ProfileContext, input: ProfileInput, variant: Profile
     server: ctx.settings.vpnFqdn,
     aaaId: ctx.settings.aaaId,
     rootCaSha256: ctx.rootCaSha256,
+    signerKeySha256: ctx.signerKeySha256,
     ike: IKE_PROPOSAL,
     esp: ESP_PROPOSAL,
     tunnelMode: input.device.tunnelMode,
@@ -143,6 +165,15 @@ export interface SignedProvisioningProfiles {
   /** Sobre compacto (sin la cadena de CA, solo su huella), para el QR. */
   qr: SignedProfileEnvelope;
   filename: string;
+  /**
+   * Mismos valores que ya van DENTRO de los dos sobres (rootCaSha256,
+   * signerKeySha256), en hex sin formatear: para que quien genero el token
+   * pueda mostrarlos junto al QR/fichero sin tener que decodificar el
+   * payload base64url en el cliente (ver lib/fingerprint.ts para el
+   * formato "para comparar a ojo").
+   */
+  rootCaSha256: string;
+  signerKeySha256: string;
 }
 
 /**
@@ -157,6 +188,8 @@ export async function buildSignedProvisioningProfiles(input: ProfileInput): Prom
     full: signProfilePayload(buildPayload(ctx, input, 'full')),
     qr: signProfilePayload(buildPayload(ctx, input, 'qr')),
     filename: `${input.device.username}.didevvpn`,
+    rootCaSha256: ctx.rootCaSha256,
+    signerKeySha256: ctx.signerKeySha256,
   };
 }
 

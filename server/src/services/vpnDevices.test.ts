@@ -510,6 +510,8 @@ test('generateEnrollToken: sin VPN_PROFILE_SIGNING_KEY, devuelve el token sin pe
     assert.equal(result.profile, null);
     assert.equal(result.profileQrDataUrl, null);
     assert.equal(result.profileFilename, null);
+    assert.equal(result.panelKeyFingerprint, null);
+    assert.equal(result.rootCaFingerprint, null);
   } finally {
     mock.restoreAll();
     config.vpnProfileSigning.keyPath = prevKey;
@@ -577,7 +579,14 @@ test('generateEnrollToken: con VPN_PROFILE_SIGNING_KEY configurada, incluye un p
     assert.equal(decoded.variant, 'full'); // el fichero .didevvpn es la variante completa (con la cadena de CA)
     assert.ok(decoded.caChainPem);
     assert.ok(decoded.rootCaSha256);
+    assert.ok(decoded.signerKeySha256);
     assert.match(result.profileQrDataUrl!, /^data:image\/png;base64,/);
+
+    // Huellas para comparar a ojo (prompt 12.5): las mismas que van dentro
+    // del payload firmado, formateadas en grupos de 4 mayusculas.
+    assert.equal(result.panelKeyFingerprint!.full.replace(/ /g, '').toLowerCase(), decoded.signerKeySha256);
+    assert.equal(result.rootCaFingerprint!.full.replace(/ /g, '').toLowerCase(), decoded.rootCaSha256);
+    assert.equal(result.panelKeyFingerprint!.short.replace(/ /g, '').length, 32);
   } finally {
     mock.restoreAll();
     config.vpnProfileSigning.keyPath = prevKey;
@@ -612,6 +621,8 @@ test('generateEnrollToken: si falla construir el perfil (p.ej. sin CA configurad
     assert.equal(result.id, 11);
     assert.ok(result.token.length > 0); // el token sigue siendo valido...
     assert.equal(result.profile, null); // ...aunque no se haya podido construir el perfil
+    assert.equal(result.panelKeyFingerprint, null);
+    assert.equal(result.rootCaFingerprint, null);
   } finally {
     mock.restoreAll();
     config.vpnProfileSigning.keyPath = prevKey;

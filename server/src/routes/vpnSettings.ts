@@ -1,7 +1,11 @@
 import { Router } from 'express';
 import { asyncHandler } from '../lib/http.js';
+import { formatFingerprint, type FormattedFingerprint } from '../lib/fingerprint.js';
+import { sha256Hex } from '../lib/x509.js';
+import { getSignerPublicKeySha256Hex, isProfileSigningConfigured } from '../lib/vpnProfileSigning.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { writeAudit } from '../middleware/audit.js';
+import { getRootCaCert } from '../services/pki.js';
 import { getVpnSettings } from '../services/vpnSettings.js';
 import { generateGatewayToken, hasGatewayToken } from '../services/vpnGatewayToken.js';
 
@@ -9,11 +13,31 @@ import { generateGatewayToken, hasGatewayToken } from '../services/vpnGatewayTok
 export const vpnSettingsRouter = Router();
 vpnSettingsRouter.use(requireAuth, requireRole('admin'));
 
+/**
+ * Huellas para comparar a ojo con lo que muestra la app al confiar en un
+ * servidor por primera vez (prompt 12.5, TOFU): `null` cada una por
+ * separado si esa pieza todavia no esta configurada (la raiz offline, o
+ * VPN_PROFILE_SIGNING_KEY), sin que la falta de una bloquee la otra.
+ */
+async function loadFingerprints(): Promise<{
+  panelKeyFingerprint: FormattedFingerprint | null;
+  rootCaFingerprint: FormattedFingerprint | null;
+}> {
+  const panelKeyFingerprint = isProfileSigningConfigured() ? formatFingerprint(getSignerPublicKeySha256Hex()) : null;
+  const rootCert = await getRootCaCert();
+  const rootCaFingerprint = rootCert ? formatFingerprint(sha256Hex(rootCert.rawData)) : null;
+  return { panelKeyFingerprint, rootCaFingerprint };
+}
+
 vpnSettingsRouter.get(
   '/',
   asyncHandler(async (_req, res) => {
-    const [settings, gatewayTokenSet] = await Promise.all([getVpnSettings(), hasGatewayToken()]);
-    res.json({ ...settings, gatewayTokenSet });
+    const [settings, gatewayTokenSet, fingerprints] = await Promise.all([
+      getVpnSettings(),
+      hasGatewayToken(),
+      loadFingerprints(),
+    ]);
+    res.json({ ...settings, gatewayTokenSet, ...fingerprints });
   }),
 );
 

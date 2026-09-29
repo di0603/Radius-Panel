@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, verify } from 'node:crypto';
+import { createHash, generateKeyPairSync, verify } from 'node:crypto';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -112,59 +112,77 @@ function writeTempKey() {
   const dir = mkdtempSync(join(tmpdir(), 'radius-panel-profile-key-'));
   const keyPath = join(dir, 'key.pem');
   writeFileSync(keyPath, privateKey.export({ type: 'pkcs8', format: 'pem' }) as string);
-  return { keyPath, publicKey };
+  const spkiDer = publicKey.export({ type: 'spki', format: 'der' });
+  const signerKeySha256 = createHash('sha256').update(spkiDer).digest('hex');
+  return { keyPath, publicKey, signerPublicKeyBase64Url: spkiDer.toString('base64url'), signerKeySha256 };
 }
 
-test('buildProvisioningProfilePayload: variante "full" lleva la cadena de CA completa y rootCaSha256', async () => {
+/** buildProvisioningProfilePayload ahora exige VPN_PROFILE_SIGNING_KEY configurada (signerKeySha256 va dentro del payload). */
+function withTempSigningKey<T>(run: (key: ReturnType<typeof writeTempKey>) => Promise<T>): Promise<T> {
+  const key = writeTempKey();
+  const prev = config.vpnProfileSigning.keyPath;
+  config.vpnProfileSigning.keyPath = key.keyPath;
+  return run(key).finally(() => {
+    config.vpnProfileSigning.keyPath = prev;
+  });
+}
+
+test('buildProvisioningProfilePayload: variante "full" lleva la cadena de CA completa, rootCaSha256 y signerKeySha256', async () => {
   const chain = await makeRealChain();
   mockSettingsAndCa(chain);
   try {
-    const issuedAt = new Date('2026-01-01T00:00:00.000Z');
-    const expiresAt = new Date('2026-01-02T00:00:00.000Z');
-    const payload = await buildProvisioningProfilePayload({
-      device: { username: 'vpn-juan-laptop', tunnelMode: 'full' },
-      token: 'el-token-secreto',
-      issuedAt,
-      expiresAt,
-      variant: 'full',
-    });
-    assert.deepEqual(payload, {
-      version: PROFILE_SCHEMA_VERSION,
-      variant: 'full',
-      cn: 'vpn-juan-laptop',
-      server: 'vpn.example.com',
-      aaaId: 'CN=radius.example.com',
-      rootCaSha256: chain.rootCaSha256,
-      caChainPem: `${chain.intermediateCert.toString()}\n${chain.rootCert.toString()}`,
-      ike: IKE_PROPOSAL,
-      esp: ESP_PROPOSAL,
-      tunnelMode: 'full',
-      splitRoutes: [],
-      dns: '1.1.1.1',
-      estBaseUrl: 'https://est.example.com:8443/.well-known/est',
-      enrollToken: 'el-token-secreto',
-      issuedAt: issuedAt.toISOString(),
-      expiresAt: expiresAt.toISOString(),
+    await withTempSigningKey(async (key) => {
+      const issuedAt = new Date('2026-01-01T00:00:00.000Z');
+      const expiresAt = new Date('2026-01-02T00:00:00.000Z');
+      const payload = await buildProvisioningProfilePayload({
+        device: { username: 'vpn-juan-laptop', tunnelMode: 'full' },
+        token: 'el-token-secreto',
+        issuedAt,
+        expiresAt,
+        variant: 'full',
+      });
+      assert.deepEqual(payload, {
+        version: PROFILE_SCHEMA_VERSION,
+        variant: 'full',
+        cn: 'vpn-juan-laptop',
+        server: 'vpn.example.com',
+        aaaId: 'CN=radius.example.com',
+        rootCaSha256: chain.rootCaSha256,
+        signerKeySha256: key.signerKeySha256,
+        caChainPem: `${chain.intermediateCert.toString()}\n${chain.rootCert.toString()}`,
+        ike: IKE_PROPOSAL,
+        esp: ESP_PROPOSAL,
+        tunnelMode: 'full',
+        splitRoutes: [],
+        dns: '1.1.1.1',
+        estBaseUrl: 'https://est.example.com:8443/.well-known/est',
+        enrollToken: 'el-token-secreto',
+        issuedAt: issuedAt.toISOString(),
+        expiresAt: expiresAt.toISOString(),
+      });
     });
   } finally {
     mock.restoreAll();
   }
 });
 
-test('buildProvisioningProfilePayload: variante "qr" NO lleva caChainPem, pero si rootCaSha256', async () => {
+test('buildProvisioningProfilePayload: variante "qr" NO lleva caChainPem, pero si rootCaSha256/signerKeySha256', async () => {
   const chain = await makeRealChain();
   mockSettingsAndCa(chain);
   try {
-    const payload = await buildProvisioningProfilePayload({
-      device: { username: 'vpn-juan-laptop', tunnelMode: 'full' },
-      token: 't',
-      issuedAt: new Date(),
-      expiresAt: new Date(),
-      variant: 'qr',
+    await withTempSigningKey(async (key) => {
+      const payload = await buildProvisioningProfilePayload({
+        device: { username: 'vpn-juan-laptop', tunnelMode: 'full' },
+        token: 't',
+        issuedAt: new Date(),
+        expiresAt: new Date(),
+        variant: 'qr',
+      });
+      assert.equal(payload.variant, 'qr');
+      assert.equal(payload.rootCaSha256, chain.rootCaSha256);
+      assert.equal(payload.signerKeySha256, key.signerKeySha256);
+      assert.ok(!('caChainPem' in payload), 'la variante qr no debe llevar caChainPem');
     });
-    assert.equal(payload.variant, 'qr');
-    assert.equal(payload.rootCaSha256, chain.rootCaSha256);
-    assert.ok(!('caChainPem' in payload), 'la variante qr no debe llevar caChainPem');
   } finally {
     mock.restoreAll();
   }
@@ -174,14 +192,16 @@ test('buildProvisioningProfilePayload: modo split incluye lan_cidr como unica ru
   const chain = await makeRealChain();
   mockSettingsAndCa(chain);
   try {
-    const payload = await buildProvisioningProfilePayload({
-      device: { username: 'vpn-maria-vps', tunnelMode: 'split' },
-      token: 't',
-      issuedAt: new Date(),
-      expiresAt: new Date(),
-      variant: 'full',
+    await withTempSigningKey(async () => {
+      const payload = await buildProvisioningProfilePayload({
+        device: { username: 'vpn-maria-vps', tunnelMode: 'split' },
+        token: 't',
+        issuedAt: new Date(),
+        expiresAt: new Date(),
+        variant: 'full',
+      });
+      assert.deepEqual(payload.splitRoutes, ['192.168.10.0/24']);
     });
-    assert.deepEqual(payload.splitRoutes, ['192.168.10.0/24']);
   } finally {
     mock.restoreAll();
   }
@@ -198,6 +218,29 @@ test('buildProvisioningProfilePayload: rechaza si la CA de la VPN todavia no est
     throw new Error('panelPool.query no esperado en el test');
   }) as never);
   try {
+    await withTempSigningKey(async () => {
+      await assert.rejects(
+        buildProvisioningProfilePayload({
+          device: { username: 'vpn-juan-laptop', tunnelMode: 'full' },
+          token: 't',
+          issuedAt: new Date(),
+          expiresAt: new Date(),
+          variant: 'full',
+        }),
+        /CA de la VPN todavia no esta configurada/,
+      );
+    });
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test('buildProvisioningProfilePayload: rechaza si VPN_PROFILE_SIGNING_KEY no esta configurada (signerKeySha256 no se puede calcular)', async () => {
+  const chain = await makeRealChain();
+  mockSettingsAndCa(chain);
+  const prev = config.vpnProfileSigning.keyPath;
+  config.vpnProfileSigning.keyPath = undefined;
+  try {
     await assert.rejects(
       buildProvisioningProfilePayload({
         device: { username: 'vpn-juan-laptop', tunnelMode: 'full' },
@@ -206,10 +249,11 @@ test('buildProvisioningProfilePayload: rechaza si la CA de la VPN todavia no est
         expiresAt: new Date(),
         variant: 'full',
       }),
-      /CA de la VPN todavia no esta configurada/,
+      /VPN_PROFILE_SIGNING_KEY/,
     );
   } finally {
     mock.restoreAll();
+    config.vpnProfileSigning.keyPath = prev;
   }
 });
 
@@ -249,11 +293,16 @@ test('buildSignedProvisioningProfiles: full y qr firman por separado, los dos ve
     assert.equal(result!.filename, 'vpn-juan-laptop.didevvpn');
     assert.equal(result!.full.keyId, PROFILE_SIGNING_KEY_ID);
     assert.equal(result!.qr.keyId, PROFILE_SIGNING_KEY_ID);
+    assert.equal(result!.rootCaSha256, chain.rootCaSha256);
 
     for (const envelope of [result!.full, result!.qr]) {
       const payloadBytes = Buffer.from(envelope.payload, 'base64url');
       const signatureBytes = Buffer.from(envelope.signature, 'base64url');
       assert.equal(verify(null, payloadBytes, publicKey, signatureBytes), true);
+      // signerPublicKey del sobre es la SPKI DER real de la clave de firma
+      // (base64url), la MISMA en las dos variantes: es la clave del panel,
+      // no algo que cambie por variante.
+      assert.equal(envelope.signerPublicKey, publicKey.export({ type: 'spki', format: 'der' }).toString('base64url'));
     }
 
     const fullDecoded = JSON.parse(Buffer.from(result!.full.payload, 'base64url').toString('utf8'));
@@ -267,6 +316,17 @@ test('buildSignedProvisioningProfiles: full y qr firman por separado, los dos ve
     assert.equal(qrDecoded.rootCaSha256, chain.rootCaSha256);
     assert.ok(!('caChainPem' in qrDecoded), 'la variante qr no debe llevar caChainPem');
 
+    // signerKeySha256 (DENTRO del payload firmado) tiene que ser el SHA-256
+    // exacto de signerPublicKey (FUERA del payload, en el sobre): es lo que
+    // liga esa clave publica a lo firmado, para que un sobre no pueda traer
+    // una signerPublicKey manipulada sin que la firma deje de verificar.
+    const expectedSignerKeySha256 = createHash('sha256')
+      .update(publicKey.export({ type: 'spki', format: 'der' }))
+      .digest('hex');
+    assert.equal(fullDecoded.signerKeySha256, expectedSignerKeySha256);
+    assert.equal(qrDecoded.signerKeySha256, expectedSignerKeySha256);
+    assert.equal(result!.signerKeySha256, expectedSignerKeySha256);
+
     // Las dos firmas son independientes: la del sobre completo no vale para
     // el payload del compacto (son bytes distintos), y viceversa.
     assert.equal(
@@ -279,7 +339,7 @@ test('buildSignedProvisioningProfiles: full y qr firman por separado, los dos ve
   }
 });
 
-test('buildSignedProvisioningProfiles: el QR compacto (variante "qr") cabe con holgura en una version de QR <= 25', async () => {
+test('buildSignedProvisioningProfiles: el QR compacto (variante "qr") sigue siendo razonablemente escaneable (version de QR <= 30)', async () => {
   const chain = await makeRealChain();
   const { keyPath } = writeTempKey();
   const prev = config.vpnProfileSigning.keyPath;
@@ -305,10 +365,15 @@ test('buildSignedProvisioningProfiles: el QR compacto (variante "qr") cabe con h
       'el sobre completo no deberia caber en un QR de nivel M: por eso el QR usa la variante compacta',
     );
 
+    // Desde el prompt 12.5 el sobre "qr" tambien lleva signerPublicKey (~60
+    // caracteres base64url) y el payload lleva signerKeySha256 (64 hex, mas
+    // el bulto propio del base64url): sube de version ~25 a ~27. Se sigue
+    // comprobando con margen (<=30) que no se ha vuelto a disparar como le
+    // pasaba a la variante "full" con la cadena de CA completa.
     const qrQr = QRCode.create(JSON.stringify(result!.qr), { errorCorrectionLevel: 'M' });
     assert.ok(
-      qrQr.version <= 25,
-      `el QR compacto deberia caber con holgura en una version <= 25 (salio ${qrQr.version})`,
+      qrQr.version <= 30,
+      `el QR compacto deberia seguir siendo razonablemente escaneable, version <= 30 (salio ${qrQr.version})`,
     );
 
     const dataUrl = await buildProvisioningQrDataUrl(result!.qr);
@@ -320,7 +385,12 @@ test('buildSignedProvisioningProfiles: el QR compacto (variante "qr") cabe con h
 });
 
 test('buildProvisioningQrDataUrl: genera una imagen PNG en data URL', async () => {
-  const url = await buildProvisioningQrDataUrl({ payload: 'YWJj', signature: 'ZGVm', keyId: PROFILE_SIGNING_KEY_ID });
+  const url = await buildProvisioningQrDataUrl({
+    payload: 'YWJj',
+    signature: 'ZGVm',
+    keyId: PROFILE_SIGNING_KEY_ID,
+    signerPublicKey: 'ZmFrZQ',
+  });
   assert.match(url!, /^data:image\/png;base64,/);
 });
 
@@ -329,6 +399,7 @@ test('buildProvisioningQrDataUrl: null (no lanza) si el contenido no cabe en un 
     payload: 'x'.repeat(20_000),
     signature: 'ZGVm',
     keyId: PROFILE_SIGNING_KEY_ID,
+    signerPublicKey: 'ZmFrZQ',
   });
   assert.equal(url, null);
 });

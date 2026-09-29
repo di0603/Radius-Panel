@@ -7,6 +7,55 @@ Este proyecto usa versionado semantico.
 
 ### Anadido
 
+- **Prompt 12.5 (huellas del panel, lado servidor)**: cambio de diseno para
+  que las apps (Windows/Android) puedan ser clientes GENERICOS, como
+  FortiClient, compilados sin ninguna clave de didev incrustada, con
+  confianza fijada por servidor en el primer uso (TOFU) en vez de una clave
+  publica fija en el binario.
+  - El sobre firmado (`payload`, `signature`, `keyId`) gana un cuarto campo,
+    `signerPublicKey`: la clave publica Ed25519 del panel, SPKI DER en
+    base64url, la MISMA en las dos variantes (`full`/`qr`). Va fuera del
+    payload firmado a proposito (es publica: quien firmo, no parte de lo
+    firmado).
+  - El payload firmado gana `signerKeySha256`: SHA-256 hex del SPKI DER de
+    `signerPublicKey`. Al ir DENTRO de lo firmado, liga esa clave al
+    payload — un sobre no puede traer una `signerPublicKey` que no sea la
+    que realmente firmo sin que la firma deje de verificar.
+    `server/src/lib/vpnProfileSigning.ts`: nuevas
+    `getSignerPublicKeySpkiBase64Url()`/`getSignerPublicKeySha256Hex()`.
+  - **Huellas visibles para comparar a ojo**: junto al QR/fichero al generar
+    un token de alta, y en la nueva seccion "Huellas de confianza" de
+    **VPN > Ajustes** (`GET /vpn-settings`), el panel muestra "Huella del
+    panel" (`signerKeySha256`) y "Huella de la raiz" (`rootCaSha256`), cada
+    una en grupos de 4 caracteres hex en MAYUSCULAS, completa, mas un
+    "codigo corto" (los primeros 8 grupos) para comparar de un vistazo.
+    Formato nuevo en `server/src/lib/fingerprint.ts`
+    (`formatFingerprint`), usado por `generateEnrollToken` (nuevos
+    `panelKeyFingerprint`/`rootCaFingerprint` en la respuesta) y por la
+    ruta `GET /vpn-settings`.
+  - Frontend: nuevo componente `web/src/components/FingerprintDisplay.tsx`
+    (codigo corto grande + huella completa debajo), usado en el modal de
+    "Token de alta generado" (`VpnDevices.tsx`) y en la pagina de Ajustes
+    VPN (`VpnSettings.tsx`).
+  - El QR compacto (variante `qr`) sube de version ~25 a ~27 por los dos
+    campos nuevos (`signerPublicKey` en el sobre, `signerKeySha256` en el
+    payload): sigue siendo razonablemente escaneable, ya no tan holgado
+    como antes.
+  - Documentado en el README el contrato completo de confianza en el primer
+    uso (verificacion de autoconsistencia en la primera importacion,
+    confirmacion explicita del usuario comparando huellas, anclaje por
+    servidor, y rechazo sin opcion de aceptar si un servidor ya conocido
+    cambia de identidad) — es el contrato que debe implementar cualquier
+    app (Windows del prompt 12.5, Android del futuro prompt 13).
+  - Tests: `signerPublicKey`/`signerKeySha256` verificados en
+    `vpnProfileSigning.test.ts`, `vpnProvisioning.test.ts` y
+    `vpnDevices.test.ts` (incluida la consistencia entre el sobre, el
+    payload firmado y las huellas formateadas de la respuesta); nuevo
+    `fingerprint.test.ts` para el formato de agrupacion.
+  - Solo el lado del panel: la reescritura de `didev-vpn-windows` como
+    cliente generico con TOFU (mismo prompt 12.5) va en
+    `feat/vpn-12-windows-wip`, no en esta rama.
+
 - **Correccion 11.5 (QR compacto)**: el sobre firmado completo, con la
   cadena de CA (raiz + intermedia P-384 reales) dentro, ocupa ~2800
   caracteres — cabe por poco en un QR de nivel L (maximo 2953 en modo

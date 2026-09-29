@@ -3,6 +3,7 @@ import { modals } from '@mantine/modals';
 import { IconKey } from '@tabler/icons-react';
 import { PageHeader } from '../components/PageHeader';
 import { SectionCard } from '../components/SectionCard';
+import { FingerprintDisplay } from '../components/FingerprintDisplay';
 import { useGenerateGatewayToken, useVpnSettings } from '../api/hooks';
 import { notifyError, notifyOk } from '../lib/notify';
 
@@ -69,6 +70,20 @@ export function VpnSettingsPage() {
   return (
     <Stack gap="lg">
       <PageHeader title="Ajustes VPN" subtitle="panel_vpn_settings" />
+
+      <SectionCard
+        title="Huellas de confianza"
+        subtitle="Para comparar a ojo con lo que pide confirmar la app al conectar por primera vez (confianza en el primer uso)"
+      >
+        {settings.isLoading ? (
+          <Skeleton height={80} />
+        ) : (
+          <Group grow align="flex-start">
+            <FingerprintDisplay label="Huella del panel" fingerprint={settings.data?.panelKeyFingerprint ?? null} />
+            <FingerprintDisplay label="Huella de la raiz" fingerprint={settings.data?.rootCaFingerprint ?? null} />
+          </Group>
+        )}
+      </SectionCard>
 
       <SectionCard
         title="Puerta de enlace del firewall"
