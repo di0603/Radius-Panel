@@ -7,6 +7,28 @@ Este proyecto usa versionado semantico.
 
 ### Anadido
 
+- **Prompt 12.6 (Windows: asociar la clave CNG sin exportarla)**: el alta
+  fallaba con "Clave no valida para utilizar en el estado especificado" justo
+  tras `simpleenroll` (con el token de un solo uso ya consumido):
+  `CertificateEnrollmentService` enlazaba el certificado a la clave CNG con
+  `X509Certificate2.CopyWithPrivateKey` y lo reinstalaba via PKCS#12, y
+  `CopyWithPrivateKey` fuerza una exportacion que una clave de TPM
+  ("Microsoft Platform Crypto Provider") deliberadamente no permite. Nueva
+  `AssociatePrivateKey` usa `CertSetCertificateContextProperty`/
+  `CERT_KEY_PROV_INFO_PROP_ID` (la propiedad documentada por Microsoft para
+  esto) sin exportar nada; compara antes las coordenadas publicas de la clave
+  y del certificado, y tras instalar comprueba que Windows recupera la clave
+  privada y que firma de verdad. `EnrollmentOrchestrator` usa la misma
+  asociacion para la comprobacion de `/status` (version minima) antes de
+  instalar. Nuevo proyecto `DidevVpn.App.Tests` (net8.0-windows, aparte de
+  `DidevVpn.Tests`: necesita APIs de Windows/CNG reales) con dos tests de
+  integracion real -clave de software y, si hay TPM disponible en la maquina
+  de build, clave de TPM real-, verificados en una maquina con TPM real
+  (57 + 2 tests en verde). Tambien: la lista de conexiones se refresca al
+  completar un alta, y el error de importacion avisa explicitamente si el
+  token de alta puede haberse consumido (EST emitio, pero el alta fallo
+  despues). Rama `feat/vpn-12.6-windows-cng`, pendiente de revision.
+
 - **Prompt 12.5 (huellas del panel, lado servidor)**: cambio de diseno para
   que las apps (Windows/Android) puedan ser clientes GENERICOS, como
   FortiClient, compilados sin ninguna clave de didev incrustada, con
