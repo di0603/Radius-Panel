@@ -86,6 +86,15 @@ const envSchema = z.object({
   EST_BIND: z.string().min(1).default('0.0.0.0'),
   EST_TLS_CERT: z.string().optional(),
   EST_TLS_KEY: z.string().optional(),
+
+  /**
+   * Ruta a la clave privada Ed25519 (PEM, permisos 600) que firma los
+   * perfiles de aprovisionamiento (.didevvpn) de las apps. Se genera aparte
+   * (fuera de este repo, ver README): opcional, sin ella el panel arranca
+   * igual, pero "Generar token de alta" no incluye perfil firmado ni QR
+   * -el alta manual por EST sigue funcionando igual-.
+   */
+  VPN_PROFILE_SIGNING_KEY: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -168,6 +177,10 @@ export const config = {
     bind: env.EST_BIND,
     tlsCert: env.EST_TLS_CERT,
     tlsKey: env.EST_TLS_KEY,
+  },
+
+  vpnProfileSigning: {
+    keyPath: env.VPN_PROFILE_SIGNING_KEY,
   },
 };
 
