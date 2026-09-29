@@ -719,15 +719,27 @@ export function useCreateVpnDevice() {
   });
 }
 
+export interface SignedProfileEnvelope {
+  payload: string;
+  signature: string;
+  keyId: string;
+}
+
+export interface EnrollTokenResult {
+  id: number;
+  token: string;
+  expiresAt: string;
+  /** `null` si el panel todavia no tiene configurada la firma de perfiles (VPN_PROFILE_SIGNING_KEY). */
+  profile: SignedProfileEnvelope | null;
+  profileQrDataUrl: string | null;
+  profileFilename: string | null;
+}
+
 export function useGenerateEnrollToken() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (username: string) =>
-      (
-        await api.post<{ id: number; token: string; expiresAt: string }>(
-          `/vpn-devices/${encodeURIComponent(username)}/enroll-token`,
-        )
-      ).data,
+      (await api.post<EnrollTokenResult>(`/vpn-devices/${encodeURIComponent(username)}/enroll-token`)).data,
     onSuccess: (_data, username) => qc.invalidateQueries({ queryKey: ['vpn-devices', username] }),
   });
 }

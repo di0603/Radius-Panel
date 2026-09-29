@@ -23,6 +23,7 @@ test('parseVpnSettingsRow: mapea una fila snake_case de MySQL', () => {
     overlap_hours: '48',
     android_cert_days: '365',
     est_url: 'https://est.example.com:8443',
+    min_app_version: '1.2.3',
   };
   assert.deepEqual(parseVpnSettingsRow(row as never), {
     vpnFqdn: 'vpn.example.com',
@@ -36,6 +37,7 @@ test('parseVpnSettingsRow: mapea una fila snake_case de MySQL', () => {
     overlapHours: 48,
     androidCertDays: 365,
     estUrl: 'https://est.example.com:8443',
+    minAppVersion: '1.2.3',
   });
 });
 
@@ -54,6 +56,13 @@ test('parseVpnSettingsRow: se degrada a aaaId/estUrl por defecto si faltan (migr
   assert.equal(parsed.aaaId, DEFAULT_VPN_SETTINGS.aaaId);
   assert.equal(parsed.estUrl, DEFAULT_VPN_SETTINGS.estUrl);
   assert.equal(parsed.lanCidr, DEFAULT_VPN_SETTINGS.lanCidr);
+  assert.equal(parsed.minAppVersion, DEFAULT_VPN_SETTINGS.minAppVersion);
+});
+
+test('vpnSettingsSchema: rechaza minAppVersion que no sea X.Y.Z', () => {
+  assert.throws(() => vpnSettingsSchema.parse({ ...DEFAULT_VPN_SETTINGS, minAppVersion: '1.2' }));
+  assert.throws(() => vpnSettingsSchema.parse({ ...DEFAULT_VPN_SETTINGS, minAppVersion: 'v1.2.3' }));
+  assert.doesNotThrow(() => vpnSettingsSchema.parse({ ...DEFAULT_VPN_SETTINGS, minAppVersion: '1.2.3' }));
 });
 
 test('vpnSettingsSchema: rechaza un CIDR invalido para lanCidr', () => {

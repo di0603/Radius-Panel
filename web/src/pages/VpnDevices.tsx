@@ -8,6 +8,7 @@ import {
   Code,
   Drawer,
   Group,
+  Image,
   Loader,
   Modal,
   NumberInput,
@@ -522,13 +523,63 @@ function DeviceDrawer({ username, onClose }: { username: string | null; onClose:
     if (!username) return;
     try {
       const result = await enrollToken.mutateAsync(username);
+      const downloadProfile = () => {
+        if (!result.profile || !result.profileFilename) return;
+        const blob = new Blob([JSON.stringify(result.profile)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = result.profileFilename;
+        a.click();
+        URL.revokeObjectURL(url);
+      };
       modals.open({
         title: 'Token de alta generado',
+        size: 'lg',
+        closeOnClickOutside: false,
         children: (
           <Stack>
+            <Alert color="yellow" variant="light">
+              El alta inicial exige estar en la red local o la WiFi de casa: el EST no esta expuesto
+              a internet.
+            </Alert>
             <Text size="sm" c="dimmed">
-              Valido 24 horas, un solo uso. No se puede volver a mostrar: cópialo ahora. Generar uno
-              nuevo invalida este.
+              Valido 24 horas, un solo uso. No se puede volver a mostrar: guarda el perfil o copia el
+              token ahora. Generar uno nuevo invalida este.
+            </Text>
+            {result.profile ? (
+              <>
+                <Text size="sm" fw={600}>
+                  Perfil de aprovisionamiento (.didevvpn)
+                </Text>
+                <Text size="xs" c="dimmed">
+                  Para Windows: descarga el fichero e importalo en la app. Para Android: escanea el
+                  QR desde la app.
+                </Text>
+                <Group>
+                  <Button leftSection={<IconDownload size={16} />} onClick={downloadProfile}>
+                    Descargar .didevvpn
+                  </Button>
+                </Group>
+                {result.profileQrDataUrl ? (
+                  <Center>
+                    <Image src={result.profileQrDataUrl} alt="QR del perfil de aprovisionamiento" w={220} h={220} />
+                  </Center>
+                ) : (
+                  <Alert color="yellow" variant="light">
+                    El perfil es demasiado grande para un QR legible: usa el fichero .didevvpn
+                    descargable.
+                  </Alert>
+                )}
+              </>
+            ) : (
+              <Alert color="gray" variant="light">
+                El panel todavia no tiene configurada la firma de perfiles (falta
+                VPN_PROFILE_SIGNING_KEY): usa el token de alta manual con EST.
+              </Alert>
+            )}
+            <Text size="sm" fw={600}>
+              Token de alta (alta manual con EST)
             </Text>
             <Code block style={{ wordBreak: 'break-all' }}>
               {result.token}
@@ -538,13 +589,15 @@ function DeviceDrawer({ username, onClose }: { username: string | null; onClose:
             </Text>
             <Group justify="flex-end">
               <Button
+                variant="light"
                 onClick={() => {
                   navigator.clipboard?.writeText(result.token);
                   notifyOk('Copiado');
                 }}
               >
-                Copiar
+                Copiar token
               </Button>
+              <Button onClick={() => modals.closeAll()}>Cerrar</Button>
             </Group>
           </Stack>
         ),
