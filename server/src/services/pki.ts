@@ -4,6 +4,7 @@ import { badRequest, conflict, notFound } from '../lib/http.js';
 import { decryptPkiPrivateKey, encryptPkiPrivateKey } from '../lib/pkiCrypto.js';
 import {
   EC_P384_SIGNING_ALGORITHM,
+  crlToPem,
   exportPrivateKeyPem,
   generateEcKeyPair,
   importEcPrivateKeyPem,
@@ -517,7 +518,7 @@ export async function regenerateCrl(caId: number): Promise<string> {
   const entries = await getRevokedEntriesForCa(caId);
 
   const crl = await buildCrl({ issuerCert, signingKey, entries });
-  const crlPem = crl.toString();
+  const crlPem = crlToPem(crl);
 
   await panelPool.query(
     `UPDATE panel_pki_ca SET crl_pem = :crlPem, crl_number = crl_number + 1, crl_next_update = :nextUpdate

@@ -34,7 +34,10 @@ fi
 : "${ROOT_CERT_FILE:?Falta ROOT_CERT_FILE en $CONFIG_FILE: ruta al certificado de la raiz offline ya presente en CA_PATH}"
 : "${ROOT_CERT_SHA256:?Falta ROOT_CERT_SHA256 en $CONFIG_FILE: huella SHA-256 (hex, sin separadores) esperada de ROOT_CERT_FILE}"
 : "${FREERADIUS_SERVICE:=freeradius}"
-: "${TLS_CONFIG_FILE:=/etc/freeradius/3.0/mods-enabled/eap}"
+: "${FREERADIUS_BINARY:=freeradius}"
+# El EAP-TLS de la VPN no esta en el modulo "eap" comun (el de la WiFi, que
+# no se toca): es su propio modulo eap_vpn con su propio tls-config tls-vpn.
+: "${TLS_CONFIG_FILE:=/etc/freeradius/3.0/mods-enabled/eap_vpn}"
 
 if [ ! -d "$CA_PATH" ]; then
   echo "CA_PATH '$CA_PATH' no existe: revisa la configuracion antes de continuar." >&2
@@ -42,6 +45,19 @@ if [ ! -d "$CA_PATH" ]; then
 fi
 if [ ! -f "$ROOT_CERT_FILE" ]; then
   echo "ROOT_CERT_FILE '$ROOT_CERT_FILE' no existe: revisa la configuracion antes de continuar." >&2
+  exit 1
+fi
+if [ ! -f "$TLS_CONFIG_FILE" ]; then
+  echo "TLS_CONFIG_FILE '$TLS_CONFIG_FILE' no existe: revisa la configuracion (deberia ser el modulo eap_vpn, no el eap generico de la WiFi)." >&2
+  exit 1
+fi
+# Sin esto, un CA_PATH mal configurado en este script (o en FreeRADIUS)
+# pasaria desapercibido: todo lo de abajo verificaria y escribiria ficheros
+# en un directorio que rlm_eap ni siquiera lee. Comprobacion en dos pasos con
+# grep -F (cadena literal, no regex): CA_PATH es una ruta de fichero, no un
+# patron -intentar construir una ERE a partir de ella es fragil de verdad-.
+if ! grep -q 'ca_path' "$TLS_CONFIG_FILE" || ! grep -qF -- "$CA_PATH" "$TLS_CONFIG_FILE"; then
+  echo "TLS_CONFIG_FILE '$TLS_CONFIG_FILE' no tiene 'ca_path = $CA_PATH': revisa que CA_PATH coincide con el ca_path real de tls-config tls-vpn." >&2
   exit 1
 fi
 
@@ -75,15 +91,15 @@ if [ ! -s "$chain_file" ] || [ ! -s "$crl_file" ]; then
   exit 1
 fi
 
-# El panel serializa las CRL con @peculiar/x509 (services/pki.ts,
-# lib/x509.ts), cuya libreria etiqueta el PEM como "-----BEGIN CRL-----"
-# (PemConverter.CrlTag = "CRL"), no "-----BEGIN X509 CRL-----" -la etiqueta
-# de RFC 7468 SS4 para una CRL, y la unica que "openssl crl"/PEM_read_bio_X509_CRL
-# reconocen de verdad-. Sin esto, TODO lo de abajo (verificar firma,
-# nextUpdate, e instalarla donde FreeRADIUS espera poder leerla con su
-# propio OpenSSL) fallaria en silencio o de forma confusa. Se normaliza aqui
-# -sed, no algo fragil- en vez de arriesgarse a que quien consuma este
-# fichero mas adelante (FreeRADIUS incluido) no la reconozca.
+# TOLERANCIA hacia paneles antiguos, no algo que deba hacer falta hoy: hasta
+# el prompt 14.5, @peculiar/x509 (lib/x509.ts) etiquetaba las CRL como
+# "-----BEGIN CRL-----" en vez de "-----BEGIN X509 CRL-----" (la etiqueta de
+# RFC 7468 SS4, la unica que "openssl crl"/PEM_read_bio_X509_CRL reconocen de
+# verdad). Esto ya esta corregido EN ORIGEN (lib/x509.ts: crlToPem) y
+# GET /pki/crl.pem ya sirve la etiqueta correcta: este sed es un no-op contra
+# un panel al dia (ninguna de las dos lineas de abajo encuentra nada que
+# sustituir), y solo hace falta de verdad si este script se usa contra un
+# panel desplegado ANTES de ese fix. Se deja por si acaso, no por necesidad.
 sed -i \
   -e 's/-----BEGIN CRL-----/-----BEGIN X509 CRL-----/' \
   -e 's/-----END CRL-----/-----END X509 CRL-----/' \
@@ -158,7 +174,14 @@ for crl in "${crl_files[@]}"; do
 
   signed_by_known_intermediate=0
   for cert in "${intermediate_files[@]}"; do
-    if openssl crl -in "$crl" -CAfile "$cert" -noout >/dev/null 2>&1; then
+    # No basta con el codigo de salida: comprobar el texto de la salida
+    # ("verify OK" presente, "verify failure" ausente). "openssl crl -CAfile"
+    # es un caso limite poco usado de la CLI de OpenSSL; no arriesgarse a que
+    # un codigo de salida 0 acompanado de un mensaje de fallo (o al reves) se
+    # interprete al contrario de lo que dice el propio texto.
+    crl_verify_output="$(openssl crl -in "$crl" -CAfile "$cert" -noout 2>&1 || true)"
+    if printf '%s\n' "$crl_verify_output" | grep -q 'verify OK' && \
+       ! printf '%s\n' "$crl_verify_output" | grep -q 'verify failure'; then
       signed_by_known_intermediate=1
       break
     fi
@@ -203,24 +226,26 @@ openssl rehash "$CA_PATH" >/dev/null
 
 echo "$new_hash" > "$state_file"
 
-# FreeRADIUS 3.2+ puede releer ca_path solo (sin reiniciar ni recargar) si
-# el tls-config tiene "ca_path_reload_interval" -comprobarlo antes de forzar
-# nada: si ya esta configurado, dejarlo actuar solo es lo menos disruptivo
-# posible (ni siquiera un reload).
-if [ -f "$TLS_CONFIG_FILE" ] && grep -qE '^\s*ca_path_reload_interval\b' "$TLS_CONFIG_FILE"; then
-  echo "TLS_CONFIG_FILE ('$TLS_CONFIG_FILE') ya tiene ca_path_reload_interval: FreeRADIUS releera $CA_PATH solo, sin reload ni restart."
+# En FreeRADIUS 3, un HUP (systemctl reload) NO vuelve a cargar los
+# contextos TLS de rlm_eap: una CRL nueva no se aplicaria y una revocacion
+# no tendria efecto hasta un restart de verdad. La UNICA forma de que
+# FreeRADIUS relea ca_path sin restart es "ca_path_reload_interval" en el
+# propio tls-config (FreeRADIUS 3.2+, ver README) -este script NUNCA toca la
+# configuracion de FreeRADIUS, solo comprueba si ya esta puesta-.
+if grep -qE '^\s*ca_path_reload_interval\b' "$TLS_CONFIG_FILE"; then
+  echo "TLS_CONFIG_FILE ('$TLS_CONFIG_FILE') ya tiene ca_path_reload_interval: FreeRADIUS releera $CA_PATH solo, sin restart."
 else
-  echo "Recargando $FREERADIUS_SERVICE (reload, no restart: menos disruptivo)..."
-  if systemctl reload "$FREERADIUS_SERVICE"; then
-    echo "Recargado correctamente."
+  echo "Comprobando la configuracion de FreeRADIUS antes de reiniciar (freeradius -XC)..."
+  if ! "$FREERADIUS_BINARY" -XC >/dev/null 2>&1; then
+    echo "ATENCION: 'freeradius -XC' dice que la configuracion actual no es valida. Los ficheros nuevos YA estan en $CA_PATH, pero NO se reinicia $FREERADIUS_SERVICE para no tumbar un servicio que quiza siga funcionando con la configuracion cargada. Revisa 'freeradius -XC' a mano." >&2
+    exit 1
+  fi
+  echo "Configuracion valida. Reiniciando $FREERADIUS_SERVICE (restart, no reload: en FreeRADIUS 3 un reload no recarga los contextos TLS)..."
+  if systemctl restart "$FREERADIUS_SERVICE"; then
+    echo "Reiniciado correctamente."
   else
-    echo "El reload ha fallado: probando un restart..." >&2
-    if systemctl restart "$FREERADIUS_SERVICE"; then
-      echo "Reiniciado correctamente (el reload no funciono, pero el restart si)." >&2
-    else
-      echo "ATENCION: ni el reload ni el restart de $FREERADIUS_SERVICE han funcionado. Los ficheros nuevos YA estan en $CA_PATH; revisa 'systemctl status $FREERADIUS_SERVICE' a mano." >&2
-      exit 1
-    fi
+    echo "ATENCION: el restart de $FREERADIUS_SERVICE ha fallado. Los ficheros nuevos YA estan en $CA_PATH; revisa 'systemctl status $FREERADIUS_SERVICE' a mano." >&2
+    exit 1
   fi
 fi
 

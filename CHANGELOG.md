@@ -7,38 +7,50 @@ Este proyecto usa versionado semantico.
 
 ### Anadido
 
-- **Prompt 14 (sincronizacion de la CA con FreeRADIUS)**: FreeRADIUS valida
-  EAP-TLS con `ca_path` + `check_crl`/`check_all_crl = yes`, y ahi solo
-  estaba la raiz offline (puesta a mano): cualquier certificado firmado por
-  la CA intermedia del panel se rechazaba. Nuevo
+- **Prompt 14 + 14.5 (sincronizacion de la CA con FreeRADIUS)**: FreeRADIUS
+  valida EAP-TLS con `ca_path` + `check_crl`/`check_all_crl = yes` en su
+  propio modulo `eap_vpn` (`tls-config tls-vpn`, distinto del `eap` de la
+  WiFi), y ahi solo estaba la raiz offline (puesta a mano): cualquier
+  certificado firmado por la CA intermedia del panel se rechazaba. Nuevo
   `deploy/freeradius-vpn-ca-sync.sh` (timer cada 15 min): descarga
   `GET /pki/ca-chain.pem`/`crl.pem` por loopback, NUNCA confia en la raiz de
   esa respuesta (valida contra la raiz ya presente en `ca_path`, por su
   huella SHA-256 fija en config), verifica cada intermedia contra esa raiz y
-  cada CRL contra su intermedia y que no haya caducado, y solo entonces
-  escribe `panel-intermediate-N.pem`/`panel-crl.pem` (nunca toca los
-  ficheros de la raiz) y reindexa con `openssl rehash`. Idempotente (compara
-  una huella del contenido antes de tocar nada) y respeta
-  `ca_path_reload_interval` (FreeRADIUS 3.2+) como alternativa a
-  `systemctl reload`/`restart` si ya esta configurado.
-  - **Hallazgo durante este prompt**: `@peculiar/x509` exporta las CRL con
-    la etiqueta PEM `-----BEGIN CRL-----`, no `-----BEGIN X509 CRL-----`
-    (la de RFC 7468 §4, la unica que `openssl crl`/`PEM_read_bio_X509_CRL`
-    reconocen — verificado con un `openssl crl` real). El script la
-    normaliza con `sed` antes de usarla; probablemente afecta tambien a
-    quien consuma `GET /pki/crl.pem` directamente. No se ha tocado
-    `lib/x509.ts`/`services/pki.ts` en este prompt (fuera de su alcance) —
-    valorar corregirlo en el panel en un prompt aparte.
-  - Tests: `server/src/lib/deployScripts.test.ts` ampliado con
-    shellcheck (si esta disponible) y una integracion real de extremo a
-    extremo contra una CA de prueba generada con `@peculiar/x509` (la misma
-    libreria que usa el panel de verdad, no plantillas de texto): sincroniza
-    con exito, es idempotente en una segunda pasada, rechaza si la raiz
-    local no coincide con la huella esperada, rechaza una intermedia que no
-    cuelga de esa raiz aunque el "servidor" traiga su propia raiz en la
-    respuesta, y rechaza una CRL ya caducada.
-  - README: instalacion completa, verificacion con
-    `openssl verify -CApath ... -crl_check_all`, y como volver atras.
+  cada CRL contra su intermedia (comprobando el TEXTO de `openssl crl
+  -CAfile` — "verify OK" presente, "verify failure" ausente, nunca solo el
+  codigo de salida) y que no haya caducado, comprueba que `TLS_CONFIG_FILE`
+  (el `eap_vpn` real) contiene de verdad el `ca_path` configurado, y solo
+  entonces escribe `panel-intermediate-N.pem`/`panel-crl.pem` (nunca toca
+  los ficheros de la raiz) y reindexa con `openssl rehash`. Idempotente.
+  - **Recarga (corregido en 14.5)**: en FreeRADIUS 3 un `reload` (HUP) NO
+    vuelve a cargar los contextos TLS de `rlm_eap` -una CRL nueva no se
+    aplicaria-, asi que se ha quitado ese camino por completo. Si
+    `tls-config tls-vpn` ya tiene `ca_path_reload_interval` (FreeRADIUS
+    3.2+, confirmado en la documentacion oficial), el script no reinicia
+    nada; si no, hace `freeradius -XC` (nunca reiniciar con una
+    configuracion rota) y solo entonces `systemctl restart` (nunca
+    `reload`), solo cuando hay cambios.
+  - **Etiqueta PEM de la CRL (corregida en el panel, 14.5)**: `@peculiar/x509`
+    exportaba las CRL como `-----BEGIN CRL-----`, no
+    `-----BEGIN X509 CRL-----` (RFC 7468 §4, la unica que `openssl crl`/
+    `PEM_read_bio_X509_CRL` reconocen). Nueva `crlToPem()` en `lib/x509.ts`,
+    usada por `services/pki.ts` al guardar `crl_pem`: `GET /pki/crl.pem` ya
+    sirve siempre la etiqueta correcta. El `sed` del script se deja como
+    tolerancia hacia paneles desplegados antes de este fix (comentado en el
+    propio script), ya no hace falta contra uno al dia.
+  - Tests: `server/src/lib/deployScripts.test.ts` ampliado con shellcheck
+    (si esta disponible) y una integracion real de extremo a extremo contra
+    una CA de prueba generada con `@peculiar/x509`: sincroniza con exito, es
+    idempotente en una segunda pasada, rechaza si la raiz local no coincide
+    con la huella esperada, rechaza una intermedia que no cuelga de esa
+    raiz aunque el "servidor" traiga su propia raiz en la respuesta, y
+    rechaza una CRL ya caducada. Nuevos tests en `services/pki.test.ts`
+    (`crlToPem`) confirmando con `openssl crl` real que la salida se lee
+    sin ninguna conversion.
+  - README: instalacion completa (con `ROOT_CERT_FILE`/`ROOT_CERT_SHA256`
+    reales de esta instalacion), como activar `ca_path_reload_interval`,
+    verificacion con `openssl verify -CApath ... -crl_check_all` contra un
+    certificado de dispositivo real, y como volver atras.
   - Rama `feat/vpn-14-freeradius-sync`, pendiente de revision.
 
 - **Prompt 12.5 (huellas del panel, lado servidor)**: cambio de diseno para

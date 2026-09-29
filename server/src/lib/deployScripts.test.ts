@@ -133,6 +133,24 @@ function writeConfig(dir: string, overrides: Record<string, string>): string {
   return configPath;
 }
 
+/**
+ * El script exige que TLS_CONFIG_FILE exista y contenga "ca_path = CA_PATH"
+ * (para detectar un CA_PATH mal configurado en el propio script/FreeRADIUS).
+ * `withReloadInterval` incluye ademas "ca_path_reload_interval", para que el
+ * script no intente reiniciar nada (los tests no tienen un FreeRADIUS real
+ * al que reiniciar).
+ */
+function writeTlsConfig(dir: string, caPath: string, withReloadInterval: boolean): string {
+  const tlsConfigPath = join(dir, 'eap_vpn');
+  const reloadLine = withReloadInterval ? '    ca_path_reload_interval = 900\n' : '';
+  writeFileSync(
+    tlsConfigPath,
+    `eap_vpn {\n  tls-config tls-vpn {\n    ca_path = "${caPath}"\n${reloadLine}  }\n}\n`,
+    'utf8',
+  );
+  return tlsConfigPath;
+}
+
 test(
   'freeradius-vpn-ca-sync.sh: sincroniza una intermedia+CRL reales, sin tocar la raiz, e idempotente',
   { skip: !canRunHappyPath && 'bash/openssl/curl/openssl-rehash no disponibles' },
@@ -158,8 +176,9 @@ test(
     writeFileSync(rootPath, chain.rootCert.toString(), 'utf8');
     const rootSha256 = sha256Hex(chain.rootCert.rawData);
 
-    const tlsConfigPath = join(dir, 'tls-config-no-reload-interval.conf');
-    writeFileSync(tlsConfigPath, 'eap {\n  tls-config tls-common {\n  }\n}\n', 'utf8');
+    // ca_path_reload_interval SI presente: el script no debe intentar
+    // "freeradius -XC" ni systemctl (no hay un FreeRADIUS real en el test).
+    const tlsConfigPath = writeTlsConfig(dir, caPath, true);
 
     const configPath = writeConfig(dir, {
       PANEL_PKI_URL: `file://${pkiDir}`,
@@ -167,6 +186,7 @@ test(
       ROOT_CERT_FILE: rootPath,
       ROOT_CERT_SHA256: rootSha256,
       FREERADIUS_SERVICE: 'freeradius-does-not-exist-in-this-test',
+      FREERADIUS_BINARY: 'freeradius-does-not-exist-in-this-test',
       TLS_CONFIG_FILE: tlsConfigPath,
     });
 
@@ -221,6 +241,7 @@ test(
 
     const rootPath = join(caPath, 'ca.pem');
     writeFileSync(rootPath, chain.rootCert.toString(), 'utf8');
+    const tlsConfigPath = writeTlsConfig(dir, caPath, false);
 
     const configPath = writeConfig(dir, {
       PANEL_PKI_URL: `file://${pkiDir}`,
@@ -228,7 +249,8 @@ test(
       ROOT_CERT_FILE: rootPath,
       ROOT_CERT_SHA256: '0'.repeat(64), // deliberadamente incorrecta
       FREERADIUS_SERVICE: 'freeradius-does-not-exist-in-this-test',
-      TLS_CONFIG_FILE: join(dir, 'no-existe.conf'),
+      FREERADIUS_BINARY: 'freeradius-does-not-exist-in-this-test',
+      TLS_CONFIG_FILE: tlsConfigPath,
     });
 
     const result = runSyncScript({
@@ -274,6 +296,7 @@ test(
     const rootPath = join(caPath, 'ca.pem');
     writeFileSync(rootPath, trustedChain.rootCert.toString(), 'utf8');
     const rootSha256 = sha256Hex(trustedChain.rootCert.rawData);
+    const tlsConfigPath = writeTlsConfig(dir, caPath, false);
 
     const configPath = writeConfig(dir, {
       PANEL_PKI_URL: `file://${pkiDir}`,
@@ -281,7 +304,8 @@ test(
       ROOT_CERT_FILE: rootPath,
       ROOT_CERT_SHA256: rootSha256,
       FREERADIUS_SERVICE: 'freeradius-does-not-exist-in-this-test',
-      TLS_CONFIG_FILE: join(dir, 'no-existe.conf'),
+      FREERADIUS_BINARY: 'freeradius-does-not-exist-in-this-test',
+      TLS_CONFIG_FILE: tlsConfigPath,
     });
 
     const result = runSyncScript({
@@ -319,6 +343,7 @@ test(
     const rootPath = join(caPath, 'ca.pem');
     writeFileSync(rootPath, chain.rootCert.toString(), 'utf8');
     const rootSha256 = sha256Hex(chain.rootCert.rawData);
+    const tlsConfigPath = writeTlsConfig(dir, caPath, false);
 
     const configPath = writeConfig(dir, {
       PANEL_PKI_URL: `file://${pkiDir}`,
@@ -326,7 +351,8 @@ test(
       ROOT_CERT_FILE: rootPath,
       ROOT_CERT_SHA256: rootSha256,
       FREERADIUS_SERVICE: 'freeradius-does-not-exist-in-this-test',
-      TLS_CONFIG_FILE: join(dir, 'no-existe.conf'),
+      FREERADIUS_BINARY: 'freeradius-does-not-exist-in-this-test',
+      TLS_CONFIG_FILE: tlsConfigPath,
     });
 
     const result = runSyncScript({

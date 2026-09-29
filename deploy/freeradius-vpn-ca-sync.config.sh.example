@@ -8,9 +8,9 @@
 # Ajusta el puerto si PORT en server/.env no es 1003.
 PANEL_PKI_URL='http://127.0.0.1:1003/pki'
 
-# Directorio ca_path de FreeRADIUS para el virtual server "vpn" (ver
-# mods-enabled/eap o el sites-enabled/vpn de esta instalacion): donde ya
-# estan la raiz y su CRL, puestas a mano. Este script SOLO anade/actualiza
+# Directorio ca_path de FreeRADIUS para el virtual server "vpn" -el modulo
+# eap_vpn, tls-config tls-vpn, NO el modulo eap generico de la WiFi-: donde
+# ya estan la raiz y su CRL, puestas a mano. Este script SOLO anade/actualiza
 # sus propios ficheros ahi (panel-intermediate-N.pem, panel-crl.pem), nunca
 # toca los de la raiz.
 CA_PATH='/etc/freeradius/3.0/certs/vpn/ca'
@@ -18,24 +18,37 @@ CA_PATH='/etc/freeradius/3.0/certs/vpn/ca'
 # Ruta EXACTA al fichero de la raiz offline que YA esta en CA_PATH (ajusta
 # el nombre al que tenga de verdad en esta instalacion: no lo adivina el
 # script a proposito, para no arriesgarse a coger el fichero equivocado si
-# hubiera mas de uno).
-ROOT_CERT_FILE="$CA_PATH/ca.pem"
+# hubiera mas de uno). En esta instalacion es:
+ROOT_CERT_FILE="$CA_PATH/ca.crt"
 
 # Huella SHA-256 (hex, en minusculas o mayusculas, sin separadores) del DER
 # de esa raiz: se comprueba en cada ejecucion ANTES de descargar nada, para
 # detectar si ROOT_CERT_FILE ha cambiado de lo esperado (raiz equivocada,
 # configuracion desactualizada tras rotar la raiz...). Calculala con:
-#   openssl x509 -in "$CA_PATH/ca.pem" -outform DER | openssl dgst -sha256
+#   openssl x509 -in /etc/freeradius/3.0/certs/vpn/ca/ca.crt -outform DER | openssl dgst -sha256
 ROOT_CERT_SHA256='pega-aqui-la-huella-sha256-de-la-raiz'
 
 # Nombre de la unidad systemd de FreeRADIUS en esta instalacion (normalmente
 # "freeradius" en Debian/Ubuntu, a veces "radiusd" en otras distros).
 FREERADIUS_SERVICE='freeradius'
 
-# Fichero donde comprobar si ya existe "ca_path_reload_interval" (FreeRADIUS
-# 3.2+): si esta configurado ahi, FreeRADIUS relee ca_path el solo, sin
-# reload ni restart, y este script no fuerza ninguno de los dos. Ajusta la
-# ruta al fichero real de esta instalacion si no es mods-enabled/eap (podria
-# estar en el sites-enabled/vpn si el tls-config es especifico de ese
-# virtual server).
-TLS_CONFIG_FILE='/etc/freeradius/3.0/mods-enabled/eap'
+# Ejecutable de FreeRADIUS para comprobar la configuracion antes de un
+# restart ("freeradius -XC"): normalmente basta con el nombre si esta en el
+# PATH; ajusta a la ruta completa si no lo esta (algunas distros usan
+# "radiusd" en vez de "freeradius" como nombre del binario).
+FREERADIUS_BINARY='freeradius'
+
+# Fichero de tls-config del modulo eap_vpn (el EAP-TLS de la VPN, DISTINTO
+# del modulo eap generico que usa la WiFi con PEAP-MSCHAPv2: nunca toques
+# ese otro fichero). El script comprueba que CA_PATH aparece ahi dentro
+# (si no, algo esta mal configurado) y si ya tiene "ca_path_reload_interval"
+# (FreeRADIUS 3.2+): si esta puesto, FreeRADIUS relee ca_path el solo, sin
+# restart, y este script no reinicia nada. Si no, hace "freeradius -XC"
+# (para no reiniciar con una configuracion rota) y solo entonces
+# "systemctl restart" -NUNCA reload: en FreeRADIUS 3 un HUP no vuelve a
+# cargar los contextos TLS de rlm_eap, una CRL nueva no se aplicaria-.
+# Ver el README, "Sincronizacion de la CA intermedia con FreeRADIUS", para
+# el texto exacto que anadir a tls-config tls-vpn si quieres activar
+# ca_path_reload_interval (este script NUNCA toca la configuracion de
+# FreeRADIUS, solo comprueba si ya esta puesta).
+TLS_CONFIG_FILE='/etc/freeradius/3.0/mods-enabled/eap_vpn'
