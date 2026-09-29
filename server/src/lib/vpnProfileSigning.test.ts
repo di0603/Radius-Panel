@@ -1,11 +1,17 @@
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, verify } from 'node:crypto';
+import { createHash, generateKeyPairSync, verify } from 'node:crypto';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { config } from '../config.js';
-import { PROFILE_SIGNING_KEY_ID, isProfileSigningConfigured, signProfilePayload } from './vpnProfileSigning.js';
+import {
+  PROFILE_SIGNING_KEY_ID,
+  getSignerPublicKeySha256Hex,
+  getSignerPublicKeySpkiBase64Url,
+  isProfileSigningConfigured,
+  signProfilePayload,
+} from './vpnProfileSigning.js';
 
 function writeTempKey(): { keyPath: string; publicKey: ReturnType<typeof generateKeyPairSync>['publicKey'] } {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
@@ -48,6 +54,38 @@ test('signProfilePayload: firma Ed25519 verificable con la clave publica corresp
     const payloadBytes = Buffer.from(envelope.payload, 'base64url');
     const signatureBytes = Buffer.from(envelope.signature, 'base64url');
     assert.equal(verify(null, payloadBytes, publicKey, signatureBytes), true);
+
+    // signerPublicKey del sobre es la SPKI DER real de esta clave, tal cual
+    // la exportaria node:crypto -es lo que la app aprende la primera vez
+    // que ve este servidor (TOFU)-.
+    assert.equal(envelope.signerPublicKey, publicKey.export({ type: 'spki', format: 'der' }).toString('base64url'));
+  } finally {
+    config.vpnProfileSigning.keyPath = prev;
+  }
+});
+
+test('getSignerPublicKeySpkiBase64Url / getSignerPublicKeySha256Hex: coinciden con signerPublicKey del sobre', () => {
+  const { keyPath, publicKey } = writeTempKey();
+  const prev = config.vpnProfileSigning.keyPath;
+  config.vpnProfileSigning.keyPath = keyPath;
+  try {
+    const envelope = signProfilePayload({ a: 1 });
+    assert.equal(getSignerPublicKeySpkiBase64Url(), envelope.signerPublicKey);
+
+    const expectedSha256 = createHash('sha256')
+      .update(publicKey.export({ type: 'spki', format: 'der' }))
+      .digest('hex');
+    assert.equal(getSignerPublicKeySha256Hex(), expectedSha256);
+  } finally {
+    config.vpnProfileSigning.keyPath = prev;
+  }
+});
+
+test('getSignerPublicKeySha256Hex: sin VPN_PROFILE_SIGNING_KEY, lanza el mismo error claro que signProfilePayload', () => {
+  const prev = config.vpnProfileSigning.keyPath;
+  config.vpnProfileSigning.keyPath = undefined;
+  try {
+    assert.throws(() => getSignerPublicKeySha256Hex(), /VPN_PROFILE_SIGNING_KEY/);
   } finally {
     config.vpnProfileSigning.keyPath = prev;
   }

@@ -38,6 +38,7 @@ import { PageHeader } from '../components/PageHeader';
 import { SectionCard } from '../components/SectionCard';
 import { TableSkeleton } from '../components/TableSkeleton';
 import { EmptyState } from '../components/EmptyState';
+import { FingerprintDisplay } from '../components/FingerprintDisplay';
 import {
   useAddDeviceRule,
   useCreateVpnDevice,
@@ -571,6 +572,17 @@ function DeviceDrawer({ username, onClose }: { username: string | null; onClose:
                     descargable.
                   </Alert>
                 )}
+                <Alert color="blue" variant="light">
+                  <Text size="sm">
+                    La app pedira confirmar estas huellas la primera vez que se conecte a este
+                    servidor (confianza en el primer uso): dictaselas a quien lo esta dando de alta,
+                    o comparalas con lo que le muestra la pantalla de importacion.
+                  </Text>
+                </Alert>
+                <Group grow>
+                  <FingerprintDisplay label="Huella del panel" fingerprint={result.panelKeyFingerprint} />
+                  <FingerprintDisplay label="Huella de la raiz" fingerprint={result.rootCaFingerprint} />
+                </Group>
               </>
             ) : (
               <Alert color="gray" variant="light">

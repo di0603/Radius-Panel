@@ -723,6 +723,14 @@ export interface SignedProfileEnvelope {
   payload: string;
   signature: string;
   keyId: string;
+  /** SPKI DER (base64url) de la clave publica Ed25519 del panel: la app la aprende de aqui (cliente generico, sin clave incrustada, ver prompt 12.5). */
+  signerPublicKey: string;
+}
+
+/** Huella SHA-256 formateada para comparar a ojo: grupos de 4 mayusculas, y "short" = los primeros 8 grupos. */
+export interface FormattedFingerprint {
+  full: string;
+  short: string;
 }
 
 export interface EnrollTokenResult {
@@ -733,6 +741,9 @@ export interface EnrollTokenResult {
   profile: SignedProfileEnvelope | null;
   profileQrDataUrl: string | null;
   profileFilename: string | null;
+  /** Para que el admin las lea en voz alta o las compare con lo que muestra la app al confiar en este servidor por primera vez. `null` junto con `profile`. */
+  panelKeyFingerprint: FormattedFingerprint | null;
+  rootCaFingerprint: FormattedFingerprint | null;
 }
 
 export function useGenerateEnrollToken() {
@@ -951,6 +962,9 @@ export interface VpnSettingsView {
   androidCertDays: number;
   estUrl: string;
   gatewayTokenSet: boolean;
+  /** `null` si esa pieza todavia no esta configurada (VPN_PROFILE_SIGNING_KEY / la raiz offline), independientes entre si. */
+  panelKeyFingerprint: FormattedFingerprint | null;
+  rootCaFingerprint: FormattedFingerprint | null;
 }
 
 export function useVpnSettings() {
