@@ -609,6 +609,125 @@ CRL, poda de revocados ya caducados fuera de la CRL, borrado de tokens de alta
 caducados y regeneracion adelantada de la CRL. Ver "Deploy automatico en el
 VPS" para las unidades systemd.
 
+### Sincronizacion de la CA intermedia con FreeRADIUS (prompt 14)
+
+FreeRADIUS (en la misma `.28`) valida EAP-TLS con `ca_path` (directorio con
+la CA raiz offline + su CRL, puestas a mano) y `check_crl`/`check_all_crl =
+yes`, en su propio modulo **`eap_vpn`** (`tls-config tls-vpn`) — el EAP-TLS
+de la VPN NO comparte modulo con la WiFi (`eap`, PEAP-MSCHAPv2), y este
+mecanismo nunca toca ese otro modulo. Como `ca_path` solo tenia la raiz,
+cualquier certificado de dispositivo firmado por la CA INTERMEDIA del panel
+(en vez de directamente por la raiz) se rechazaba:
+`deploy/freeradius-vpn-ca-sync.sh` anade la intermedia y su CRL como ficheros
+propios (`panel-intermediate-N.pem`, `panel-crl.pem`), **sin tocar nunca**
+los de la raiz.
+
+Descarga `GET /pki/ca-chain.pem` y `/pki/crl.pem` por loopback (sin TLS: es
+informacion publica, y solo se alcanza desde la propia `.28`), pero **nunca
+confia en la raiz que trae esa respuesta**: valida la cadena descargada
+contra la raiz que YA esta en `ca_path` (comprobada primero por su propia
+huella SHA-256, fija en la configuracion del script) y cada CRL contra la
+intermedia que la firmo -comprobando el TEXTO de `openssl crl -CAfile`
+("verify OK" presente, "verify failure" ausente; nunca solo el codigo de
+salida-, ademas de que no haya caducado. El script tambien comprueba que
+`TLS_CONFIG_FILE` (el `eap_vpn` real) contiene de verdad el `ca_path`
+configurado, para detectar una configuracion cruzada. Si algo no verifica,
+no toca nada de lo que ya habia y sale con error.
+
+**Recarga: nunca un `reload` (HUP)**. En FreeRADIUS 3, un HUP no vuelve a
+cargar los contextos TLS de `rlm_eap`: una CRL nueva no se aplicaria y una
+revocacion no tendria efecto hasta un restart de verdad. Las dos opciones
+reales (confirmado en la documentacion oficial de FreeRADIUS, `raddb/
+mods-available/eap`):
+
+1. **`ca_path_reload_interval`** (FreeRADIUS 3.2+, dentro del `tls-config`):
+   fuerza a OpenSSL a releer todo `ca_path` periodicamente, sin restart. Este
+   script **nunca toca la configuracion de FreeRADIUS**: solo comprueba si
+   ya esta puesta. Para activarla, anade dentro de `tls-config tls-vpn` en
+   `/etc/freeradius/3.0/mods-enabled/eap_vpn`:
+   ```
+   tls-config tls-vpn {
+       ...
+       ca_path_reload_interval = 900   # 15 min, igual que el timer de este script
+   }
+   ```
+   Con esto puesto, el script detecta la directiva y no reinicia nada nunca.
+2. **Sin esa directiva**: el script comprueba la configuracion con
+   `freeradius -XC` (para no reiniciar con algo roto) y, solo si es valida,
+   hace `systemctl restart` (nunca `reload`) — y solo cuando de verdad hay
+   cambios que aplicar.
+
+**Etiqueta PEM de la CRL (corregido en el panel)**: `@peculiar/x509` (la
+libreria de firma) exportaba las CRL con `-----BEGIN CRL-----`, no
+`-----BEGIN X509 CRL-----` (la que exige RFC 7468 §4 y la UNICA que
+reconocen `openssl crl`/`PEM_read_bio_X509_CRL` — verificado generando la
+misma CRL con las dos etiquetas: solo la segunda parsea). `lib/x509.ts`
+(`crlToPem`) ya corrige esto en origen: `GET /pki/crl.pem` y `crl_pem` en
+base de datos usan siempre la etiqueta correcta desde este prompt. El `sed`
+del script se ha dejado como tolerancia hacia paneles mas antiguos que
+todavia no tuvieran este fix (comentado en el propio script); con un panel
+al dia ya no hace falta, pero no molesta.
+
+Instalacion en la `.28` (comandos, sin ejecutarlos):
+
+```bash
+# 1. Configuracion:
+sudo mkdir -p /etc/freeradius-vpn-ca-sync
+sudo cp deploy/freeradius-vpn-ca-sync.config.sh.example /etc/freeradius-vpn-ca-sync/config.sh
+sudo chmod 600 /etc/freeradius-vpn-ca-sync/config.sh
+
+# Calcula la huella SHA-256 de la raiz YA presente en ca_path (ajusta el
+# nombre del fichero si no es exactamente este) y pegala en ROOT_CERT_SHA256:
+openssl x509 -in /etc/freeradius/3.0/certs/vpn/ca/ca.crt -outform DER | openssl dgst -sha256
+
+sudo nano /etc/freeradius-vpn-ca-sync/config.sh
+# Como minimo, deja fijado:
+#   ROOT_CERT_FILE=/etc/freeradius/3.0/certs/vpn/ca/ca.crt
+#   ROOT_CERT_SHA256=<<la huella del comando de arriba>>
+
+# 2. (Opcional pero recomendado) activar ca_path_reload_interval para que
+#    nunca haga falta un restart de FreeRADIUS -ver arriba-: edita
+#    /etc/freeradius/3.0/mods-enabled/eap_vpn a mano, dentro de
+#    "tls-config tls-vpn { ... }", y luego:
+sudo freeradius -XC   # comprueba que la configuracion sigue siendo valida
+sudo systemctl restart freeradius   # una vez, para que recoja la directiva nueva
+
+# 3. Unidad y timer:
+sudo cp deploy/freeradius-vpn-ca-sync.service deploy/freeradius-vpn-ca-sync.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now freeradius-vpn-ca-sync.timer
+
+# 4. Primera ejecucion a mano, para ver el resultado antes de esperar al timer:
+sudo /opt/radius-panel/deploy/freeradius-vpn-ca-sync.sh
+```
+
+Comprobar que ha funcionado:
+
+```bash
+ls -la /etc/freeradius/3.0/certs/vpn/ca/          # panel-intermediate-1.pem, panel-crl.pem
+sudo systemctl status freeradius-vpn-ca-sync.timer
+journalctl -u freeradius-vpn-ca-sync.service -n 50
+
+# Validacion real y completa (cadena + CRL) contra un certificado de
+# dispositivo REAL emitido por el panel (p.ej. descargado con "Ver ficha del
+# dispositivo -> Descargar paquete de conexion", o el .pem de un
+# .didevvpn/paquete ya entregado):
+openssl verify -CApath /etc/freeradius/3.0/certs/vpn/ca -crl_check_all /ruta/al/certificado-de-dispositivo.pem
+# -> "OK" si todo esta bien: la cadena verifica y ni la intermedia ni el
+#    dispositivo estan en ninguna CRL cargada.
+```
+
+Volver atras (si algo fuera mal): parar el timer y borrar solo los ficheros
+propios de este script -nunca toca los de la raiz, asi que basta con esto
+para dejar FreeRADIUS exactamente como antes de instalarlo-:
+
+```bash
+sudo systemctl disable --now freeradius-vpn-ca-sync.timer
+sudo rm -f /etc/freeradius/3.0/certs/vpn/ca/panel-intermediate-*.pem /etc/freeradius/3.0/certs/vpn/ca/panel-crl.pem
+sudo openssl rehash /etc/freeradius/3.0/certs/vpn/ca
+sudo freeradius -XC && sudo systemctl restart freeradius
+```
+
 ## Build de produccion
 
 ```bash

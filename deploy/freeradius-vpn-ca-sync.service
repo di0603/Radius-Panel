@@ -1,0 +1,8 @@
+[Unit]
+Description=Sincroniza la CA intermedia/CRL del panel con el ca_path de FreeRADIUS (vpn)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/radius-panel/deploy/freeradius-vpn-ca-sync.sh

@@ -7,6 +7,74 @@ Este proyecto usa versionado semantico.
 
 ### Anadido
 
+- **Prompt 12.6 (Windows: asociar la clave CNG sin exportarla)**: el alta
+  fallaba con "Clave no valida para utilizar en el estado especificado" justo
+  tras `simpleenroll` (con el token de un solo uso ya consumido):
+  `CertificateEnrollmentService` enlazaba el certificado a la clave CNG con
+  `X509Certificate2.CopyWithPrivateKey` y lo reinstalaba via PKCS#12, y
+  `CopyWithPrivateKey` fuerza una exportacion que una clave de TPM
+  ("Microsoft Platform Crypto Provider") deliberadamente no permite. Nueva
+  `AssociatePrivateKey` usa `CertSetCertificateContextProperty`/
+  `CERT_KEY_PROV_INFO_PROP_ID` (la propiedad documentada por Microsoft para
+  esto) sin exportar nada; compara antes las coordenadas publicas de la clave
+  y del certificado, y tras instalar comprueba que Windows recupera la clave
+  privada y que firma de verdad. `EnrollmentOrchestrator` usa la misma
+  asociacion para la comprobacion de `/status` (version minima) antes de
+  instalar. Nuevo proyecto `DidevVpn.App.Tests` (net8.0-windows, aparte de
+  `DidevVpn.Tests`: necesita APIs de Windows/CNG reales) con dos tests de
+  integracion real -clave de software y, si hay TPM disponible en la maquina
+  de build, clave de TPM real-, verificados en una maquina con TPM real
+  (57 + 2 tests en verde). Tambien: la lista de conexiones se refresca al
+  completar un alta, y el error de importacion avisa explicitamente si el
+  token de alta puede haberse consumido (EST emitio, pero el alta fallo
+  despues). Rama `feat/vpn-12.6-windows-cng`, pendiente de revision.
+
+- **Prompt 14 + 14.5 (sincronizacion de la CA con FreeRADIUS)**: FreeRADIUS
+  valida EAP-TLS con `ca_path` + `check_crl`/`check_all_crl = yes` en su
+  propio modulo `eap_vpn` (`tls-config tls-vpn`, distinto del `eap` de la
+  WiFi), y ahi solo estaba la raiz offline (puesta a mano): cualquier
+  certificado firmado por la CA intermedia del panel se rechazaba. Nuevo
+  `deploy/freeradius-vpn-ca-sync.sh` (timer cada 15 min): descarga
+  `GET /pki/ca-chain.pem`/`crl.pem` por loopback, NUNCA confia en la raiz de
+  esa respuesta (valida contra la raiz ya presente en `ca_path`, por su
+  huella SHA-256 fija en config), verifica cada intermedia contra esa raiz y
+  cada CRL contra su intermedia (comprobando el TEXTO de `openssl crl
+  -CAfile` — "verify OK" presente, "verify failure" ausente, nunca solo el
+  codigo de salida) y que no haya caducado, comprueba que `TLS_CONFIG_FILE`
+  (el `eap_vpn` real) contiene de verdad el `ca_path` configurado, y solo
+  entonces escribe `panel-intermediate-N.pem`/`panel-crl.pem` (nunca toca
+  los ficheros de la raiz) y reindexa con `openssl rehash`. Idempotente.
+  - **Recarga (corregido en 14.5)**: en FreeRADIUS 3 un `reload` (HUP) NO
+    vuelve a cargar los contextos TLS de `rlm_eap` -una CRL nueva no se
+    aplicaria-, asi que se ha quitado ese camino por completo. Si
+    `tls-config tls-vpn` ya tiene `ca_path_reload_interval` (FreeRADIUS
+    3.2+, confirmado en la documentacion oficial), el script no reinicia
+    nada; si no, hace `freeradius -XC` (nunca reiniciar con una
+    configuracion rota) y solo entonces `systemctl restart` (nunca
+    `reload`), solo cuando hay cambios.
+  - **Etiqueta PEM de la CRL (corregida en el panel, 14.5)**: `@peculiar/x509`
+    exportaba las CRL como `-----BEGIN CRL-----`, no
+    `-----BEGIN X509 CRL-----` (RFC 7468 §4, la unica que `openssl crl`/
+    `PEM_read_bio_X509_CRL` reconocen). Nueva `crlToPem()` en `lib/x509.ts`,
+    usada por `services/pki.ts` al guardar `crl_pem`: `GET /pki/crl.pem` ya
+    sirve siempre la etiqueta correcta. El `sed` del script se deja como
+    tolerancia hacia paneles desplegados antes de este fix (comentado en el
+    propio script), ya no hace falta contra uno al dia.
+  - Tests: `server/src/lib/deployScripts.test.ts` ampliado con shellcheck
+    (si esta disponible) y una integracion real de extremo a extremo contra
+    una CA de prueba generada con `@peculiar/x509`: sincroniza con exito, es
+    idempotente en una segunda pasada, rechaza si la raiz local no coincide
+    con la huella esperada, rechaza una intermedia que no cuelga de esa
+    raiz aunque el "servidor" traiga su propia raiz en la respuesta, y
+    rechaza una CRL ya caducada. Nuevos tests en `services/pki.test.ts`
+    (`crlToPem`) confirmando con `openssl crl` real que la salida se lee
+    sin ninguna conversion.
+  - README: instalacion completa (con `ROOT_CERT_FILE`/`ROOT_CERT_SHA256`
+    reales de esta instalacion), como activar `ca_path_reload_interval`,
+    verificacion con `openssl verify -CApath ... -crl_check_all` contra un
+    certificado de dispositivo real, y como volver atras.
+  - Rama `feat/vpn-14-freeradius-sync`, pendiente de revision.
+
 - **Prompt 12.5 (huellas del panel, lado servidor)**: cambio de diseno para
   que las apps (Windows/Android) puedan ser clientes GENERICOS, como
   FortiClient, compilados sin ninguna clave de didev incrustada, con

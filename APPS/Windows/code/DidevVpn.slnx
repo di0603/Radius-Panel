@@ -13,4 +13,5 @@
     <Platform Solution="*|*" Project="x64" />
   </Project>
   <Project Path="DidevVpn.Tests/DidevVpn.Tests.csproj" />
+  <Project Path="DidevVpn.App.Tests/DidevVpn.App.Tests.csproj" />
 </Solution>
