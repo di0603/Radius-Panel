@@ -14,6 +14,10 @@ SINGLE="$ROOT/DidevVpn.App/bin/Release-SingleFile/net8.0-windows/win-x64/publish
 mkdir -p "$OUT"
 
 dotnet test "$ROOT/DidevVpn.Tests/DidevVpn.Tests.csproj" -c Release
+case "${OSTYPE:-}" in
+  msys*|cygwin*) dotnet test "$ROOT/DidevVpn.App.Tests/DidevVpn.App.Tests.csproj" -c Release ;;
+  *) echo "Aviso: se omiten los tests Windows/CNG/TPM en este entorno no Windows." ;;
+esac
 dotnet publish "$ROOT/DidevVpn.App/DidevVpn.App.csproj" -r win-x64 --self-contained true -c Release \
   -p:EnableWindowsTargeting=true -p:Version="$VERSION" -p:PublishSingleFile=false -o "$NORMAL"
 dotnet publish "$ROOT/DidevVpn.App/DidevVpn.App.csproj" -r win-x64 --self-contained true -c Release \

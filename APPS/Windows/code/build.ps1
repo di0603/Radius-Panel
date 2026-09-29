@@ -127,6 +127,8 @@ function Invoke-SignTool([string]$FilePath) {
 Write-Step "1/7 - Tests (DidevVpn.Tests)"
 dotnet test (Join-Path $root 'DidevVpn.Tests\DidevVpn.Tests.csproj') -c Release
 if ($LASTEXITCODE -ne 0) { throw "Los tests han fallado: no se genera ningun artefacto." }
+dotnet test (Join-Path $root 'DidevVpn.App.Tests\DidevVpn.App.Tests.csproj') -c Release
+if ($LASTEXITCODE -ne 0) { throw "Los tests de Windows/CNG han fallado: no se genera ningun artefacto." }
 
 # ------------------------------------------------------------------------
 Write-Step "2/7 - Publicando la variante instalada (self-contained, multi-fichero)"

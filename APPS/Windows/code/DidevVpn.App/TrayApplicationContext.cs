@@ -199,6 +199,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 _certificateService, _estClient, _vpnService, _rootStore, _confirmations, _logger, AppVersionHelper.GetAppVersion());
             var connection = await orchestrator.EnrollAsync(result.Profile!, CancellationToken.None);
             _lastErrorMessage = null;
+            _managerForm.RefreshConnections();
             MessageBox.Show(
                 $"Conexion \"{connection.Cn}\" ({connection.Server}) dada de alta. Ya puedes conectar desde el menu de la bandeja.",
                 "Alta completada",
@@ -221,7 +222,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
         catch (Exception ex)
         {
-            HandleError("No se ha podido completar el alta", ex);
+            const string context = "No se ha podido completar el alta";
+            _lastErrorMessage = $"{context}: {ex.Message}";
+            _logger.Error(context, ex);
+            MessageBox.Show(
+                $"{ex.Message}\n\nNo se ha guardado la conexion. Si EST llego a emitir el certificado antes del error, el token de un solo uso puede haberse consumido. En ese caso, genera un token y un perfil nuevos desde el panel.",
+                "Error al importar el perfil",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
         }
         RefreshStatus();
     }

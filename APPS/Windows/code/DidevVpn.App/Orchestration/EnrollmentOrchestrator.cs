@@ -227,8 +227,7 @@ internal sealed class EnrollmentOrchestrator
         EstStatus status;
         try
         {
-            using var ecdsa = new ECDsaCng(key.CngKey);
-            using var certificateWithKeyForStatusCheck = issuedCertificate.CopyWithPrivateKey(ecdsa);
+            using var certificateWithKeyForStatusCheck = _certificateService.AssociatePrivateKey(issuedCertificate, key);
             status = await _estClient.GetStatusAsync(estBaseUri, certificateWithKeyForStatusCheck, chain, ct).ConfigureAwait(false);
         }
         catch (Exception ex)

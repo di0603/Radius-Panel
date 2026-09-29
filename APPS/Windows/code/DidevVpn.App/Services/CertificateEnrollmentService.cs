@@ -1,3 +1,5 @@
+using System.ComponentModel;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
@@ -45,12 +47,18 @@ internal interface ICertificateEnrollmentService
     /// <summary>Enlaza el certificado que acaba de emitir EST a la clave ya creada e instala en CurrentUser\My.</summary>
     X509Certificate2 InstallIssuedCertificate(X509Certificate2 issuedCertificateWithoutKey, EnrolledKey key);
 
+    /// <summary>Asocia un certificado temporalmente a la clave CNG persistente sin exportar la clave privada.</summary>
+    X509Certificate2 AssociatePrivateKey(X509Certificate2 certificateWithoutKey, EnrolledKey key);
+
     /// <summary>Borra un certificado (y su clave privada asociada) de CurrentUser\My, p.ej. tras una renovacion o al desinstalar.</summary>
     void RemoveCertificate(X509Certificate2 certificate);
 }
 
 internal sealed class CertificateEnrollmentService : ICertificateEnrollmentService
 {
+    private const uint CertKeyProvInfoPropId = 2;
+    private const uint CertNcryptKeySpec = 0xFFFFFFFF;
+
     public bool TryCreateTpmBackedKey(string cn, out EnrolledKey? key, out Exception? failure)
     {
         try
@@ -101,37 +109,133 @@ internal sealed class CertificateEnrollmentService : ICertificateEnrollmentServi
         }
     }
 
-    public X509Certificate2 InstallIssuedCertificate(X509Certificate2 issuedCertificateWithoutKey, EnrolledKey key)
+    public X509Certificate2 AssociatePrivateKey(X509Certificate2 certificateWithoutKey, EnrolledKey key)
     {
-        using var ecdsa = new ECDsaCng(key.CngKey);
-        // La CngKey tiene nombre (persistida): esto enlaza el certificado a
-        // ella via CERT_KEY_PROV_INFO_PROP_ID, sin necesitar "certreq -accept"
-        // (eso solo hace falta si la clave se creo con certreq.exe).
-        using var withKey = issuedCertificateWithoutKey.CopyWithPrivateKey(ecdsa);
+        ArgumentNullException.ThrowIfNull(certificateWithoutKey);
+        ArgumentNullException.ThrowIfNull(key);
 
-        // X509Certificate2.CopyWithPrivateKey devuelve una instancia efimera:
-        // hay que volver a importarla (Exportable pero solo en memoria, con
-        // PersistKeySet) para que quede enlazada de verdad en el almacen.
-        var exported = withKey.Export(X509ContentType.Pkcs12);
+        var associated = new X509Certificate2(certificateWithoutKey.RawData);
         try
         {
-            // X509CertificateLoader (mas moderna, sin el aviso SYSLIB0057) no
-            // existe todavia en net8.0: es de .NET 9. El constructor sigue sin
-            // marcarse obsoleto en esta TFM.
-            var persisted = new X509Certificate2(
-                exported, (string?)null,
-                X509KeyStorageFlags.PersistKeySet | X509KeyStorageFlags.UserKeySet);
+            EnsurePublicKeyMatches(associated, key);
+            var provider = key.CngKey.Provider
+                ?? throw new CryptographicException("La clave CNG no informa de su proveedor.");
 
-            using var store = new X509Store(StoreName.My, StoreLocation.CurrentUser);
-            store.Open(OpenFlags.ReadWrite);
-            store.Add(persisted);
-            return persisted;
+            var keyProviderInfo = new CryptKeyProvInfo
+            {
+                ContainerName = key.CngKey.KeyName
+                    ?? throw new CryptographicException("La clave CNG no tiene un nombre persistente."),
+                ProviderName = provider.Provider,
+                ProviderType = 0,
+                Flags = 0,
+                ProviderParameterCount = 0,
+                ProviderParameters = IntPtr.Zero,
+                KeySpec = CertNcryptKeySpec,
+            };
+
+            if (!CertSetCertificateContextProperty(
+                    associated.Handle,
+                    CertKeyProvInfoPropId,
+                    0,
+                    ref keyProviderInfo))
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error(),
+                    "Windows no pudo asociar el certificado a la clave CNG del dispositivo.");
+            }
+
+            if (!associated.HasPrivateKey)
+            {
+                throw new CryptographicException("Windows no reconocio la clave privada asociada al certificado.");
+            }
+
+            return associated;
+        }
+        catch
+        {
+            associated.Dispose();
+            throw;
+        }
+    }
+
+    public X509Certificate2 InstallIssuedCertificate(X509Certificate2 issuedCertificateWithoutKey, EnrolledKey key)
+    {
+        using var associated = AssociatePrivateKey(issuedCertificateWithoutKey, key);
+        using var store = new X509Store(StoreName.My, StoreLocation.CurrentUser);
+        store.Open(OpenFlags.ReadWrite);
+        store.Add(associated);
+
+        var matches = store.Certificates.Find(
+            X509FindType.FindByThumbprint,
+            associated.Thumbprint,
+            validOnly: false);
+        try
+        {
+            var stored = matches.Cast<X509Certificate2>().FirstOrDefault()
+                ?? throw new CryptographicException("Windows no encontro el certificado recien instalado.");
+            using var privateKey = stored.GetECDsaPrivateKey()
+                ?? throw new CryptographicException("El certificado instalado no tiene una clave ECDSA asociada.");
+            using var publicKey = stored.GetECDsaPublicKey()
+                ?? throw new CryptographicException("El certificado instalado no contiene una clave publica ECDSA.");
+
+            var challenge = RandomNumberGenerator.GetBytes(32);
+            var signature = privateKey.SignData(challenge, HashAlgorithmName.SHA256);
+            if (!publicKey.VerifyData(challenge, signature, HashAlgorithmName.SHA256))
+            {
+                throw new CryptographicException("La clave privada instalada no corresponde al certificado emitido.");
+            }
+
+            return new X509Certificate2(stored);
+        }
+        catch
+        {
+            store.Remove(associated);
+            throw;
         }
         finally
         {
-            Array.Clear(exported, 0, exported.Length);
+            foreach (X509Certificate2 match in matches)
+            {
+                match.Dispose();
+            }
         }
     }
+
+    private static void EnsurePublicKeyMatches(X509Certificate2 certificate, EnrolledKey key)
+    {
+        using var deviceKey = new ECDsaCng(key.CngKey);
+        using var certificateKey = certificate.GetECDsaPublicKey()
+            ?? throw new CryptographicException("El certificado emitido no contiene una clave publica ECDSA.");
+
+        var deviceParameters = deviceKey.ExportParameters(includePrivateParameters: false).Q;
+        var certificateParameters = certificateKey.ExportParameters(includePrivateParameters: false).Q;
+        if (deviceParameters.X is null || deviceParameters.Y is null ||
+            certificateParameters.X is null || certificateParameters.Y is null ||
+            !CryptographicOperations.FixedTimeEquals(deviceParameters.X, certificateParameters.X) ||
+            !CryptographicOperations.FixedTimeEquals(deviceParameters.Y, certificateParameters.Y))
+        {
+            throw new CryptographicException("La clave CNG no corresponde al certificado emitido por EST.");
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct CryptKeyProvInfo
+    {
+        [MarshalAs(UnmanagedType.LPWStr)] public string ContainerName;
+        [MarshalAs(UnmanagedType.LPWStr)] public string ProviderName;
+        public uint ProviderType;
+        public uint Flags;
+        public uint ProviderParameterCount;
+        public IntPtr ProviderParameters;
+        public uint KeySpec;
+    }
+
+    [DllImport("crypt32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CertSetCertificateContextProperty(
+        IntPtr certificateContext,
+        uint propertyId,
+        uint flags,
+        ref CryptKeyProvInfo data);
 
     public void RemoveCertificate(X509Certificate2 certificate)
     {
