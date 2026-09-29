@@ -54,6 +54,24 @@ export function sha256Hex(data: ArrayBuffer): string {
   return createHash('sha256').update(Buffer.from(data)).digest('hex');
 }
 
+/**
+ * `X509Crl.toString()` de @peculiar/x509 etiqueta el PEM como
+ * "-----BEGIN CRL-----" (`PemConverter.CrlTag = "CRL"`, fijo en la
+ * libreria), no "-----BEGIN X509 CRL-----" -la etiqueta que exige RFC 7468
+ * SS4 para una CRL, y la UNICA que reconocen `openssl crl` y
+ * `PEM_read_bio_X509_CRL` (verificado generando la misma CRL con las dos
+ * etiquetas: solo "X509 CRL" parsea). Sin esto, cualquier consumidor basado
+ * en OpenSSL (incluido FreeRADIUS) no puede leer las CRL que sirve este
+ * panel. Usar SIEMPRE esta funcion en vez de `crl.toString()` para guardar o
+ * servir una CRL en PEM -nunca el metodo de la libreria directamente-.
+ */
+export function crlToPem(crl: x509.X509Crl): string {
+  return crl
+    .toString()
+    .replace('-----BEGIN CRL-----', '-----BEGIN X509 CRL-----')
+    .replace('-----END CRL-----', '-----END X509 CRL-----');
+}
+
 /** Huella SHA-256 de la SubjectPublicKeyInfo de un certificado o CSR, en hexadecimal minusculas. */
 export function spkiSha256(certOrCsr: { publicKey: x509.PublicKey }): string {
   return sha256Hex(certOrCsr.publicKey.rawData);

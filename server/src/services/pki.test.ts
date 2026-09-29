@@ -1,8 +1,21 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { webcrypto } from 'node:crypto';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
-import { EC_P384_SIGNING_ALGORITHM, generateEcKeyPair, sha256Hex, x509 } from '../lib/x509.js';
+import { EC_P384_SIGNING_ALGORITHM, crlToPem, generateEcKeyPair, sha256Hex, x509 } from '../lib/x509.js';
 import { buildCrl, validateIntermediateImport } from './pki.js';
+
+function hasCli(bin: string): boolean {
+  try {
+    execFileSync(bin, ['--version'], { stdio: 'ignore', timeout: 3000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -256,3 +269,37 @@ test('buildCrl: no verifica contra una clave publica que no la firmo', async () 
   });
   assert.equal(await crl.verify({ publicKey: otherRoot.cert.publicKey }), false);
 });
+
+test('crlToPem: etiqueta "-----BEGIN X509 CRL-----" (RFC 7468), no "-----BEGIN CRL-----" de @peculiar/x509', async () => {
+  const crl = await buildCrl({
+    issuerCert: goodIntermediate.cert,
+    signingKey: goodIntermediate.keys.privateKey,
+    entries: [],
+  });
+  const pem = crlToPem(crl);
+  assert.match(pem, /-----BEGIN X509 CRL-----/);
+  assert.match(pem, /-----END X509 CRL-----/);
+  assert.doesNotMatch(pem, /-----BEGIN CRL-----/); // la etiqueta de la libreria, sin "X509 "
+});
+
+test(
+  'crlToPem: "openssl crl -in ... -noout" la lee SIN ninguna conversion (nunca hace falta el sed de tolerancia del script de sincronizacion)',
+  { skip: !hasCli('openssl') && 'openssl no disponible' },
+  async () => {
+    const crl = await buildCrl({
+      issuerCert: goodIntermediate.cert,
+      signingKey: goodIntermediate.keys.privateKey,
+      entries: [],
+    });
+    const pem = crlToPem(crl);
+    const dir = mkdtempSync(join(tmpdir(), 'crl-pem-label-'));
+    const crlPath = join(dir, 'crl.pem');
+    writeFileSync(crlPath, pem, 'utf8');
+
+    // No conversion de ningun tipo (ni sed, ni -inform distinto): si la
+    // etiqueta fuera la vieja ("CRL" sin "X509 "), este comando fallaria con
+    // "unsupported"/"No supported data to decode" (lo que motivo este fix).
+    const output = execFileSync('openssl', ['crl', '-in', crlPath, '-noout', '-text'], { encoding: 'utf8' });
+    assert.match(output, /Certificate Revocation List/);
+  },
+);

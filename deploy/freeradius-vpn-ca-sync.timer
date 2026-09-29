@@ -1,0 +1,14 @@
+[Unit]
+Description=Ejecuta freeradius-vpn-ca-sync.service cada 15 minutos
+
+[Timer]
+# Arranca un poco despues que radius-panel-vpn-jobs.timer (OnBootSec=2min):
+# asi, si vpn-jobs acaba de regenerar una CRL a punto de vencer, este timer
+# la recoge en la misma vuelta en vez de tener que esperar a la siguiente.
+OnBootSec=4min
+OnUnitActiveSec=15min
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
