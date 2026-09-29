@@ -1,0 +1,7 @@
+This Android frontend is derived from strongSwan's Android frontend
+(src/frontends/android) and remains licensed under the GNU General Public
+License, version 2, as published by the Free Software Foundation.
+
+Copyright notices from the upstream files are retained in those files.
+The didev-specific additions in this directory are Copyright (C) didev and
+are distributed under the same GPLv2 license.
