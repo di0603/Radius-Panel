@@ -7,6 +7,62 @@ Este proyecto usa versionado semantico.
 
 ### Anadido
 
+- **Prompt 12.7 (Windows: rendimiento)**: la app iba muy lenta -cada
+  consulta de estado lanzaba un `powershell.exe` nuevo (con el modulo
+  `VpnClient`), en el hilo de interfaz, varias veces por conexion y varias
+  veces por minuto (menu de bandeja, ventana cada 5s, bandeja cada 15s)-.
+  - Nuevo `RasStateReader` (`DidevVpn.App/Services/Ras/`): P/Invoke directo
+    a `rasapi32.dll` (`RasEnumConnectionsW`, `RasGetConnectStatusW`,
+    `RasGetProjectionInfoW` para la IP, `RasEnumEntriesW` para si existe en
+    la agenda), milisegundos en vez de segundos, sin crear ningun proceso.
+    `VpnConnectionService` cae de vuelta a PowerShell automaticamente si el
+    P/Invoke fallara alguna vez. Conectar/desconectar usa `rasdial.exe`
+    directamente (ya no via `powershell.exe`). PowerShell queda solo para
+    crear/actualizar/borrar la conexion (el alta).
+  - **Hallazgo real verificado en esta maquina**: `RasEnumConnectionsW`/
+    `RasEnumEntriesW` exigen que `dwSize` coincida EXACTAMENTE con uno de
+    varios tamanos de struct reconocidos (`ERROR_INVALID_SIZE` si no,
+    a diferencia de la mayoria de APIs de Windows). Los tamanos de
+    `RasInterop.cs` se verificaron con un programa de sondeo (no
+    versionado) contra esta maquina real hasta encontrar los aceptados; con
+    ellos se obtuvieron datos reales (la agenda RAS de este equipo).
+    `RasGetConnectStatusW`/`RasGetProjectionInfoW` no mostraron el mismo
+    problema, pero no se han podido probar contra una conexion activa de
+    verdad (respaldo automatico por PowerShell si hiciera falta).
+  - Nada bloqueante en el hilo de interfaz: conectar/desconectar, importar
+    perfil y renovar van en `Task.Run`, con el control correspondiente
+    deshabilitado y "Trabajando..." mientras dura.
+  - Nuevo `ConnectionStateService`: cache UNICA del estado de todas las
+    conexiones para la bandeja y la ventana a la vez (antes cada una
+    sondeaba por su cuenta). Refresco por `NetworkChange.*` con debounce de
+    ~500ms (`DidevVpn.Core.Net.Debouncer`) + temporizador de respaldo cada
+    30s, en un hilo de fondo.
+  - `ConnectionManagerForm.RefreshConnections` ya no hace `Controls.Clear()`
+    + reconstruir todo: solo anade/quita filas si cambia la LISTA de
+    conexiones, actualiza los mismos `Label` en el sitio si solo cambia el
+    estado. Sin parpadeo.
+  - `PublishReadyToRun=true` en las dos variantes; confirmado que el
+    portable single-file solo extrae ~8MB de nativos a
+    `%TEMP%\.net\didev-vpn\` (nunca el bundle completo), cacheados entre
+    ejecuciones de la misma version.
+  - **Medido de verdad en esta maquina**: arranque ~360ms -> ~241ms
+    (variante instalada, con ReadyToRun); un refresco completo con 3
+    conexiones, ~6,3s (PowerShell) -> ~10ms (RAS nativo). El `.exe` portable
+    sale ~15% mas grande con ReadyToRun (168MB -> 194MB): compromiso pedido
+    explicitamente (arranque vs tamano).
+  - Tests: `DidevVpn.Tests` (`DebouncerTests`, con ventanas reales
+    pequenas) y `DidevVpn.App.Tests` (`RasStateReaderTests` contra RAS real
+    -sin lanzar con nombres que no existen-, `ConnectionStateServiceTests`
+    con un `IVpnConnectionService` falso: refresco, debounce, y que una
+    conexion que lanza no bloquea el refresco de las demas). 70 tests en
+    verde (62+8).
+  - Version 0.1.6 compilada de verdad (`build.ps1`), en
+    `APPS/Windows/ejecutables/` (fuera de git): `.msi`/`.exe`/`.zip` sin
+    firmar + `SHA256SUMS.txt`. Ejecutado de verdad (no solo compilado):
+    arranca, tray+ventana aparecen, sin excepciones en el log tras varios
+    segundos.
+  - Rama `feat/vpn-12.7-windows-rendimiento`, pendiente de revision.
+
 - **Prompt 12.6 (Windows: asociar la clave CNG sin exportarla)**: el alta
   fallaba con "Clave no valida para utilizar en el estado especificado" justo
   tras `simpleenroll` (con el token de un solo uso ya consumido):

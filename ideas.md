@@ -422,6 +422,20 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
   lado del panel (rama `feat/vpn-12.5-huellas-panel`); la reescritura de
   `didev-vpn-windows` como cliente generico va en
   `feat/vpn-12-windows-wip`. Detalle completo en el CHANGELOG.
+- [x] **Prompt 12.7 (Windows: rendimiento)**: la app se congelaba varios
+  segundos en cada refresco (cada consulta de estado lanzaba un
+  `powershell.exe` nuevo). Nuevo `RasStateReader` con P/Invoke directo a
+  `rasapi32.dll` (milisegundos, sin procesos), con respaldo automatico por
+  PowerShell si fallara; `rasdial.exe` directo para conectar/desconectar;
+  nada bloqueante en el hilo de interfaz (`Task.Run` + boton
+  deshabilitado); `ConnectionStateService` (cache unica, refresco por
+  `NetworkChange` con debounce + respaldo cada 30s) sustituye los
+  temporizadores de sondeo propio; `ConnectionManagerForm` ya no reconstruye
+  toda la lista en cada refresco. `PublishReadyToRun=true`. Medido de
+  verdad: arranque ~360ms->~241ms, un refresco con 3 conexiones
+  ~6,3s->~10ms. Version 0.1.6 compilada y ejecutada de verdad. Rama
+  `feat/vpn-12.7-windows-rendimiento`, pendiente de revision. Detalle
+  completo en el CHANGELOG.
 - [x] **Prompt 12.6 (Windows: asociar la clave CNG sin exportarla)**: el
   alta con una clave de TPM fallaba siempre ("Clave no valida para utilizar
   en el estado especificado") porque `CopyWithPrivateKey` fuerza una

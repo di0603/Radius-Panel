@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using System.Text;
+using DidevVpn.App.Services.Ras;
 
 namespace DidevVpn.App.Services;
 
@@ -17,9 +19,34 @@ namespace DidevVpn.App.Services;
 /// PowerShell): ese script ya se probo de extremo a extremo con un
 /// dispositivo real, asi que se reutiliza la misma forma exacta en vez de
 /// inventar una nueva a partir solo de la documentacion.
+///
+/// Consultar el ESTADO (existe/conectada/IP) ya NO pasa por PowerShell
+/// (prompt 12.7): powershell.exe tarda 1-3s solo en arrancar y cargar el
+/// modulo VpnClient, y esto se llama muy a menudo (refresco periodico de la
+/// bandeja y de la ventana). Va por RAS nativo (RasStateReader, P/Invoke a
+/// rasapi32.dll: milisegundos, sin crear ningun proceso), con el camino de
+/// PowerShell de siempre como RESPALDO si el P/Invoke fallara -no se ha
+/// podido validar ese P/Invoke contra una conexion RAS activa real en este
+/// entorno de desarrollo, ver RasInterop-. Conectar/desconectar usa
+/// rasdial.exe directamente (sin powershell.exe de por medio: un unico
+/// proceso en vez de dos).
 /// </summary>
 internal sealed class VpnConnectionService : IVpnConnectionService
 {
+    private readonly IRasStateReader _rasReader;
+    private readonly FileLogger? _logger;
+    private volatile bool _nativeReaderFailed;
+
+    public VpnConnectionService(FileLogger? logger = null) : this(new RasStateReader(), logger)
+    {
+    }
+
+    internal VpnConnectionService(IRasStateReader rasReader, FileLogger? logger)
+    {
+        _rasReader = rasReader;
+        _logger = logger;
+    }
+
     public void CreateOrUpdateConnection(VpnConnectionSpec spec)
     {
         var eapXml = BuildEapConfigXml(spec.EapServerName, spec.RootCertificateThumbprintSha1);
@@ -83,31 +110,115 @@ internal sealed class VpnConnectionService : IVpnConnectionService
 
     public bool ConnectionExists(string connectionName)
     {
+        if (!_nativeReaderFailed)
+        {
+            try
+            {
+                return _rasReader.EntryExists(connectionName);
+            }
+            catch (Exception ex)
+            {
+                OnNativeReaderFailure(ex);
+            }
+        }
+        return ConnectionExistsViaPowerShell(connectionName);
+    }
+
+    public bool IsConnected(string connectionName)
+    {
+        if (!_nativeReaderFailed)
+        {
+            try
+            {
+                return _rasReader.GetState(connectionName).Connected;
+            }
+            catch (Exception ex)
+            {
+                OnNativeReaderFailure(ex);
+            }
+        }
+        return IsConnectedViaPowerShell(connectionName);
+    }
+
+    public string? GetAssignedIPv4Address(string connectionName)
+    {
+        if (!_nativeReaderFailed)
+        {
+            try
+            {
+                return _rasReader.GetState(connectionName).Ipv4Address;
+            }
+            catch (Exception ex)
+            {
+                OnNativeReaderFailure(ex);
+            }
+        }
+        return GetAssignedIPv4AddressViaPowerShell(connectionName);
+    }
+
+    /// <summary>
+    /// Un fallo del P/Invoke de RAS (no "sin conexiones"/"no encontrada": eso
+    /// ya lo maneja RasStateReader como resultado normal, esto es un fallo
+    /// del marshaling/la propia llamada) desactiva el camino nativo para el
+    /// RESTO de esta instancia -no tiene sentido reintentar un P/Invoke roto
+    /// en cada refresco-, y cae al camino por PowerShell de siempre.
+    /// </summary>
+    private void OnNativeReaderFailure(Exception ex)
+    {
+        _nativeReaderFailed = true;
+        _logger?.Warn($"RAS nativo (P/Invoke) ha fallado, usando PowerShell como respaldo para el resto de esta sesion: {ex.Message}");
+    }
+
+    public void Connect(string connectionName) => RunRasDialExe(connectionName, disconnect: false);
+
+    public void Disconnect(string connectionName) => RunRasDialExe(connectionName, disconnect: true);
+
+    /// <summary>rasdial.exe directamente (nunca via powershell.exe: un unico proceso, no dos). No existe Connect-VpnConnection; este es el mecanismo real (ver APPS/Windows/NOTAS-prompt-12-en-pausa.md, punto 1).</summary>
+    private static void RunRasDialExe(string connectionName, bool disconnect)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "rasdial.exe",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        startInfo.ArgumentList.Add(connectionName);
+        if (disconnect)
+        {
+            startInfo.ArgumentList.Add("/disconnect");
+        }
+
+        using var process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("No se ha podido iniciar rasdial.exe.");
+        var stdout = process.StandardOutput.ReadToEnd();
+        var stderr = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+
+        if (process.ExitCode != 0)
+        {
+            var message = !string.IsNullOrWhiteSpace(stdout) ? stdout.Trim() : stderr.Trim();
+            throw new InvalidOperationException(
+                string.IsNullOrEmpty(message) ? $"rasdial.exe termino con codigo {process.ExitCode}." : message);
+        }
+    }
+
+    private static bool ConnectionExistsViaPowerShell(string connectionName)
+    {
         var script =
             $"if (Get-VpnConnection -Name {PsString(connectionName)} -ErrorAction SilentlyContinue) {{ 'yes' }} else {{ 'no' }}";
         return PowerShellRunner.RunScript(script).Trim() == "yes";
     }
 
-    public bool IsConnected(string connectionName)
+    private static bool IsConnectedViaPowerShell(string connectionName)
     {
         var script =
             $"(Get-VpnConnection -Name {PsString(connectionName)} -ErrorAction SilentlyContinue).ConnectionStatus";
         return PowerShellRunner.RunScript(script).Trim() == "Connected";
     }
 
-    public void Connect(string connectionName)
-    {
-        // No existe Connect-VpnConnection: el mecanismo real es rasdial (ver
-        // APPS/Windows/NOTAS-prompt-12-en-pausa.md, punto 1).
-        PowerShellRunner.RunScript($"$ErrorActionPreference='Stop'; & rasdial.exe {PsQuoteForRasdial(connectionName)}");
-    }
-
-    public void Disconnect(string connectionName)
-    {
-        PowerShellRunner.RunScript($"$ErrorActionPreference='Stop'; & rasdial.exe {PsQuoteForRasdial(connectionName)} /disconnect");
-    }
-
-    public string? GetAssignedIPv4Address(string connectionName)
+    private static string? GetAssignedIPv4AddressViaPowerShell(string connectionName)
     {
         try
         {
@@ -157,6 +268,4 @@ internal sealed class VpnConnectionService : IVpnConnectionService
 
     /// <summary>Cadena literal de PowerShell entre comillas simples, con las comillas simples internas dobladas (escape estandar de PS).</summary>
     private static string PsString(string value) => "'" + value.Replace("'", "''") + "'";
-
-    private static string PsQuoteForRasdial(string value) => "\"" + value.Replace("\"", "`\"") + "\"";
 }

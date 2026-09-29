@@ -105,7 +105,7 @@ internal static class Program
         return UninstallCleanupRunner.Run(
             uiLevel,
             new CertificateEnrollmentService(),
-            new VpnConnectionService(),
+            new VpnConnectionService(logger),
             logger);
     }
 }

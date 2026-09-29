@@ -9,6 +9,14 @@ namespace DidevVpn.App;
 /// <summary>
 /// Ventana principal para gestionar conexiones VPN, con icono de bandeja
 /// disponible al ocultar la ventana. Puede mantener varias conexiones a la vez.
+///
+/// Rendimiento (prompt 12.7): el estado de las conexiones (existe/conectada/
+/// IP) ya NO se consulta aqui directamente -eso lanzaba PowerShell por cada
+/// conexion, en el hilo de interfaz, en cada refresco-. Se lee siempre de
+/// <see cref="ConnectionStateService"/> (cache compartida con
+/// ConnectionManagerForm, refrescada en segundo plano por eventos de red).
+/// Las operaciones largas (conectar/desconectar, importar perfil, renovar)
+/// van en Task.Run, nunca bloquean el hilo de interfaz.
 /// </summary>
 internal sealed class TrayApplicationContext : ApplicationContext
 {
@@ -16,21 +24,24 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly FileLogger _logger = new();
     private readonly ICertificateEnrollmentService _certificateService = new CertificateEnrollmentService();
     private readonly IEstClient _estClient = new EstClient();
-    private readonly IVpnConnectionService _vpnService = new VpnConnectionService();
+    private readonly IVpnConnectionService _vpnService;
     private readonly IRootCertificateStoreService _rootStore = new RootCertificateStoreService();
     private readonly ITaskSchedulerService _taskScheduler = new TaskSchedulerService();
     private readonly IUserConfirmations _confirmations = new MessageBoxUserConfirmations();
-    private readonly System.Windows.Forms.Timer _refreshTimer;
+    private readonly ConnectionStateService _stateService;
     private readonly System.Windows.Forms.Timer _renewalTimer;
     private readonly ConnectionManagerForm _managerForm;
+    private readonly HashSet<string> _busyConnections = new(StringComparer.OrdinalIgnoreCase);
 
     private string? _lastErrorMessage;
+    private bool _importing;
 
     private const string RenewalTaskName = "didevVpnRenewal";
 
     public TrayApplicationContext()
     {
         AppPaths.EnsureDataDirectoryExists();
+        _vpnService = new VpnConnectionService(_logger);
 
         _notifyIcon = new NotifyIcon
         {
@@ -39,13 +50,18 @@ internal sealed class TrayApplicationContext : ApplicationContext
             Text = AppPaths.DisplayName,
             ContextMenuStrip = new ContextMenuStrip(),
         };
+
+        _stateService = new ConnectionStateService(_vpnService, ConnectionStore.List, _logger);
+        _stateService.StateChanged += OnStateChanged;
+
         _managerForm = new ConnectionManagerForm(
             ConnectionStore.List,
-            cn => _vpnService.ConnectionExists(cn) && _vpnService.IsConnected(cn),
+            _stateService.GetState,
             ImportProfile,
             ToggleConnection,
             ShowConnectionStatus,
-            RemoveConnection);
+            RemoveConnection,
+            IsBusy);
         _notifyIcon.DoubleClick += (_, _) => ShowManager();
 
         BuildMenu();
@@ -56,15 +72,38 @@ internal sealed class TrayApplicationContext : ApplicationContext
         // instalada por igual: no hace dano comprobarlo tambien aqui aunque
         // exista ademas la tarea programada, GetStatus/simplereenroll son
         // idempotentes respecto a si "toca renovar" o no). Renueva TODAS las
-        // conexiones, una por una.
+        // conexiones, una por una, en segundo plano.
         _ = RenewAllIfDueAsync();
         _renewalTimer = new System.Windows.Forms.Timer { Interval = (int)TimeSpan.FromHours(12).TotalMilliseconds };
         _renewalTimer.Tick += async (_, _) => await RenewAllIfDueAsync();
         _renewalTimer.Start();
 
-        _refreshTimer = new System.Windows.Forms.Timer { Interval = 15_000 };
-        _refreshTimer.Tick += (_, _) => RefreshStatus();
-        _refreshTimer.Start();
+        _ = _stateService.RefreshAsync();
+    }
+
+    /// <summary>Entregado en el hilo de interfaz por ConnectionStateService (ver su comentario): seguro llamar directamente a controles de aqui.</summary>
+    private void OnStateChanged()
+    {
+        RefreshStatus();
+        _managerForm.RefreshConnections();
+    }
+
+    private bool IsBusy(string cn)
+    {
+        lock (_busyConnections)
+        {
+            return _busyConnections.Contains(cn);
+        }
+    }
+
+    private void SetBusy(string cn, bool busy)
+    {
+        lock (_busyConnections)
+        {
+            if (busy) _busyConnections.Add(cn);
+            else _busyConnections.Remove(cn);
+        }
+        _managerForm.RefreshConnections();
     }
 
     private void BuildMenu()
@@ -100,7 +139,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         menu.Items.Add(new ToolStripSeparator());
 
-        var importItem = new ToolStripMenuItem("Importar perfil...");
+        var importItem = new ToolStripMenuItem(_importing ? "Importando perfil..." : "Importar perfil...") { Enabled = !_importing };
         importItem.Click += (_, _) => ImportProfile();
         menu.Items.Add(importItem);
 
@@ -129,59 +168,75 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private ToolStripMenuItem BuildConnectionSubmenu(ConnectionRecord connection)
     {
-        var connected = _vpnService.ConnectionExists(connection.Cn) && _vpnService.IsConnected(connection.Cn);
-        var submenu = new ToolStripMenuItem($"{connection.Cn} ({connection.Server}) - {(connected ? "conectado" : "desconectado")}");
+        var state = _stateService.GetState(connection.Cn);
+        var busy = IsBusy(connection.Cn);
+        var submenu = new ToolStripMenuItem($"{connection.Cn} ({connection.Server}) - {(busy ? "trabajando..." : state.Connected ? "conectado" : "desconectado")}");
 
-        var toggleConnection = new ToolStripMenuItem(connected ? "Desconectar" : "Conectar");
-        toggleConnection.Click += (_, _) => ToggleConnection(connection.Cn, connected);
+        var toggleConnection = new ToolStripMenuItem(state.Connected ? "Desconectar" : "Conectar") { Enabled = !busy };
+        toggleConnection.Click += (_, _) => ToggleConnection(connection.Cn, state.Connected);
         submenu.DropDownItems.Add(toggleConnection);
 
         var statusItem = new ToolStripMenuItem("Ver estado...");
         statusItem.Click += (_, _) => ShowConnectionStatus(connection.Cn);
         submenu.DropDownItems.Add(statusItem);
 
-        var renewItem = new ToolStripMenuItem("Renovar ahora");
+        var renewItem = new ToolStripMenuItem("Renovar ahora") { Enabled = !busy };
         renewItem.Click += async (_, _) => await RenewIfDueAsync(connection.Cn, force: true);
         submenu.DropDownItems.Add(renewItem);
 
         submenu.DropDownItems.Add(new ToolStripSeparator());
 
-        var removeItem = new ToolStripMenuItem("Quitar de este equipo...");
+        var removeItem = new ToolStripMenuItem("Quitar de este equipo...") { Enabled = !busy };
         removeItem.Click += (_, _) => RemoveConnection(connection.Cn);
         submenu.DropDownItems.Add(removeItem);
 
         return submenu;
     }
 
-    private void ToggleConnection(string cn, bool currentlyConnected)
+    private async void ToggleConnection(string cn, bool currentlyConnected)
     {
+        if (IsBusy(cn))
+        {
+            return;
+        }
+        SetBusy(cn, true);
         try
         {
-            if (currentlyConnected)
+            await Task.Run(() =>
             {
-                _vpnService.Disconnect(cn);
-            }
-            else
-            {
-                _vpnService.Connect(cn);
-            }
+                if (currentlyConnected)
+                {
+                    _vpnService.Disconnect(cn);
+                }
+                else
+                {
+                    _vpnService.Connect(cn);
+                }
+            }).ConfigureAwait(true); // true: seguir en el hilo de interfaz al continuar (BuildMenu/RefreshStatus tocan controles)
             _lastErrorMessage = null;
         }
         catch (Exception ex)
         {
             HandleError($"No se ha podido cambiar el estado de la conexion \"{cn}\"", ex);
         }
-        RefreshStatus();
+        SetBusy(cn, false);
+        await _stateService.RefreshAsync();
     }
 
     private async void ImportProfile()
     {
+        if (_importing)
+        {
+            return;
+        }
+
         using var form = new ImportProfileForm();
         if (form.ShowDialog() != DialogResult.OK || string.IsNullOrWhiteSpace(form.EnvelopeJson))
         {
             return;
         }
 
+        _importing = true;
         try
         {
             var result = ProfileVerifier.Verify(form.EnvelopeJson, DateTimeOffset.UtcNow);
@@ -197,7 +252,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
             var orchestrator = new EnrollmentOrchestrator(
                 _certificateService, _estClient, _vpnService, _rootStore, _confirmations, _logger, AppVersionHelper.GetAppVersion());
-            var connection = await orchestrator.EnrollAsync(result.Profile!, CancellationToken.None);
+            var connection = await Task.Run(() => orchestrator.EnrollAsync(result.Profile!, CancellationToken.None)).ConfigureAwait(true);
             _lastErrorMessage = null;
             _managerForm.RefreshConnections();
             MessageBox.Show(
@@ -231,7 +286,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
         }
-        RefreshStatus();
+        finally
+        {
+            _importing = false;
+        }
+        await _stateService.RefreshAsync();
     }
 
     private async Task RenewAllIfDueAsync()
@@ -244,16 +303,21 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private async Task RenewIfDueAsync(string cn, bool force)
     {
+        if (IsBusy(cn))
+        {
+            return;
+        }
         var connection = ConnectionStore.Load(cn);
         if (connection is null)
         {
             return;
         }
 
+        SetBusy(cn, true);
         try
         {
             var orchestrator = new RenewalOrchestrator(_certificateService, _estClient, _confirmations, _logger, AppVersionHelper.GetAppVersion());
-            var result = await orchestrator.RenewIfDueAsync(connection, CancellationToken.None);
+            var result = await Task.Run(() => orchestrator.RenewIfDueAsync(connection, CancellationToken.None)).ConfigureAwait(true);
             switch (result.Outcome)
             {
                 case RenewalOutcome.Renewed:
@@ -279,7 +343,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             HandleError($"No se ha podido comprobar/renovar el certificado de \"{cn}\"", ex);
         }
-        RefreshStatus();
+        SetBusy(cn, false);
     }
 
     private void ToggleBackgroundRenewalTask(bool enable)
@@ -353,7 +417,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             HandleError($"No se ha podido quitar \"{cn}\" por completo", ex);
         }
-        RefreshStatus();
+        _ = _stateService.RefreshAsync();
     }
 
     private void ShowConnectionStatus(string cn)
@@ -364,14 +428,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
             return;
         }
 
-        var connected = _vpnService.ConnectionExists(cn) && _vpnService.IsConnected(cn);
-        var ip = connected ? _vpnService.GetAssignedIPv4Address(cn) : null;
+        var state = _stateService.GetState(cn);
         var lines = new List<string>
         {
             $"Conexion: {connection.Cn}",
             $"Servidor: {connection.Server}",
-            $"Estado: {(connected ? "Conectado" : "Desconectado")}",
-            $"IP asignada: {ip ?? "(no conectado)"}",
+            $"Estado: {(state.Connected ? "Conectado" : "Desconectado")}",
+            $"IP asignada: {state.Ipv4Address ?? "(no conectado)"}",
             $"Clave: {(connection.IsTpmBacked ? "TPM" : "software")}",
             $"Ultima emision/renovacion: {connection.LastEnrolledAtUtc:u}",
         };
@@ -381,31 +444,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
             lines.Add($"Ultimo error: {_lastErrorMessage}");
         }
         MessageBox.Show(string.Join(Environment.NewLine, lines), $"Estado de \"{cn}\"");
-    }
-
-    private void ShowOverallStatus()
-    {
-        var connections = ConnectionStore.List();
-        if (connections.Count == 0)
-        {
-            MessageBox.Show("Todavia no hay ninguna conexion configurada. Usa \"Importar perfil...\".", "didev VPN");
-            return;
-        }
-
-        if (connections.Count == 1)
-        {
-            ShowConnectionStatus(connections[0].Cn);
-            return;
-        }
-
-        var lines = connections
-            .OrderBy(c => c.Cn, StringComparer.OrdinalIgnoreCase)
-            .Select(c =>
-            {
-                var connected = _vpnService.ConnectionExists(c.Cn) && _vpnService.IsConnected(c.Cn);
-                return $"{c.Cn} ({c.Server}): {(connected ? "conectado" : "desconectado")}";
-            });
-        MessageBox.Show(string.Join(Environment.NewLine, lines), "Conexiones de didev VPN");
     }
 
     private void ShowAbout(AppVariant variant, AppVersion version)
@@ -424,7 +462,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             return;
         }
 
-        var connectedCount = connections.Count(c => _vpnService.ConnectionExists(c.Cn) && _vpnService.IsConnected(c.Cn));
+        var connectedCount = connections.Count(c => _stateService.GetState(c.Cn).Connected);
         var tooltip = connections.Count == 1
             ? $"{AppPaths.DisplayName} - {connections[0].Cn} - {(connectedCount > 0 ? "conectado" : "desconectado")}"
             : $"{AppPaths.DisplayName} - {connectedCount}/{connections.Count} conectadas";
@@ -451,7 +489,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         _notifyIcon.Visible = false;
         _managerForm.Dispose();
-        _refreshTimer.Stop();
+        _stateService.StateChanged -= OnStateChanged;
+        _stateService.Dispose();
         _renewalTimer.Stop();
         Application.Exit();
     }

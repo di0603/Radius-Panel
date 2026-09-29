@@ -2,6 +2,18 @@ using DidevVpn.App.Services;
 
 namespace DidevVpn.App.UI;
 
+/// <summary>
+/// Rendimiento (prompt 12.7): el estado (<paramref name="getState"/>) se lee
+/// de la cache de ConnectionStateService, nunca lanza PowerShell aqui.
+/// RefreshConnections ya NO hace Controls.Clear() + reconstruir todo en cada
+/// llamada -eso causaba parpadeo, y encima se llamaba cada 5s-: ahora solo
+/// anade/quita filas cuando la LISTA de conexiones cambia, y actualiza en el
+/// sitio (mismo Label, solo cambia Text/ForeColor) cuando lo unico que
+/// cambia es el estado. Ya no hay temporizador propio: quien construye este
+/// formulario (TrayApplicationContext) llama a RefreshConnections cuando
+/// ConnectionStateService.StateChanged se dispara (eventos de red +
+/// respaldo de 30s, con debounce), no por sondeo propio.
+/// </summary>
 internal sealed class ConnectionManagerForm : Form
 {
     private static readonly Color Accent = Color.FromArgb(0, 137, 123);
@@ -10,13 +22,23 @@ internal sealed class ConnectionManagerForm : Form
     private static readonly Color Muted = Color.FromArgb(105, 117, 123);
     private static readonly Color ConnectedColor = Color.FromArgb(29, 135, 91);
 
+    private sealed class ConnectionRow
+    {
+        public required Panel Panel;
+        public required Label Name;
+        public required Label Server;
+        public required Label Status;
+    }
+
     private readonly Func<IReadOnlyList<ConnectionRecord>> _loadConnections;
-    private readonly Func<string, bool> _isConnected;
+    private readonly Func<string, ConnectionRuntimeState> _getState;
     private readonly Action _import;
     private readonly Action<string, bool> _toggleConnection;
     private readonly Action<string> _showStatus;
     private readonly Action<string> _removeConnection;
+    private readonly Func<string, bool> _isBusy;
     private readonly FlowLayoutPanel _connectionList;
+    private readonly Dictionary<string, ConnectionRow> _rows = new(StringComparer.OrdinalIgnoreCase);
     private readonly Panel _emptyState;
     private readonly Panel _selectedView;
     private Label _connectionName = null!;
@@ -28,23 +50,25 @@ internal sealed class ConnectionManagerForm : Form
     private Label _keyValue = null!;
     private Label _lastIssuedValue = null!;
     private Button _connectButton = null!;
-    private ConnectionRecord? _selected;
+    private string? _selectedCn;
     private bool _refreshing;
 
     public ConnectionManagerForm(
         Func<IReadOnlyList<ConnectionRecord>> loadConnections,
-        Func<string, bool> isConnected,
+        Func<string, ConnectionRuntimeState> getState,
         Action import,
         Action<string, bool> toggleConnection,
         Action<string> showStatus,
-        Action<string> removeConnection)
+        Action<string> removeConnection,
+        Func<string, bool> isBusy)
     {
         _loadConnections = loadConnections;
-        _isConnected = isConnected;
+        _getState = getState;
         _import = import;
         _toggleConnection = toggleConnection;
         _showStatus = showStatus;
         _removeConnection = removeConnection;
+        _isBusy = isBusy;
 
         Text = "didev VPN";
         Width = 1000;
@@ -129,10 +153,6 @@ internal sealed class ConnectionManagerForm : Form
             Font = new Font("Segoe UI", 8f),
         }, 0, 2);
 
-        var refreshTimer = new System.Windows.Forms.Timer { Interval = 5000 };
-        refreshTimer.Tick += (_, _) => RefreshConnections();
-        refreshTimer.Start();
-        FormClosed += (_, _) => refreshTimer.Dispose();
         FormClosing += (_, e) =>
         {
             if (e.CloseReason == CloseReason.UserClosing)
@@ -144,6 +164,12 @@ internal sealed class ConnectionManagerForm : Form
         RefreshConnections();
     }
 
+    /// <summary>
+    /// Anade/quita filas solo si CAMBIA la lista de conexiones; si solo
+    /// cambia el estado (lo normal, en cada evento de ConnectionStateService),
+    /// actualiza los Label existentes en el sitio -sin Clear() ni reconstruir
+    /// nada-, para que no parpadee.
+    /// </summary>
     public void RefreshConnections()
     {
         if (_refreshing) return;
@@ -151,23 +177,47 @@ internal sealed class ConnectionManagerForm : Form
         try
         {
             var all = _loadConnections().OrderBy(c => c.Cn, StringComparer.OrdinalIgnoreCase).ToList();
-            var previousCn = _selected?.Cn;
-            _selected = previousCn is null ? null : all.FirstOrDefault(c => string.Equals(c.Cn, previousCn, StringComparison.OrdinalIgnoreCase));
+            var currentCns = new HashSet<string>(all.Select(c => c.Cn), StringComparer.OrdinalIgnoreCase);
 
-            _connectionList.SuspendLayout();
-            _connectionList.Controls.Clear();
+            foreach (var cn in _rows.Keys.Where(cn => !currentCns.Contains(cn)).ToList())
+            {
+                _connectionList.Controls.Remove(_rows[cn].Panel);
+                _rows.Remove(cn);
+            }
+
+            if (_selectedCn is not null && !currentCns.Contains(_selectedCn))
+            {
+                _selectedCn = null;
+            }
+            if (_selectedCn is null && all.Count > 0)
+            {
+                _selectedCn = all[0].Cn;
+            }
+
             foreach (var connection in all)
             {
-                var connected = _isConnected(connection.Cn);
-                var selected = _selected is not null && string.Equals(_selected.Cn, connection.Cn, StringComparison.OrdinalIgnoreCase);
-                _connectionList.Controls.Add(BuildConnectionRow(connection, connected, selected));
-            }
-            _connectionList.ResumeLayout();
+                var state = _getState(connection.Cn);
+                var busy = _isBusy(connection.Cn);
+                var selected = string.Equals(_selectedCn, connection.Cn, StringComparison.OrdinalIgnoreCase);
 
-            if (_selected is null && all.Count > 0) _selected = all[0];
+                if (_rows.TryGetValue(connection.Cn, out var row))
+                {
+                    UpdateConnectionRow(row, connection, state, busy, selected);
+                }
+                else
+                {
+                    row = BuildConnectionRow(connection, state, busy, selected);
+                    _rows[connection.Cn] = row;
+                    _connectionList.Controls.Add(row.Panel);
+                }
+            }
+
             _emptyState.Visible = all.Count == 0;
             _selectedView.Visible = all.Count > 0;
-            if (all.Count == 0) _emptyState.BringToFront();
+            if (all.Count == 0)
+            {
+                _emptyState.BringToFront();
+            }
             else
             {
                 _selectedView.BringToFront();
@@ -214,7 +264,7 @@ internal sealed class ConnectionManagerForm : Form
         _connectButton = CreateButton("Conectar", Accent, Color.White, 145, 40);
         _connectButton.Click += (_, _) => ToggleSelectedConnection();
         var statusButton = CreateButton("Ver detalles", Color.White, Ink, 130, 40, Color.FromArgb(213, 219, 221));
-        statusButton.Click += (_, _) => { if (_selected is not null) _showStatus(_selected.Cn); };
+        statusButton.Click += (_, _) => { if (_selectedCn is not null) _showStatus(_selectedCn); };
         var removeButton = CreateButton("Quitar", Color.White, Color.FromArgb(174, 56, 56), 100, 40, Color.FromArgb(231, 203, 203));
         removeButton.Click += (_, _) => RemoveSelectedConnection();
         actions.Controls.AddRange(new Control[] { _connectButton, statusButton, removeButton });
@@ -242,64 +292,101 @@ internal sealed class ConnectionManagerForm : Form
         return view;
     }
 
-    private Panel BuildConnectionRow(ConnectionRecord connection, bool connected, bool selected)
+    private ConnectionRow BuildConnectionRow(ConnectionRecord connection, ConnectionRuntimeState state, bool busy, bool selected)
     {
         var row = new Panel
         {
             Width = 248,
             Height = 72,
             Margin = new Padding(0, 0, 0, 8),
-            BackColor = selected ? Color.FromArgb(54, 70, 76) : Color.FromArgb(42, 57, 63),
             Cursor = Cursors.Hand,
         };
-        var name = new Label { Text = connection.Cn, AutoEllipsis = true, Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold), ForeColor = Color.White, Location = new Point(12, 7), Size = new Size(215, 21), Cursor = Cursors.Hand };
-        var server = new Label { Text = connection.Server, AutoEllipsis = true, Font = new Font("Segoe UI", 8f), ForeColor = Color.FromArgb(188, 200, 203), Location = new Point(12, 29), Size = new Size(215, 17), Cursor = Cursors.Hand };
-        var status = new Label { Text = connected ? "● Conectado" : "● Desconectado", AutoSize = true, Font = new Font("Segoe UI", 7.5f, FontStyle.Bold), ForeColor = connected ? Color.FromArgb(110, 220, 170) : Color.FromArgb(180, 193, 196), Location = new Point(12, 50), Cursor = Cursors.Hand };
-        void Select(object? _, EventArgs __) => SelectConnection(connection);
+        var name = new Label { AutoEllipsis = true, Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold), Location = new Point(12, 7), Size = new Size(215, 21), Cursor = Cursors.Hand };
+        var server = new Label { AutoEllipsis = true, Font = new Font("Segoe UI", 8f), ForeColor = Color.FromArgb(188, 200, 203), Location = new Point(12, 29), Size = new Size(215, 17), Cursor = Cursors.Hand };
+        var status = new Label { AutoSize = true, Font = new Font("Segoe UI", 7.5f, FontStyle.Bold), Location = new Point(12, 50), Cursor = Cursors.Hand };
+        void Select(object? _, EventArgs __) => SelectConnection(connection.Cn);
         row.Click += Select;
         name.Click += Select;
         server.Click += Select;
         status.Click += Select;
         row.Controls.AddRange(new Control[] { name, server, status });
-        return row;
+
+        var result = new ConnectionRow { Panel = row, Name = name, Server = server, Status = status };
+        UpdateConnectionRow(result, connection, state, busy, selected);
+        return result;
     }
 
-    private void SelectConnection(ConnectionRecord connection)
+    private static void UpdateConnectionRow(ConnectionRow row, ConnectionRecord connection, ConnectionRuntimeState state, bool busy, bool selected)
     {
-        _selected = connection;
+        row.Panel.BackColor = selected ? Color.FromArgb(54, 70, 76) : Color.FromArgb(42, 57, 63);
+        row.Name.Text = connection.Cn;
+        row.Name.ForeColor = Color.White;
+        row.Server.Text = connection.Server;
+        if (busy)
+        {
+            row.Status.Text = "◐ Trabajando...";
+            row.Status.ForeColor = Color.FromArgb(230, 200, 110);
+        }
+        else
+        {
+            row.Status.Text = state.Connected ? "● Conectado" : "● Desconectado";
+            row.Status.ForeColor = state.Connected ? Color.FromArgb(110, 220, 170) : Color.FromArgb(180, 193, 196);
+        }
+    }
+
+    private void SelectConnection(string cn)
+    {
+        _selectedCn = cn;
         UpdateSelectedDetails();
-        if (!_refreshing) RefreshConnections();
+        RefreshConnections();
     }
 
     private void UpdateSelectedDetails()
     {
-        if (_selected is null) return;
-        var connected = _isConnected(_selected.Cn);
-        _connectionName.Text = _selected.Cn;
-        _serverName.Text = _selected.Server;
-        _serverValue.Text = _selected.Server;
-        _connectionState.Text = connected ? "Conectado" : "Desconectado";
-        _connectionState.ForeColor = connected ? ConnectedColor : Muted;
-        _stateMark.ForeColor = connected ? ConnectedColor : Color.FromArgb(144, 155, 160);
-        _connectButton.Text = connected ? "Desconectar" : "Conectar";
-        _tunnelValue.Text = _selected.TunnelMode.Equals("split", StringComparison.OrdinalIgnoreCase) ? "Túnel dividido" : "Túnel completo";
-        _keyValue.Text = _selected.IsTpmBacked ? "Protegida por TPM" : "Almacenamiento seguro del sistema";
-        _lastIssuedValue.Text = _selected.LastEnrolledAtUtc.ToLocalTime().ToString("dd/MM/yyyy HH:mm");
+        if (_selectedCn is null)
+        {
+            return;
+        }
+        var connection = _loadConnections().FirstOrDefault(c => string.Equals(c.Cn, _selectedCn, StringComparison.OrdinalIgnoreCase));
+        if (connection is null)
+        {
+            return;
+        }
+
+        var state = _getState(connection.Cn);
+        var busy = _isBusy(connection.Cn);
+        _connectionName.Text = connection.Cn;
+        _serverName.Text = connection.Server;
+        _serverValue.Text = connection.Server;
+        _connectionState.Text = busy ? "Trabajando..." : state.Connected ? "Conectado" : "Desconectado";
+        _connectionState.ForeColor = busy ? Color.FromArgb(200, 160, 40) : state.Connected ? ConnectedColor : Muted;
+        _stateMark.ForeColor = busy ? Color.FromArgb(200, 160, 40) : state.Connected ? ConnectedColor : Color.FromArgb(144, 155, 160);
+        _connectButton.Text = busy ? "Trabajando..." : state.Connected ? "Desconectar" : "Conectar";
+        _connectButton.Enabled = !busy;
+        _tunnelValue.Text = connection.TunnelMode.Equals("split", StringComparison.OrdinalIgnoreCase) ? "Túnel dividido" : "Túnel completo";
+        _keyValue.Text = connection.IsTpmBacked ? "Protegida por TPM" : "Almacenamiento seguro del sistema";
+        _lastIssuedValue.Text = connection.LastEnrolledAtUtc.ToLocalTime().ToString("dd/MM/yyyy HH:mm");
     }
 
     private void ToggleSelectedConnection()
     {
-        if (_selected is null) return;
-        _toggleConnection(_selected.Cn, _isConnected(_selected.Cn));
+        if (_selectedCn is null || _isBusy(_selectedCn))
+        {
+            return;
+        }
+        _toggleConnection(_selectedCn, _getState(_selectedCn).Connected);
         RefreshConnections();
     }
 
     private void RemoveSelectedConnection()
     {
-        if (_selected is null) return;
-        var cn = _selected.Cn;
+        if (_selectedCn is null)
+        {
+            return;
+        }
+        var cn = _selectedCn;
         _removeConnection(cn);
-        _selected = null;
+        _selectedCn = null;
         RefreshConnections();
     }
 
