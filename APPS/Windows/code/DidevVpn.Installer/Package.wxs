@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
-     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
 
   <!--
     UpgradeCode FIJO para siempre (nunca lo cambies entre versiones: es lo
@@ -22,6 +23,7 @@
       DowngradeErrorMessage="Ya hay instalada una version mas reciente de didev VPN. Desinstalala primero si quieres bajar de version."
       Schedule="afterInstallExecute" />
     <MediaTemplate EmbedCab="yes" />
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
 
     <!--
       Desde el prompt 12.5 esta app es un cliente GENERICO (como
@@ -52,6 +54,32 @@
       </Directory>
     </StandardDirectory>
 
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="CommonStartMenuMicrosoft" Name="Microsoft">
+        <Directory Id="CommonStartMenuWindows" Name="Windows">
+          <Directory Id="CommonStartMenuRoot" Name="Start Menu">
+            <Directory Id="CommonProgramsFolder" Name="Programs">
+              <Directory Id="ApplicationProgramsFolder" Name="didev VPN">
+        <Component Id="StartMenuShortcutComponent" Guid="9E4A3EA1-2C27-4BD0-91C9-4D5E6F708192">
+          <Shortcut Id="StartMenuShortcut"
+                    Name="didev VPN"
+                    Target="[INSTALLFOLDER]didev-vpn.exe"
+                    WorkingDirectory="INSTALLFOLDER" />
+          <RemoveFolder Id="RemoveStartMenuFolder" On="uninstall" />
+          <RegistryValue Root="HKLM"
+                         Key="Software\didev\didev-vpn"
+                         Name="StartMenuShortcut"
+                         Type="integer"
+                         Value="1"
+                         KeyPath="yes" />
+        </Component>
+              </Directory>
+            </Directory>
+          </Directory>
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
     <!-- Publicacion self-contained (sin single-file: es mas simple para un MSI) de DidevVpn.App, harvesteada entera. -->
     <ComponentGroup Id="AppFilesGroup" Directory="INSTALLFOLDER">
       <Files Include="$(AppPublishDir)**" />
@@ -60,6 +88,7 @@
     <Feature Id="MainFeature" Title="didev VPN" Level="1">
       <ComponentRef Id="ScriptsComponent" />
       <ComponentRef Id="AutostartComponent" />
+      <ComponentRef Id="StartMenuShortcutComponent" />
       <ComponentGroupRef Id="AppFilesGroup" />
     </Feature>
 

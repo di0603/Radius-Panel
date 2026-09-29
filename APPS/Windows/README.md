@@ -5,13 +5,26 @@ IKEv2/EAP-TLS de Windows (RAS/VpnClient). No implementa IPsec ni modifica
 `libcharon`. Mantiene los avisos de copyright y la licencia GPLv2 de los
 componentes derivados de strongSwan.
 
+Al abrir `didev-vpn.exe` aparece la ventana de conexiones. Al cerrarla, la
+app queda en el area de notificacion; abrir el MSI solo instala la app y no
+abre su ventana. Tras instalar, inicia didev VPN desde el acceso directo del
+menu Inicio.
+
 La aplicacion no contiene ninguna clave, certificado ni servidor de didev.
 Puede guardar varias conexiones en `%LOCALAPPDATA%\didev-vpn`; cada una
 conserva su certificado, estado y ancla de confianza.
 
 ## Primera conexion y confianza TOFU
 
-1. En la bandeja, elige **Importar perfil** y selecciona un fichero `.didevvpn`.
+Para obtener el fichero, en el panel abre **VPN > Dispositivos**, crea o
+selecciona el dispositivo y pulsa **Generar token de alta**. Descarga el
+perfil `.didevvpn` desde esa ficha cuando aparezca. El perfil lleva un token
+de un solo uso y caduca junto al token; guardalo solo hasta importarlo. Si el
+panel no ofrece el fichero, necesita tener configurada
+`VPN_PROFILE_SIGNING_KEY` y la version de aprovisionamiento actualizada.
+
+1. Abre didev VPN, pulsa **Añadir conexión** y selecciona el fichero
+   `.didevvpn` descargado.
 2. La app comprueba que el sobre `full` sea conocido, no este caducado, que
    `signerPublicKey` verifique la firma y que `signerKeySha256` corresponda
    exactamente a su SPKI DER. Tambien valida la cadena y `rootCaSha256`.

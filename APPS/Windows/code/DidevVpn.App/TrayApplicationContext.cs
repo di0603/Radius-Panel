@@ -7,12 +7,8 @@ using DidevVpn.Core.Versioning;
 namespace DidevVpn.App;
 
 /// <summary>
-/// Icono de bandeja: lista de conexiones (nombre visible, servidor, estado),
-/// una por servidor -esta app es un cliente GENERICO desde el prompt 12.5,
-/// puede tener varias a la vez-, cada una como su propio submenu con
-/// conectar/desconectar/ver estado/renovar/quitar. Sin ventana principal -
-/// toda la interaccion es por el menu contextual y dialogos puntuales
-/// (importar perfil, confirmar servidor nuevo, otras confirmaciones)-.
+/// Ventana principal para gestionar conexiones VPN, con icono de bandeja
+/// disponible al ocultar la ventana. Puede mantener varias conexiones a la vez.
 /// </summary>
 internal sealed class TrayApplicationContext : ApplicationContext
 {
@@ -26,6 +22,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly IUserConfirmations _confirmations = new MessageBoxUserConfirmations();
     private readonly System.Windows.Forms.Timer _refreshTimer;
     private readonly System.Windows.Forms.Timer _renewalTimer;
+    private readonly ConnectionManagerForm _managerForm;
 
     private string? _lastErrorMessage;
 
@@ -42,10 +39,18 @@ internal sealed class TrayApplicationContext : ApplicationContext
             Text = AppPaths.DisplayName,
             ContextMenuStrip = new ContextMenuStrip(),
         };
-        _notifyIcon.DoubleClick += (_, _) => ShowOverallStatus();
+        _managerForm = new ConnectionManagerForm(
+            ConnectionStore.List,
+            cn => _vpnService.ConnectionExists(cn) && _vpnService.IsConnected(cn),
+            ImportProfile,
+            ToggleConnection,
+            ShowConnectionStatus,
+            RemoveConnection);
+        _notifyIcon.DoubleClick += (_, _) => ShowManager();
 
         BuildMenu();
         RefreshStatus();
+        _managerForm.Show();
 
         // "al arrancar y cada 12h mientras este abierta" (variante portable e
         // instalada por igual: no hace dano comprobarlo tambien aqui aunque
@@ -437,8 +442,17 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private void ExitApplication()
     {
         _notifyIcon.Visible = false;
+        _managerForm.Dispose();
         _refreshTimer.Stop();
         _renewalTimer.Stop();
         Application.Exit();
+    }
+
+    private void ShowManager()
+    {
+        _managerForm.RefreshConnections();
+        _managerForm.Show();
+        _managerForm.WindowState = FormWindowState.Normal;
+        _managerForm.Activate();
     }
 }

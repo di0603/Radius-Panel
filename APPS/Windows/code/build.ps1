@@ -163,10 +163,11 @@ Compress-Archive -Path $portableExe -DestinationPath $portableZip -CompressionLe
 
 # ------------------------------------------------------------------------
 Write-Step "5/7 - Intentando compilar el instalador (WiX)"
+$builtMsi = Join-Path $root 'DidevVpn.Installer\bin\x64\Release\didev-vpn-setup.msi'
+Remove-Item -Path $builtMsi -ErrorAction SilentlyContinue
 dotnet build (Join-Path $root 'DidevVpn.Installer\DidevVpn.Installer.wixproj') `
     -c Release -p:Platform=x64 -p:ProductVersion=$Version `
     "-p:AppPublishDir=$publishNormalDir\"
-$builtMsi = Join-Path $root 'DidevVpn.Installer\bin\x64\Release\didev-vpn-setup.msi'
 $finalMsi = Join-Path $outputDir "didev-vpn-setup-$Version.msi"
 if ($LASTEXITCODE -eq 0 -and (Test-Path $builtMsi)) {
     Copy-Item -Path $builtMsi -Destination $finalMsi -Force
