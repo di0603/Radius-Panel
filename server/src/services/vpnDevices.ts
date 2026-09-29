@@ -4,9 +4,12 @@ import { randomToken, sha256 } from '../lib/crypto.js';
 import { formatUtcDateTime } from '../lib/dates.js';
 import { conflict, notFound } from '../lib/http.js';
 import { intToIpv4, ipv4ToInt } from '../lib/ipv4.js';
+import { logger } from '../lib/logger.js';
+import type { SignedProfileEnvelope } from '../lib/vpnProfileSigning.js';
 import { disconnectUserSessions } from './coa.js';
 import { regenerateCrl } from './pki.js';
 import { setUserEnabled, usernameExists } from './radiusUsers.js';
+import { buildProvisioningQrDataUrl, buildSignedProvisioningProfile } from './vpnProvisioning.js';
 import { getVpnSettings } from './vpnSettings.js';
 
 /**
@@ -285,6 +288,12 @@ export interface EnrollToken {
   id: number;
   token: string;
   expiresAt: string;
+  /** `null` si VPN_PROFILE_SIGNING_KEY no esta configurada (el token sigue valiendo para EST manual). */
+  profile: SignedProfileEnvelope | null;
+  /** Mismo contenido que `profile`, como imagen para escanear (alta en Android). `null` si no cabe en un QR o si no hay perfil. */
+  profileQrDataUrl: string | null;
+  /** Nombre sugerido para el fichero .didevvpn descargable (Windows). `null` si no hay perfil. */
+  profileFilename: string | null;
 }
 
 /**
@@ -293,18 +302,26 @@ export interface EnrollToken {
  * devuelve una unica vez, aqui. Generar uno nuevo borra cualquier otro
  * pendiente del mismo dispositivo (no hay estado "revocado": o esta
  * pendiente de usar, o no existe).
+ *
+ * Junto al token se construye (si `VPN_PROFILE_SIGNING_KEY` esta configurada)
+ * el perfil de aprovisionamiento firmado (.didevvpn) que lo lleva embebido:
+ * si eso falla (p.ej. la CA todavia no esta configurada), no se aborta el
+ * alta -el token ya generado sigue siendo valido para EST manual-, solo se
+ * devuelve sin perfil.
  */
 export async function generateEnrollToken(
   username: string,
   createdBy: number | null,
 ): Promise<EnrollToken> {
-  await requireDeviceRow(username);
+  const device = await requireDeviceRow(username);
 
   const token = randomToken();
   const tokenSha256 = sha256(token);
-  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  const issuedAt = new Date();
+  const expiresAt = new Date(issuedAt.getTime() + 24 * 60 * 60 * 1000);
 
   const conn = await panelPool.getConnection();
+  let insertId: number;
   try {
     await conn.beginTransaction();
     await conn.query(
@@ -319,13 +336,37 @@ export async function generateEnrollToken(
       { u: username, tokenSha256, expiresAt: formatUtcDateTime(expiresAt), createdBy },
     );
     await conn.commit();
-    return { id: result.insertId, token, expiresAt: expiresAt.toISOString() };
+    insertId = result.insertId;
   } catch (err) {
     await conn.rollback();
     throw err;
   } finally {
     conn.release();
   }
+
+  let profile: SignedProfileEnvelope | null = null;
+  let profileQrDataUrl: string | null = null;
+  let profileFilename: string | null = null;
+  try {
+    const signed = await buildSignedProvisioningProfile({
+      device: { username, tunnelMode: device.tunnel_mode },
+      token,
+      issuedAt,
+      expiresAt,
+    });
+    if (signed) {
+      profile = signed.envelope;
+      profileFilename = signed.filename;
+      profileQrDataUrl = await buildProvisioningQrDataUrl(signed.envelope);
+    }
+  } catch (err) {
+    logger.warn(
+      { err, username },
+      '[vpn] no se pudo construir el perfil de aprovisionamiento (el token sigue siendo valido para EST manual)',
+    );
+  }
+
+  return { id: insertId, token, expiresAt: expiresAt.toISOString(), profile, profileQrDataUrl, profileFilename };
 }
 
 /**

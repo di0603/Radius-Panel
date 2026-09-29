@@ -207,6 +207,15 @@ export async function vpnFirewallSchemaExists(): Promise<boolean> {
   return tables.length > 0;
 }
 
+/** Comprueba si esta aplicada sql/panel-schema-vpn-provisioning.sql (version minima de app). */
+export async function vpnProvisioningSchemaExists(): Promise<boolean> {
+  const [columns] = await panelPool.query<RowDataPacket[]>(
+    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'panel_vpn_settings' AND COLUMN_NAME = 'min_app_version'`,
+  );
+  return columns.length > 0;
+}
+
 const VPN_RADIUS_TABLES = ['vpn_certificates'];
 const VPN_PANEL_TABLES = [
   'panel_vpn_devices',

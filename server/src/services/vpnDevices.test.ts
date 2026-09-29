@@ -1,14 +1,29 @@
 import assert from 'node:assert/strict';
+import { generateKeyPairSync, verify } from 'node:crypto';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test, { mock } from 'node:test';
 import * as pools from '../db/pools.js';
+import { config } from '../config.js';
 import { intToIpv4, ipv4ToInt } from '../lib/ipv4.js';
 import {
+  NAME_PART_RE,
   buildDeviceUsername,
   createDevice,
   firstFreeIp,
+  generateEnrollToken,
   getDeviceDetail,
   setDeviceEnabled,
 } from './vpnDevices.js';
+
+function writeTempSigningKey() {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const dir = mkdtempSync(join(tmpdir(), 'radius-panel-profile-key-'));
+  const keyPath = join(dir, 'key.pem');
+  writeFileSync(keyPath, privateKey.export({ type: 'pkcs8', format: 'pem' }) as string);
+  return { keyPath, publicKey };
+}
 
 /* ------------------------------- firstFreeIp ------------------------------ */
 
@@ -246,6 +261,79 @@ test('buildDeviceUsername: vpn-<owner_user>-<device_label>', () => {
   assert.equal(buildDeviceUsername('juan', 'laptop'), 'vpn-juan-laptop');
 });
 
+test('NAME_PART_RE: exige 2-32 caracteres, solo minusculas/numeros/guiones', () => {
+  assert.match('ab', NAME_PART_RE);
+  assert.match('a'.repeat(32), NAME_PART_RE); // limite exacto: cabe
+  assert.match('juan-perez-2', NAME_PART_RE);
+  assert.doesNotMatch('a', NAME_PART_RE); // demasiado corto
+  assert.doesNotMatch('a'.repeat(33), NAME_PART_RE); // demasiado largo
+  assert.doesNotMatch('Juan', NAME_PART_RE); // mayusculas
+  assert.doesNotMatch('juan_perez', NAME_PART_RE); // guion bajo
+});
+
+test('createDevice: el mismo device_label para dos owner_user distintos crea dos dispositivos independientes (mismo equipo, un usuario cada uno)', async () => {
+  // La unicidad la exige usernameExists() sobre el username COMPLETO
+  // (vpn-<owner>-<label>), no sobre device_label por si solo: dos filas para
+  // "el mismo equipo" con dueños distintos deben convivir sin chocar.
+  const usedIps: string[] = [];
+  const insertedRows: Array<{ id: number; username: string; owner_user: string; framed_ip: string }> = [];
+
+  mock.method(pools.radiusPool, 'query', ((sql: string) => {
+    if (sql.includes('UNION SELECT 1 FROM radreply')) return [[], []]; // usernameExists: siempre libre
+    if (sql.startsWith('DELETE FROM')) return [{}, []];
+    throw new Error(`radiusPool.query no esperado: ${sql}`);
+  }) as never);
+  mock.method(pools.radiusPool, 'getConnection', (async () => makeFakeConn(connDispatcher(usedIps))) as never);
+  mock.method(pools.panelPool, 'query', ((sql: string, params?: unknown) => {
+    if (sql.includes('FROM panel_vpn_settings')) {
+      const err = new Error('sin tabla') as Error & { code: string };
+      err.code = 'ER_NO_SUCH_TABLE';
+      throw err;
+    }
+    if (sql.includes('INSERT INTO panel_vpn_devices')) {
+      const p = params as { username: string; ownerUser: string; framedIp: string };
+      const row = { id: insertedRows.length + 1, username: p.username, owner_user: p.ownerUser, framed_ip: p.framedIp };
+      insertedRows.push(row);
+      return [{ insertId: row.id }, []];
+    }
+    if (sql.startsWith('SELECT * FROM panel_vpn_devices')) {
+      const p = params as { id: number };
+      const row = insertedRows.find((r) => r.id === p.id)!;
+      return [
+        [
+          {
+            ...row,
+            device_label: 'router-salon',
+            owner_name: null,
+            platform: 'linux',
+            tunnel_mode: 'split',
+            notes: null,
+            cert_days: null,
+            renew_after_days: null,
+            enabled: 1,
+            created_at: '2026-01-01 00:00:00',
+            updated_at: '2026-01-01 00:00:00',
+          },
+        ],
+        [],
+      ];
+    }
+    throw new Error(`panelPool.query no esperado en el test: ${sql}`);
+  }) as never);
+
+  try {
+    const first = await createDevice({ ...BASE_INPUT, ownerUser: 'juan', deviceLabel: 'router-salon' });
+    usedIps.push(first.framedIp!);
+    const second = await createDevice({ ...BASE_INPUT, ownerUser: 'maria', deviceLabel: 'router-salon' });
+
+    assert.equal(first.username, 'vpn-juan-router-salon');
+    assert.equal(second.username, 'vpn-maria-router-salon');
+    assert.notEqual(first.framedIp, second.framedIp); // IPs distintas, cada fila con la suya
+  } finally {
+    mock.restoreAll();
+  }
+});
+
 test('createDevice: rechaza un nombre ya usado en RADIUS sin llegar a abrir conexion', async () => {
   const getConnection = mock.method(pools.radiusPool, 'getConnection', (async () => {
     throw new Error('no deberia abrir conexion si el username ya existe');
@@ -372,5 +460,133 @@ test('getDeviceDetail: el renewAfterDays del dispositivo sobrescribe el general'
     assert.equal(detail.nextRenewalExpectedAt, expected.toISOString());
   } finally {
     mock.restoreAll();
+  }
+});
+
+/* ---------------------------- generateEnrollToken --------------------------- */
+
+test('generateEnrollToken: sin VPN_PROFILE_SIGNING_KEY, devuelve el token sin perfil ni QR (no bloquea el alta manual por EST)', async () => {
+  const prevKey = config.vpnProfileSigning.keyPath;
+  config.vpnProfileSigning.keyPath = undefined;
+
+  const conn = makeFakeConn((sql) => {
+    if (sql.includes('INSERT INTO panel_vpn_enroll_tokens')) return [{ insertId: 7 }, []];
+    return [{}, []];
+  });
+  mock.method(pools.panelPool, 'getConnection', (async () => conn) as never);
+  mock.method(pools.panelPool, 'query', ((sql: string) => {
+    if (sql.startsWith('SELECT * FROM panel_vpn_devices WHERE username')) {
+      return [[{ username: 'vpn-juan-laptop-test', tunnel_mode: 'full' }], []];
+    }
+    throw new Error(`panelPool.query no esperado: ${sql}`);
+  }) as never);
+
+  try {
+    const result = await generateEnrollToken('vpn-juan-laptop-test', 1);
+    assert.equal(result.id, 7);
+    assert.ok(result.token.length > 0);
+    assert.equal(result.profile, null);
+    assert.equal(result.profileQrDataUrl, null);
+    assert.equal(result.profileFilename, null);
+  } finally {
+    mock.restoreAll();
+    config.vpnProfileSigning.keyPath = prevKey;
+  }
+});
+
+test('generateEnrollToken: con VPN_PROFILE_SIGNING_KEY configurada, incluye un perfil firmado (con el token embebido) y un QR', async () => {
+  const { keyPath, publicKey } = writeTempSigningKey();
+  const prevKey = config.vpnProfileSigning.keyPath;
+  config.vpnProfileSigning.keyPath = keyPath;
+
+  const conn = makeFakeConn((sql) => {
+    if (sql.includes('INSERT INTO panel_vpn_enroll_tokens')) return [{ insertId: 9 }, []];
+    return [{}, []];
+  });
+  mock.method(pools.panelPool, 'getConnection', (async () => conn) as never);
+  mock.method(pools.panelPool, 'query', ((sql: string) => {
+    if (sql.startsWith('SELECT * FROM panel_vpn_devices WHERE username')) {
+      return [[{ username: 'vpn-juan-laptop-test', tunnel_mode: 'split' }], []];
+    }
+    if (sql.includes('FROM panel_vpn_settings')) {
+      return [
+        [
+          {
+            vpn_fqdn: 'vpn.example.com',
+            aaa_id: 'CN=radius.example.com',
+            pool_start: '192.168.10.75',
+            pool_end: '192.168.10.99',
+            lan_cidr: '192.168.10.0/24',
+            dns: '',
+            device_cert_days: 30,
+            renew_after_days: 20,
+            overlap_hours: 48,
+            android_cert_days: 365,
+            est_url: 'https://est.example.com:8443',
+            min_app_version: '1.0.0',
+          },
+        ],
+        [],
+      ];
+    }
+    if (sql.includes('FROM panel_pki_ca WHERE status IN')) {
+      return [
+        [{ cert_pem: '-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----', root_cert_pem: null }],
+        [],
+      ];
+    }
+    throw new Error(`panelPool.query no esperado: ${sql}`);
+  }) as never);
+
+  try {
+    const result = await generateEnrollToken('vpn-juan-laptop-test', 1);
+    assert.ok(result.profile);
+    assert.equal(result.profileFilename, 'vpn-juan-laptop-test.didevvpn');
+
+    const payloadBytes = Buffer.from(result.profile!.payload, 'base64url');
+    const signatureBytes = Buffer.from(result.profile!.signature, 'base64url');
+    assert.equal(verify(null, payloadBytes, publicKey, signatureBytes), true);
+
+    const decoded = JSON.parse(payloadBytes.toString('utf8'));
+    assert.equal(decoded.enrollToken, result.token); // el perfil lleva embebido justo el token recien generado
+    assert.equal(decoded.tunnelMode, 'split');
+    assert.match(result.profileQrDataUrl!, /^data:image\/png;base64,/);
+  } finally {
+    mock.restoreAll();
+    config.vpnProfileSigning.keyPath = prevKey;
+  }
+});
+
+test('generateEnrollToken: si falla construir el perfil (p.ej. sin CA configurada), el token generado sigue siendo valido', async () => {
+  const { keyPath } = writeTempSigningKey();
+  const prevKey = config.vpnProfileSigning.keyPath;
+  config.vpnProfileSigning.keyPath = keyPath;
+
+  const conn = makeFakeConn((sql) => {
+    if (sql.includes('INSERT INTO panel_vpn_enroll_tokens')) return [{ insertId: 11 }, []];
+    return [{}, []];
+  });
+  mock.method(pools.panelPool, 'getConnection', (async () => conn) as never);
+  mock.method(pools.panelPool, 'query', ((sql: string) => {
+    if (sql.startsWith('SELECT * FROM panel_vpn_devices WHERE username')) {
+      return [[{ username: 'vpn-juan-laptop-test', tunnel_mode: 'full' }], []];
+    }
+    if (sql.includes('FROM panel_vpn_settings')) {
+      const err = new Error('sin tabla') as Error & { code: string };
+      err.code = 'ER_NO_SUCH_TABLE';
+      throw err;
+    }
+    if (sql.includes('FROM panel_pki_ca WHERE status IN')) return [[], []];
+    throw new Error(`panelPool.query no esperado: ${sql}`);
+  }) as never);
+
+  try {
+    const result = await generateEnrollToken('vpn-juan-laptop-test', 1);
+    assert.equal(result.id, 11);
+    assert.ok(result.token.length > 0); // el token sigue siendo valido...
+    assert.equal(result.profile, null); // ...aunque no se haya podido construir el perfil
+  } finally {
+    mock.restoreAll();
+    config.vpnProfileSigning.keyPath = prevKey;
   }
 });

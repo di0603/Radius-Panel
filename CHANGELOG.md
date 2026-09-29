@@ -7,6 +7,51 @@ Este proyecto usa versionado semantico.
 
 ### Anadido
 
+- **Aprovisionamiento de apps (prompt 11)**: perfil de conexion firmado
+  (`.didevvpn`) para configurar las futuras apps propias de Windows/Android
+  con un solo paso, en vez de tener que introducir cada parametro a mano.
+  - Al generar el token de alta de un dispositivo (ficha del dispositivo →
+    "Generar token de alta"), si `VPN_PROFILE_SIGNING_KEY` esta configurada,
+    el panel construye ademas un perfil JSON (servidor, identidad AAA,
+    cadena de CA, propuestas IKE/ESP, modo de tunel y sus rutas de split
+    tunnel, DNS, URL de EST, y el propio token de alta) y lo firma con
+    Ed25519. Se entrega una unica vez, con la misma caducidad de 24h que el
+    token: como fichero `.didevvpn` descargable (Windows) y como codigo QR
+    (Android). Sin esa variable configurada, "Generar token de alta" sigue
+    funcionando exactamente igual que antes (solo el token, sin perfil).
+  - La clave privada **no la genera el codigo**: es un paso manual de
+    `openssl genpkey -algorithm ED25519` en la `.28`, fuera del arbol de git,
+    referenciada solo por ruta (`VPN_PROFILE_SIGNING_KEY`, PEM, permisos
+    600) — igual que `EST_TLS_KEY`. La clave publica correspondiente se
+    incrusta en las apps para que ninguna acepte un perfil que no venga de
+    este panel. Documentado en el README ("Aprovisionamiento de apps"), con
+    los comandos exactos.
+  - Formato de firma: un sobre `{ payload, signature, keyId }` donde
+    `payload` es el base64url de los bytes UTF-8 **exactos** del JSON (nunca
+    se re-serializa para verificar, asi que verificar no depende de
+    reproducir bit a bit el mismo formateo en otro lenguaje/libreria) y
+    `signature` es la firma Ed25519 de node:crypto sobre esos mismos bytes.
+  - `GET /.well-known/est/status` publica ahora tambien `minAppVersion`
+    (`panel_vpn_settings.min_app_version`, migracion nueva
+    `sql/panel-schema-vpn-provisioning.sql`, por defecto `0.0.0`), para que
+    las apps puedan bloquear el alta y la renovacion si van por debajo de la
+    version minima soportada.
+  - El QR se genera con la libreria `qrcode` que ya usaba el 2FA; si el
+    contenido no cupiera en un QR legible (la cadena de CA puede ser larga),
+    se omite sin fallar -el fichero `.didevvpn` sigue siempre disponible-.
+  - Verificado: el modelo de datos ya soportaba varios dispositivos para el
+    mismo equipo, uno por usuario (`vpn-<owner_user>-<device_label>`,
+    correccion 4.5) y el limite de 32 caracteres/unicidad de cada parte ya
+    se validaban; se anadieron los tests que faltaban para dejarlo
+    demostrado (`NAME_PART_RE`, dos dispositivos con el mismo
+    `device_label` y distinto `owner_user`).
+  - Tests: firma y verificacion Ed25519 (incluida una firma manipulada byte
+    a byte, y una firma cruzada con la clave publica de otra clave),
+    contenido exacto del payload por modo de tunel, que el unico campo
+    secreto del perfil es `enrollToken` (todo lo demas ya es publico por su
+    cuenta), y el flujo completo de `generateEnrollToken` con y sin la clave
+    de firma configurada.
+
 - **Modulo VPN IKEv2/EAP-TLS (en curso)**: primer paso, esquema de base de datos.
   `vpn_certificates` en la base `radius` (serial, huella de clave publica,
   vigencia, estado activo/renovado/revocado) y, en la base del panel,

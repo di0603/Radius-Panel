@@ -376,3 +376,15 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
   `charset` de mas. Validado con `nft -c -f` real (WSL) sobre un fichero de
   ejemplo con dos dispositivos, revisado antes de fusionar. Detalle completo
   en el CHANGELOG.
+- [x] **Prompt 11 (aprovisionamiento de apps)**: perfil `.didevvpn` firmado
+  con Ed25519, generado junto al token de alta y entregado como fichero
+  descargable + QR (24h, un solo uso, igual que el token). Clave de firma
+  leida de `VPN_PROFILE_SIGNING_KEY` (no se genera en este prompt; queda
+  para el despliegue del hito 4). `GET /.well-known/est/status` publica
+  ahora `minAppVersion` (`panel_vpn_settings.min_app_version`, migracion
+  `panel-schema-vpn-provisioning.sql`). Verificado (con tests nuevos) que el
+  modelo ya soportaba varios dispositivos por equipo, uno por usuario, y que
+  el limite de 32 caracteres/unicidad ya se validaban. Sin implementar
+  todavia: las apps que consumen este perfil (prompt 12, en pausa, ver
+  `APPS/Windows/NOTAS-prompt-12-en-pausa.md`). Detalle completo en el
+  CHANGELOG.

@@ -163,6 +163,7 @@ function defaultSettingsRow(): Record<string, unknown> {
     overlap_hours: 48,
     android_cert_days: 365,
     est_url: 'https://est.example.com:8443',
+    min_app_version: '1.4.0',
   };
 }
 
@@ -781,6 +782,7 @@ test('getStatus: informa de la caducidad y si toca renovar', async () => {
     const status = await getStatus(c.cert.rawData);
     assert.equal(status.username, db.device!.username);
     assert.equal(status.renewDue, true); // renew_after_days=20 y ya han pasado 25
+    assert.equal(status.minAppVersion, '1.4.0'); // para que la app bloquee alta/renovacion si va por debajo
   } finally {
     mock.restoreAll();
   }

@@ -545,6 +545,8 @@ export interface EstStatus {
   username: string;
   notAfter: string;
   renewDue: boolean;
+  /** Version minima de app soportada (didev-vpn-windows/android): la app debe bloquear alta/renovacion si va por debajo. */
+  minAppVersion: string;
 }
 
 /** GET /.well-known/est/status (opcional, con certificado de cliente): misma validacion que simplereenroll (ver `verifyPresentedCertificate`). */
@@ -557,5 +559,10 @@ export async function getStatus(clientCertDer: Buffer | ArrayBuffer): Promise<Es
   const notBefore = new Date(`${String(row.not_before).replace(' ', 'T')}Z`);
   const renewDue = Date.now() >= notBefore.getTime() + renewAfterDays * 24 * 60 * 60 * 1000;
 
-  return { username: row.username, notAfter: row.not_after, renewDue };
+  return {
+    username: row.username,
+    notAfter: row.not_after,
+    renewDue,
+    minAppVersion: settings.minAppVersion,
+  };
 }
