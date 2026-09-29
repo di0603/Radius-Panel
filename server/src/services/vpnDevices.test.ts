@@ -7,6 +7,7 @@ import test, { mock } from 'node:test';
 import * as pools from '../db/pools.js';
 import { config } from '../config.js';
 import { intToIpv4, ipv4ToInt } from '../lib/ipv4.js';
+import { EC_P384_SIGNING_ALGORITHM, generateEcKeyPair, x509 } from '../lib/x509.js';
 import {
   NAME_PART_RE,
   buildDeviceUsername,
@@ -16,6 +17,27 @@ import {
   getDeviceDetail,
   setDeviceEnabled,
 } from './vpnDevices.js';
+
+/**
+ * `generateEnrollToken` (cuando VPN_PROFILE_SIGNING_KEY esta configurada)
+ * llama a `getRootCaCert()`, que parsea `root_cert_pem` como un
+ * `x509.X509Certificate` de verdad: hace falta un PEM real, no un blob
+ * base64 cualquiera. Un unico self-signed basta aqui -esto solo prueba la
+ * orquestacion de generateEnrollToken, no la cadena en si (eso ya lo cubre
+ * vpnProvisioning.test.ts con una raiz+intermedia reales)-.
+ */
+async function makeSelfSignedCertPem(): Promise<string> {
+  const keys = await generateEcKeyPair('P-384');
+  const cert = await x509.X509CertificateGenerator.createSelfSigned({
+    name: 'CN=didev Root CA (test)',
+    keys,
+    notBefore: new Date(Date.now() - 86_400_000),
+    notAfter: new Date(Date.now() + 365 * 86_400_000),
+    signingAlgorithm: EC_P384_SIGNING_ALGORITHM,
+    extensions: [new x509.BasicConstraintsExtension(true, undefined, true)],
+  });
+  return cert.toString();
+}
 
 function writeTempSigningKey() {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
@@ -498,6 +520,7 @@ test('generateEnrollToken: con VPN_PROFILE_SIGNING_KEY configurada, incluye un p
   const { keyPath, publicKey } = writeTempSigningKey();
   const prevKey = config.vpnProfileSigning.keyPath;
   config.vpnProfileSigning.keyPath = keyPath;
+  const certPem = await makeSelfSignedCertPem();
 
   const conn = makeFakeConn((sql) => {
     if (sql.includes('INSERT INTO panel_vpn_enroll_tokens')) return [{ insertId: 9 }, []];
@@ -530,10 +553,11 @@ test('generateEnrollToken: con VPN_PROFILE_SIGNING_KEY configurada, incluye un p
       ];
     }
     if (sql.includes('FROM panel_pki_ca WHERE status IN')) {
-      return [
-        [{ cert_pem: '-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----', root_cert_pem: null }],
-        [],
-      ];
+      // Sirve tanto a getCaChainPem() como a getRootCaCert(): un unico
+      // self-signed basta aqui (no es una cadena real raiz+intermedia, eso
+      // ya lo prueba vpnProvisioning.test.ts), pero tiene que ser un PEM de
+      // verdad porque getRootCaCert() lo parsea con `new X509Certificate(...)`.
+      return [[{ cert_pem: certPem, root_cert_pem: certPem }], []];
     }
     throw new Error(`panelPool.query no esperado: ${sql}`);
   }) as never);
@@ -550,6 +574,9 @@ test('generateEnrollToken: con VPN_PROFILE_SIGNING_KEY configurada, incluye un p
     const decoded = JSON.parse(payloadBytes.toString('utf8'));
     assert.equal(decoded.enrollToken, result.token); // el perfil lleva embebido justo el token recien generado
     assert.equal(decoded.tunnelMode, 'split');
+    assert.equal(decoded.variant, 'full'); // el fichero .didevvpn es la variante completa (con la cadena de CA)
+    assert.ok(decoded.caChainPem);
+    assert.ok(decoded.rootCaSha256);
     assert.match(result.profileQrDataUrl!, /^data:image\/png;base64,/);
   } finally {
     mock.restoreAll();

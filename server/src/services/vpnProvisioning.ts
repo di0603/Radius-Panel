@@ -1,8 +1,9 @@
 import QRCode from 'qrcode';
 import { conflict } from '../lib/http.js';
+import { sha256Hex } from '../lib/x509.js';
 import { isProfileSigningConfigured, signProfilePayload, type SignedProfileEnvelope } from '../lib/vpnProfileSigning.js';
-import { getCaChainPem } from './pki.js';
-import { getVpnSettings } from './vpnSettings.js';
+import { getCaChainPem, getRootCaCert } from './pki.js';
+import { getVpnSettings, type VpnSettings } from './vpnSettings.js';
 
 /**
  * Perfil de aprovisionamiento (.didevvpn) de un dispositivo: se construye al
@@ -10,6 +11,20 @@ import { getVpnSettings } from './vpnSettings.js';
  * entrega una unica vez, igual que el propio token -de hecho lo lleva
  * dentro-. Firmado con Ed25519 (lib/vpnProfileSigning.ts) para que una app
  * nunca acepte un perfil que no venga de este panel.
+ *
+ * Dos variantes, firmadas por separado (cada una con su propio sobre, mismo
+ * keyId):
+ *   - "full" (fichero .didevvpn descargable): lleva la cadena de CA completa
+ *     (raiz + intermedia) en `caChainPem`.
+ *   - "qr" (codigo QR): SIN `caChainPem` -la cadena completa (~2800
+ *     caracteres con una raiz+intermedia P-384 reales) deja el QR en una
+ *     version ~39, practicamente imposible de escanear desde una pantalla, y
+ *     con nombres un poco mas largos dejaria de caber sin avisar-. En su
+ *     lugar lleva `rootCaSha256` (presente en las dos variantes): la app
+ *     obtiene la cadena por `GET /.well-known/est/cacerts` (sin TLS mutuo
+ *     todavia, RFC 7030 4.1.1) y solo la acepta si la raiz recibida tiene
+ *     exactamente esa huella. Contrato completo documentado en el README,
+ *     seccion "Aprovisionamiento de apps".
  */
 
 export const PROFILE_SCHEMA_VERSION = 1;
@@ -25,12 +40,16 @@ export const PROFILE_SCHEMA_VERSION = 1;
 export const IKE_PROPOSAL = { encryption: 'aes256gcm16', prf: 'sha384', dhGroup: 'ecp384' } as const;
 export const ESP_PROPOSAL = { encryption: 'aes256gcm16', dhGroup: 'ecp384' } as const;
 
-export interface ProvisioningProfilePayload {
+export type ProfileVariant = 'full' | 'qr';
+
+interface ProvisioningProfileBase {
   version: number;
+  variant: ProfileVariant;
   cn: string;
   server: string;
   aaaId: string;
-  caChainPem: string;
+  /** SHA-256 (hex) del DER de la raiz offline: presente en las dos variantes, ver el comentario del fichero. */
+  rootCaSha256: string;
   ike: typeof IKE_PROPOSAL;
   esp: typeof ESP_PROPOSAL;
   tunnelMode: 'full' | 'split';
@@ -44,45 +63,85 @@ export interface ProvisioningProfilePayload {
   expiresAt: string;
 }
 
+export interface FullProvisioningProfilePayload extends ProvisioningProfileBase {
+  variant: 'full';
+  caChainPem: string;
+}
+
+export interface QrProvisioningProfilePayload extends ProvisioningProfileBase {
+  variant: 'qr';
+}
+
+export type ProvisioningProfilePayload = FullProvisioningProfilePayload | QrProvisioningProfilePayload;
+
 export interface DeviceForProfile {
   username: string;
   tunnelMode: 'full' | 'split';
 }
 
-/**
- * Construye el payload (sin firmar). Publica solo para los tests -en
- * produccion se usa siempre a traves de `buildSignedProvisioningProfile`-.
- */
-export async function buildProvisioningProfilePayload(input: {
+interface ProfileInput {
   device: DeviceForProfile;
   token: string;
   issuedAt: Date;
   expiresAt: Date;
-}): Promise<ProvisioningProfilePayload> {
-  const [settings, chainPem] = await Promise.all([getVpnSettings(), getCaChainPem()]);
-  if (!chainPem) {
+}
+
+interface ProfileContext {
+  settings: VpnSettings;
+  chainPem: string;
+  rootCaSha256: string;
+}
+
+async function loadProfileContext(): Promise<ProfileContext> {
+  const [settings, chainPem, rootCert] = await Promise.all([
+    getVpnSettings(),
+    getCaChainPem(),
+    getRootCaCert(),
+  ]);
+  if (!chainPem || !rootCert) {
     throw conflict('La CA de la VPN todavia no esta configurada: no se puede construir el perfil');
   }
-  return {
+  return { settings, chainPem, rootCaSha256: sha256Hex(rootCert.rawData) };
+}
+
+function buildPayload(ctx: ProfileContext, input: ProfileInput, variant: ProfileVariant): ProvisioningProfilePayload {
+  const base: ProvisioningProfileBase = {
     version: PROFILE_SCHEMA_VERSION,
+    variant,
     cn: input.device.username,
-    server: settings.vpnFqdn,
-    aaaId: settings.aaaId,
-    caChainPem: chainPem,
+    server: ctx.settings.vpnFqdn,
+    aaaId: ctx.settings.aaaId,
+    rootCaSha256: ctx.rootCaSha256,
     ike: IKE_PROPOSAL,
     esp: ESP_PROPOSAL,
     tunnelMode: input.device.tunnelMode,
-    splitRoutes: input.device.tunnelMode === 'split' ? [settings.lanCidr] : [],
-    dns: settings.dns || null,
-    estBaseUrl: `${settings.estUrl}/.well-known/est`,
+    splitRoutes: input.device.tunnelMode === 'split' ? [ctx.settings.lanCidr] : [],
+    dns: ctx.settings.dns || null,
+    estBaseUrl: `${ctx.settings.estUrl}/.well-known/est`,
     enrollToken: input.token,
     issuedAt: input.issuedAt.toISOString(),
     expiresAt: input.expiresAt.toISOString(),
   };
+  return variant === 'full' ? { ...base, variant: 'full', caChainPem: ctx.chainPem } : { ...base, variant: 'qr' };
 }
 
-export interface SignedProvisioningProfile {
-  envelope: SignedProfileEnvelope;
+/**
+ * Construye el payload de una variante (sin firmar). Publica solo para los
+ * tests -en produccion se usa siempre a traves de
+ * `buildSignedProvisioningProfiles`-.
+ */
+export async function buildProvisioningProfilePayload(
+  input: ProfileInput & { variant: ProfileVariant },
+): Promise<ProvisioningProfilePayload> {
+  const ctx = await loadProfileContext();
+  return buildPayload(ctx, input, input.variant);
+}
+
+export interface SignedProvisioningProfiles {
+  /** Sobre completo (con la cadena de CA), para el fichero .didevvpn descargable. */
+  full: SignedProfileEnvelope;
+  /** Sobre compacto (sin la cadena de CA, solo su huella), para el QR. */
+  qr: SignedProfileEnvelope;
   filename: string;
 }
 
@@ -91,28 +150,29 @@ export interface SignedProvisioningProfile {
  * VPN_PROFILE_SIGNING_KEY): el llamador debe seguir devolviendo el token
  * igualmente, sin perfil ni QR, para no bloquear el alta manual por EST.
  */
-export async function buildSignedProvisioningProfile(input: {
-  device: DeviceForProfile;
-  token: string;
-  issuedAt: Date;
-  expiresAt: Date;
-}): Promise<SignedProvisioningProfile | null> {
+export async function buildSignedProvisioningProfiles(input: ProfileInput): Promise<SignedProvisioningProfiles | null> {
   if (!isProfileSigningConfigured()) return null;
-  const payload = await buildProvisioningProfilePayload(input);
-  const envelope = signProfilePayload(payload);
-  return { envelope, filename: `${input.device.username}.didevvpn` };
+  const ctx = await loadProfileContext();
+  return {
+    full: signProfilePayload(buildPayload(ctx, input, 'full')),
+    qr: signProfilePayload(buildPayload(ctx, input, 'qr')),
+    filename: `${input.device.username}.didevvpn`,
+  };
 }
 
 /**
- * QR con el sobre firmado completo (mismo contenido que el fichero
- * .didevvpn), para el alta en Android. `null` si no cabe en un QR legible
- * -la cadena de CA puede ser demasiado grande-: la app de Windows sigue
- * teniendo el fichero descargable como alternativa siempre disponible.
+ * QR con el sobre firmado **compacto** (variante "qr", sin la cadena de CA).
+ * Nivel de correccion M (mas robusto que L; el contenido ya es pequeno sin
+ * la cadena, hay margen de sobra). `null` si aun asi no cupiera en un QR
+ * legible -no deberia pasar nunca con la variante compacta, pero se
+ * mantiene el margen de seguridad-: quien llama debe entonces DECIRLO en
+ * pantalla (no omitirlo en silencio) y ofrecer el fichero .didevvpn como
+ * alternativa siempre disponible.
  */
 export async function buildProvisioningQrDataUrl(envelope: SignedProfileEnvelope): Promise<string | null> {
   const text = JSON.stringify(envelope);
   try {
-    return await QRCode.toDataURL(text, { errorCorrectionLevel: 'L', margin: 1 });
+    return await QRCode.toDataURL(text, { errorCorrectionLevel: 'M', margin: 1 });
   } catch (err) {
     if (err instanceof Error && /too big/i.test(err.message)) return null;
     throw err;

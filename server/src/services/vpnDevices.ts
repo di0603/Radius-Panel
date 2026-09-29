@@ -9,7 +9,7 @@ import type { SignedProfileEnvelope } from '../lib/vpnProfileSigning.js';
 import { disconnectUserSessions } from './coa.js';
 import { regenerateCrl } from './pki.js';
 import { setUserEnabled, usernameExists } from './radiusUsers.js';
-import { buildProvisioningQrDataUrl, buildSignedProvisioningProfile } from './vpnProvisioning.js';
+import { buildProvisioningQrDataUrl, buildSignedProvisioningProfiles } from './vpnProvisioning.js';
 import { getVpnSettings } from './vpnSettings.js';
 
 /**
@@ -348,16 +348,16 @@ export async function generateEnrollToken(
   let profileQrDataUrl: string | null = null;
   let profileFilename: string | null = null;
   try {
-    const signed = await buildSignedProvisioningProfile({
+    const signed = await buildSignedProvisioningProfiles({
       device: { username, tunnelMode: device.tunnel_mode },
       token,
       issuedAt,
       expiresAt,
     });
     if (signed) {
-      profile = signed.envelope;
+      profile = signed.full;
       profileFilename = signed.filename;
-      profileQrDataUrl = await buildProvisioningQrDataUrl(signed.envelope);
+      profileQrDataUrl = await buildProvisioningQrDataUrl(signed.qr);
     }
   } catch (err) {
     logger.warn(

@@ -454,17 +454,57 @@ la genera el codigo**, es un paso manual, una unica vez:
    estado del certificado) para que las apps puedan bloquear el alta y la
    renovacion si van por debajo de esa version.
 
-**Formato del perfil** (mismo contenido tanto en el `.didevvpn` descargable
-como en el QR): un sobre `{ payload, signature, keyId }` donde `payload` es
-el base64url de los bytes UTF-8 exactos de un JSON con `version`, `cn`
-(username del dispositivo), `server` (`vpn_fqdn`), `aaaId`, `caChainPem`,
-`ike`/`esp` (propuestas, sintaxis strongSwan), `tunnelMode`, `splitRoutes`
-(vacio en modo `full`), `dns`, `estBaseUrl`, `enrollToken` (el token de alta,
-el unico campo realmente secreto de todo el perfil) e `issuedAt`/`expiresAt`;
-y `signature` es la firma Ed25519 sobre esos mismos bytes (nunca sobre una
-reserializacion del JSON, para que verificar no dependa de reproducir bit a
-bit el mismo formateo). Verificar solo requiere decodificar `payload` en
-base64 y comprobar la firma contra esos bytes con la clave publica del paso 3.
+**Formato del perfil**: un sobre `{ payload, signature, keyId }` donde
+`payload` es el base64url de los bytes UTF-8 **exactos** de un JSON (nunca se
+re-serializa para verificar, para que comprobar la firma no dependa de
+reproducir bit a bit el mismo formateo en otro lenguaje/libreria) y
+`signature` es la firma Ed25519 (node:crypto, `sign(null, bytes, key)`) sobre
+esos mismos bytes. Verificar solo requiere decodificar `payload` en base64 y
+comprobar la firma con la clave publica del paso 3.
+
+El JSON firmado lleva `version`, `variant` (`"full"` o `"qr"`, ver abajo),
+`cn` (username del dispositivo), `server` (`vpn_fqdn`), `aaaId`,
+`rootCaSha256` (SHA-256 en hex del DER de la raiz offline — **presente en las
+dos variantes**), `ike`/`esp` (propuestas, sintaxis strongSwan), `tunnelMode`,
+`splitRoutes` (vacio en modo `full`), `dns`, `estBaseUrl`, `enrollToken` (el
+token de alta: el unico campo realmente secreto de todo el perfil) e
+`issuedAt`/`expiresAt`.
+
+**Dos variantes, firmadas por separado** (cada una con su propio sobre, y por
+tanto su propia firma — no es el mismo JSON reetiquetado):
+
+- **`"full"`** (fichero `.didevvpn` descargable): ademas de lo anterior, lleva
+  `caChainPem` con la cadena de CA completa (raiz + intermedia). Con una
+  raiz+intermedia reales (ECDSA P-384) esto son ~2800 caracteres.
+- **`"qr"`** (codigo QR, nivel de correccion M): **sin** `caChainPem`. Meter
+  la cadena completa en el QR lo deja en una version ~39 (con nivel L, que es
+  menos robusto) — casi imposible de escanear desde una pantalla, y con
+  nombres un poco mas largos dejaria de caber sin avisar. La variante `qr` se
+  queda comodamente por debajo de la version 25 incluso con nombres largos.
+
+**Contrato para quien consuma la variante `qr`** (obligatorio para los
+prompts 12 — Windows — y 13 — Android —, ya que esa variante no trae la
+cadena de CA):
+
+1. Nada mas escanear el QR, sin validar todavia el TLS de EST, la app hace
+   `GET /.well-known/est/cacerts` (paso inicial de RFC 7030 §4.1.1: esta
+   primera peticion no puede autenticar el servidor via TLS porque la app
+   todavia no tiene ninguna raiz en la que confiar) y extrae el certificado
+   raiz del PKCS7 "certs-only" que devuelve.
+2. La app calcula el SHA-256 del DER de esa raiz recibida y **solo la acepta
+   si coincide exactamente con `rootCaSha256`** del perfil escaneado. Si no
+   coincide, se rechaza el alta entera — no hay margen para "confiar de
+   todas formas".
+3. Solo entonces esa raiz (ya verificada por su huella) se usa para validar
+   de verdad el TLS del listener EST en las peticiones siguientes, y para
+   validar que la intermedia que EST presente en la cadena cuelga de ella.
+   A partir de aqui el flujo es el mismo que con la variante `full` (la app
+   nunca necesita el `.didevvpn` si entro por QR).
+
+La variante `full` no necesita nada de esto porque ya trae la cadena
+completa firmada — pero tambien lleva `rootCaSha256`, por si una
+implementacion prefiere verificar igual antes de confiar en el `caChainPem`
+del propio fichero.
 
 ### Firewall de la puerta de enlace VPN (192.168.10.29)
 

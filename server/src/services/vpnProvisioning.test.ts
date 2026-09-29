@@ -4,27 +4,74 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { mock } from 'node:test';
+import QRCode from 'qrcode';
 import * as pools from '../db/pools.js';
 import { config } from '../config.js';
 import { PROFILE_SIGNING_KEY_ID } from '../lib/vpnProfileSigning.js';
+import { EC_P384_SIGNING_ALGORITHM, generateEcKeyPair, sha256Hex, x509 } from '../lib/x509.js';
 import {
   ESP_PROPOSAL,
   IKE_PROPOSAL,
   PROFILE_SCHEMA_VERSION,
   buildProvisioningProfilePayload,
   buildProvisioningQrDataUrl,
-  buildSignedProvisioningProfile,
+  buildSignedProvisioningProfiles,
 } from './vpnProvisioning.js';
 
 /**
- * `buildProvisioningProfilePayload`/`buildSignedProvisioningProfile` llaman a
- * `getVpnSettings()`/`getCaChainPem()`, que a su vez consultan `panelPool`:
- * se mockea ahi (mismo patron que el resto de tests del proyecto), no las
- * funciones de servicio directamente.
+ * `buildProvisioningProfilePayload`/`buildSignedProvisioningProfiles` llaman
+ * a `getVpnSettings()`/`getCaChainPem()`/`getRootCaCert()`, que a su vez
+ * consultan `panelPool`: se mockea ahi (mismo patron que el resto de tests
+ * del proyecto), no las funciones de servicio directamente. `getRootCaCert`
+ * parsea el PEM de verdad (`new x509.X509Certificate(...)`), asi que hace
+ * falta una cadena real -no un blob base64 cualquiera-: se genera una raiz +
+ * intermedia ECDSA P-384 con nombres como los reales, igual que en
+ * deviceCerts.test.ts.
  */
-const FAKE_CA_CHAIN_PEM = '-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----';
 
-function mockSettingsAndCa(settingsOverrides: Record<string, unknown> = {}): void {
+const DAY = 24 * 60 * 60 * 1000;
+
+async function makeRealChain() {
+  const rootKeys = await generateEcKeyPair('P-384');
+  const rootCert = await x509.X509CertificateGenerator.createSelfSigned({
+    name: 'CN=didev Root CA',
+    keys: rootKeys,
+    notBefore: new Date(Date.now() - DAY),
+    notAfter: new Date(Date.now() + 3650 * DAY),
+    signingAlgorithm: EC_P384_SIGNING_ALGORITHM,
+    extensions: [
+      new x509.BasicConstraintsExtension(true, undefined, true),
+      new x509.KeyUsagesExtension(x509.KeyUsageFlags.keyCertSign | x509.KeyUsageFlags.cRLSign, true),
+    ],
+  });
+
+  const intermediateKeys = await generateEcKeyPair('P-384');
+  const intermediateCert = await x509.X509CertificateGenerator.create({
+    subject: 'CN=didev VPN Intermedia 2026',
+    issuer: rootCert.subject,
+    publicKey: intermediateKeys.publicKey,
+    signingKey: rootKeys.privateKey,
+    signingAlgorithm: EC_P384_SIGNING_ALGORITHM,
+    notBefore: new Date(Date.now() - DAY),
+    notAfter: new Date(Date.now() + 1825 * DAY),
+    extensions: [
+      new x509.BasicConstraintsExtension(true, 0, true),
+      new x509.KeyUsagesExtension(x509.KeyUsageFlags.keyCertSign | x509.KeyUsageFlags.cRLSign, true),
+      new x509.ExtendedKeyUsageExtension([x509.ExtendedKeyUsage.clientAuth], true),
+    ],
+  });
+
+  return {
+    rootCert,
+    intermediateCert,
+    rootCaSha256: sha256Hex(rootCert.rawData),
+  };
+}
+
+function mockSettingsAndCa(
+  chain: { rootCert: x509.X509Certificate; intermediateCert: x509.X509Certificate },
+  settingsOverrides: Record<string, unknown> = {},
+): void {
   mock.method(pools.panelPool, 'query', ((sql: string) => {
     if (sql.includes('FROM panel_vpn_settings')) {
       return [
@@ -48,8 +95,13 @@ function mockSettingsAndCa(settingsOverrides: Record<string, unknown> = {}): voi
         [],
       ];
     }
+    // getCaChainPem y getRootCaCert filtran las dos por el mismo status set;
+    // una unica fila con cert_pem + root_cert_pem sirve para ambas.
     if (sql.includes('FROM panel_pki_ca WHERE status IN')) {
-      return [[{ cert_pem: FAKE_CA_CHAIN_PEM, root_cert_pem: null }], []];
+      return [
+        [{ cert_pem: chain.intermediateCert.toString(), root_cert_pem: chain.rootCert.toString() }],
+        [],
+      ];
     }
     throw new Error(`panelPool.query no esperado en el test: ${sql}`);
   }) as never);
@@ -63,8 +115,9 @@ function writeTempKey() {
   return { keyPath, publicKey };
 }
 
-test('buildProvisioningProfilePayload: construye el payload esperado (modo full, sin rutas de split tunnel)', async () => {
-  mockSettingsAndCa();
+test('buildProvisioningProfilePayload: variante "full" lleva la cadena de CA completa y rootCaSha256', async () => {
+  const chain = await makeRealChain();
+  mockSettingsAndCa(chain);
   try {
     const issuedAt = new Date('2026-01-01T00:00:00.000Z');
     const expiresAt = new Date('2026-01-02T00:00:00.000Z');
@@ -73,13 +126,16 @@ test('buildProvisioningProfilePayload: construye el payload esperado (modo full,
       token: 'el-token-secreto',
       issuedAt,
       expiresAt,
+      variant: 'full',
     });
     assert.deepEqual(payload, {
       version: PROFILE_SCHEMA_VERSION,
+      variant: 'full',
       cn: 'vpn-juan-laptop',
       server: 'vpn.example.com',
       aaaId: 'CN=radius.example.com',
-      caChainPem: FAKE_CA_CHAIN_PEM,
+      rootCaSha256: chain.rootCaSha256,
+      caChainPem: `${chain.intermediateCert.toString()}\n${chain.rootCert.toString()}`,
       ike: IKE_PROPOSAL,
       esp: ESP_PROPOSAL,
       tunnelMode: 'full',
@@ -95,31 +151,37 @@ test('buildProvisioningProfilePayload: construye el payload esperado (modo full,
   }
 });
 
-test('buildProvisioningProfilePayload: modo split incluye lan_cidr como unica ruta', async () => {
-  mockSettingsAndCa();
-  try {
-    const payload = await buildProvisioningProfilePayload({
-      device: { username: 'vpn-maria-vps', tunnelMode: 'split' },
-      token: 't',
-      issuedAt: new Date(),
-      expiresAt: new Date(),
-    });
-    assert.deepEqual(payload.splitRoutes, ['192.168.10.0/24']);
-  } finally {
-    mock.restoreAll();
-  }
-});
-
-test('buildProvisioningProfilePayload: sin dns configurado, el campo es null (no cadena vacia)', async () => {
-  mockSettingsAndCa({ dns: '' });
+test('buildProvisioningProfilePayload: variante "qr" NO lleva caChainPem, pero si rootCaSha256', async () => {
+  const chain = await makeRealChain();
+  mockSettingsAndCa(chain);
   try {
     const payload = await buildProvisioningProfilePayload({
       device: { username: 'vpn-juan-laptop', tunnelMode: 'full' },
       token: 't',
       issuedAt: new Date(),
       expiresAt: new Date(),
+      variant: 'qr',
     });
-    assert.equal(payload.dns, null);
+    assert.equal(payload.variant, 'qr');
+    assert.equal(payload.rootCaSha256, chain.rootCaSha256);
+    assert.ok(!('caChainPem' in payload), 'la variante qr no debe llevar caChainPem');
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test('buildProvisioningProfilePayload: modo split incluye lan_cidr como unica ruta', async () => {
+  const chain = await makeRealChain();
+  mockSettingsAndCa(chain);
+  try {
+    const payload = await buildProvisioningProfilePayload({
+      device: { username: 'vpn-maria-vps', tunnelMode: 'split' },
+      token: 't',
+      issuedAt: new Date(),
+      expiresAt: new Date(),
+      variant: 'full',
+    });
+    assert.deepEqual(payload.splitRoutes, ['192.168.10.0/24']);
   } finally {
     mock.restoreAll();
   }
@@ -142,6 +204,7 @@ test('buildProvisioningProfilePayload: rechaza si la CA de la VPN todavia no est
         token: 't',
         issuedAt: new Date(),
         expiresAt: new Date(),
+        variant: 'full',
       }),
       /CA de la VPN todavia no esta configurada/,
     );
@@ -150,12 +213,13 @@ test('buildProvisioningProfilePayload: rechaza si la CA de la VPN todavia no est
   }
 });
 
-test('buildSignedProvisioningProfile: null si VPN_PROFILE_SIGNING_KEY no esta configurada (no bloquea el alta por EST manual)', async () => {
+test('buildSignedProvisioningProfiles: null si VPN_PROFILE_SIGNING_KEY no esta configurada (no bloquea el alta por EST manual)', async () => {
+  const chain = await makeRealChain();
   const prev = config.vpnProfileSigning.keyPath;
   config.vpnProfileSigning.keyPath = undefined;
-  mockSettingsAndCa();
+  mockSettingsAndCa(chain);
   try {
-    const result = await buildSignedProvisioningProfile({
+    const result = await buildSignedProvisioningProfiles({
       device: { username: 'vpn-juan-laptop', tunnelMode: 'full' },
       token: 't',
       issuedAt: new Date(),
@@ -168,13 +232,14 @@ test('buildSignedProvisioningProfile: null si VPN_PROFILE_SIGNING_KEY no esta co
   }
 });
 
-test('buildSignedProvisioningProfile: firma verificable, y el payload no lleva nada secreto salvo el token de alta', async () => {
+test('buildSignedProvisioningProfiles: full y qr firman por separado, los dos verifican y llevan rootCaSha256; solo full lleva caChainPem', async () => {
+  const chain = await makeRealChain();
   const { keyPath, publicKey } = writeTempKey();
   const prev = config.vpnProfileSigning.keyPath;
   config.vpnProfileSigning.keyPath = keyPath;
-  mockSettingsAndCa();
+  mockSettingsAndCa(chain);
   try {
-    const result = await buildSignedProvisioningProfile({
+    const result = await buildSignedProvisioningProfiles({
       device: { username: 'vpn-juan-laptop', tunnelMode: 'full' },
       token: 'el-token-secreto',
       issuedAt: new Date(),
@@ -182,40 +247,72 @@ test('buildSignedProvisioningProfile: firma verificable, y el payload no lleva n
     });
     assert.ok(result);
     assert.equal(result!.filename, 'vpn-juan-laptop.didevvpn');
-    assert.equal(result!.envelope.keyId, PROFILE_SIGNING_KEY_ID);
+    assert.equal(result!.full.keyId, PROFILE_SIGNING_KEY_ID);
+    assert.equal(result!.qr.keyId, PROFILE_SIGNING_KEY_ID);
 
-    const payloadBytes = Buffer.from(result!.envelope.payload, 'base64url');
-    const signatureBytes = Buffer.from(result!.envelope.signature, 'base64url');
-    assert.equal(verify(null, payloadBytes, publicKey, signatureBytes), true);
+    for (const envelope of [result!.full, result!.qr]) {
+      const payloadBytes = Buffer.from(envelope.payload, 'base64url');
+      const signatureBytes = Buffer.from(envelope.signature, 'base64url');
+      assert.equal(verify(null, payloadBytes, publicKey, signatureBytes), true);
+    }
 
-    const tampered = Buffer.from(payloadBytes);
-    tampered[0] = tampered[0]! ^ 0xff;
-    assert.equal(verify(null, tampered, publicKey, signatureBytes), false, 'un byte cambiado debe invalidar la firma');
+    const fullDecoded = JSON.parse(Buffer.from(result!.full.payload, 'base64url').toString('utf8'));
+    const qrDecoded = JSON.parse(Buffer.from(result!.qr.payload, 'base64url').toString('utf8'));
 
-    // Todo lo que no sea el token de alta ya es publico por si solo (server,
-    // cadena de CA -la publica GET /pki/ca-chain.pem-, propuestas, etc.):
-    // el unico campo realmente secreto del perfil es enrollToken.
-    const decoded = JSON.parse(payloadBytes.toString('utf8'));
-    assert.deepEqual(
-      Object.keys(decoded).sort(),
-      [
-        'aaaId',
-        'caChainPem',
-        'cn',
-        'dns',
-        'enrollToken',
-        'esp',
-        'estBaseUrl',
-        'expiresAt',
-        'ike',
-        'issuedAt',
-        'server',
-        'splitRoutes',
-        'tunnelMode',
-        'version',
-      ],
+    assert.equal(fullDecoded.variant, 'full');
+    assert.equal(fullDecoded.rootCaSha256, chain.rootCaSha256);
+    assert.ok('caChainPem' in fullDecoded);
+
+    assert.equal(qrDecoded.variant, 'qr');
+    assert.equal(qrDecoded.rootCaSha256, chain.rootCaSha256);
+    assert.ok(!('caChainPem' in qrDecoded), 'la variante qr no debe llevar caChainPem');
+
+    // Las dos firmas son independientes: la del sobre completo no vale para
+    // el payload del compacto (son bytes distintos), y viceversa.
+    assert.equal(
+      verify(null, Buffer.from(result!.qr.payload, 'base64url'), publicKey, Buffer.from(result!.full.signature, 'base64url')),
+      false,
     );
-    assert.equal(decoded.enrollToken, 'el-token-secreto');
+  } finally {
+    mock.restoreAll();
+    config.vpnProfileSigning.keyPath = prev;
+  }
+});
+
+test('buildSignedProvisioningProfiles: el QR compacto (variante "qr") cabe con holgura en una version de QR <= 25', async () => {
+  const chain = await makeRealChain();
+  const { keyPath } = writeTempKey();
+  const prev = config.vpnProfileSigning.keyPath;
+  config.vpnProfileSigning.keyPath = keyPath;
+  mockSettingsAndCa(chain);
+  try {
+    const result = await buildSignedProvisioningProfiles({
+      device: { username: 'vpn-juan-laptop-de-sobremesa', tunnelMode: 'split' },
+      token: 'el-token-secreto-de-un-solo-uso',
+      issuedAt: new Date(),
+      expiresAt: new Date(),
+    });
+    assert.ok(result);
+
+    // El sobre completo (con la cadena de CA) es justo el problema que
+    // corrige la variante compacta: con nivel M ni siquiera cabe en ningun
+    // QR (con nivel L cabria, pero en una version ~39 practicamente
+    // imposible de escanear desde una pantalla) -de ahi que el QR use
+    // siempre la variante "qr", nunca la "full"-.
+    assert.throws(
+      () => QRCode.create(JSON.stringify(result!.full), { errorCorrectionLevel: 'M' }),
+      /too big/i,
+      'el sobre completo no deberia caber en un QR de nivel M: por eso el QR usa la variante compacta',
+    );
+
+    const qrQr = QRCode.create(JSON.stringify(result!.qr), { errorCorrectionLevel: 'M' });
+    assert.ok(
+      qrQr.version <= 25,
+      `el QR compacto deberia caber con holgura en una version <= 25 (salio ${qrQr.version})`,
+    );
+
+    const dataUrl = await buildProvisioningQrDataUrl(result!.qr);
+    assert.match(dataUrl!, /^data:image\/png;base64,/);
   } finally {
     mock.restoreAll();
     config.vpnProfileSigning.keyPath = prev;

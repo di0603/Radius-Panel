@@ -7,6 +7,42 @@ Este proyecto usa versionado semantico.
 
 ### Anadido
 
+- **Correccion 11.5 (QR compacto)**: el sobre firmado completo, con la
+  cadena de CA (raiz + intermedia P-384 reales) dentro, ocupa ~2800
+  caracteres — cabe por poco en un QR de nivel L (maximo 2953 en modo
+  byte), pero sale una version ~39 practicamente imposible de escanear
+  desde una pantalla, y con nombres un poco mas largos habria dejado de
+  caber sin avisar (`buildProvisioningQrDataUrl` se limitaba a devolver
+  `null` en silencio).
+  - Anadido `rootCaSha256` (SHA-256 en hex del DER de la raiz) al payload
+    firmado, presente siempre, en las dos variantes.
+  - El perfil ahora tiene dos variantes, cada una firmada por separado (su
+    propio sobre, mismo `keyId`, campo `variant` dentro del payload para
+    que no se puedan confundir): `"full"` (fichero `.didevvpn`, con
+    `caChainPem`) y `"qr"` (sin `caChainPem`, solo `rootCaSha256`). El QR
+    ahora codifica siempre la variante `qr`, con nivel de correccion M (mas
+    robusto que L; sobra margen sin la cadena) — cabe con holgura en una
+    version ≤ 25 incluso con nombres largos.
+  - Contrato documentado en el README ("Aprovisionamiento de apps") para
+    quien construya las apps (prompts 12/13): al recibir la variante `qr`,
+    la app pide `GET /.well-known/est/cacerts` sin validar TLS todavia (RFC
+    7030 §4.1.1), calcula el SHA-256 de la raiz recibida y solo la acepta
+    si coincide exactamente con `rootCaSha256` — solo entonces esa raiz se
+    usa para validar de verdad el TLS de EST y la intermedia.
+  - Si el QR compacto aun asi no llegara a caber, la pantalla lo dice
+    explicitamente (ya lo hacia desde el prompt 11: la alternativa del
+    fichero `.didevvpn` siempre esta visible) en vez de omitirlo en
+    silencio.
+  - `buildSignedProvisioningProfile` (una sola variante) pasa a llamarse
+    `buildSignedProvisioningProfiles` (construye y firma las dos a la vez,
+    reutilizando una unica consulta de ajustes/cadena de CA).
+  - Tests: con una cadena P-384 realista (raiz "didev Root CA" + intermedia,
+    generadas en el test) se comprueba que el QR compacto cabe en version
+    ≤ 25 mientras el completo ni siquiera cabe en nivel M; que solo la
+    variante `full` lleva `caChainPem`; que las dos llevan `rootCaSha256` y
+    verifican con la clave publica: y que las dos firmas son independientes
+    (la de una variante no vale para el payload de la otra).
+
 - **Aprovisionamiento de apps (prompt 11)**: perfil de conexion firmado
   (`.didevvpn`) para configurar las futuras apps propias de Windows/Android
   con un solo paso, en vez de tener que introducir cada parametro a mano.

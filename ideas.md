@@ -388,3 +388,11 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
   todavia: las apps que consumen este perfil (prompt 12, en pausa, ver
   `APPS/Windows/NOTAS-prompt-12-en-pausa.md`). Detalle completo en el
   CHANGELOG.
+- [x] **Correccion 11.5 (QR compacto)**: el sobre firmado completo (con la
+  cadena de CA real dentro) sale en un QR version ~39, casi imposible de
+  escanear. Anadido `rootCaSha256` (siempre presente) y una variante `qr`
+  del perfil (firmada por separado, sin `caChainPem`) que cabe con holgura
+  en version ≤ 25; contrato de confianza-por-huella documentado en el
+  README para las apps (piden `GET cacerts` sin TLS todavia y solo aceptan
+  la raiz si su SHA-256 coincide con `rootCaSha256`). Detalle completo en el
+  CHANGELOG.
