@@ -7,10 +7,12 @@ using DidevVpn.Core.Versioning;
 namespace DidevVpn.App;
 
 /// <summary>
-/// Icono de bandeja: conectar/desconectar, estado, IP asignada, caducidad
-/// del certificado, ultimo error legible, variante y version (ver enunciado
-/// original). Sin ventana principal -toda la interaccion es por el menu
-/// contextual y dialogos puntuales (importar perfil, confirmaciones)-.
+/// Icono de bandeja: lista de conexiones (nombre visible, servidor, estado),
+/// una por servidor -esta app es un cliente GENERICO desde el prompt 12.5,
+/// puede tener varias a la vez-, cada una como su propio submenu con
+/// conectar/desconectar/ver estado/renovar/quitar. Sin ventana principal -
+/// toda la interaccion es por el menu contextual y dialogos puntuales
+/// (importar perfil, confirmar servidor nuevo, otras confirmaciones)-.
 /// </summary>
 internal sealed class TrayApplicationContext : ApplicationContext
 {
@@ -25,7 +27,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly System.Windows.Forms.Timer _refreshTimer;
     private readonly System.Windows.Forms.Timer _renewalTimer;
 
-    private DeviceState? _deviceState;
     private string? _lastErrorMessage;
 
     private const string RenewalTaskName = "didevVpnRenewal";
@@ -33,7 +34,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
     public TrayApplicationContext()
     {
         AppPaths.EnsureDataDirectoryExists();
-        _deviceState = DeviceStateStore.Load();
 
         _notifyIcon = new NotifyIcon
         {
@@ -42,7 +42,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             Text = AppPaths.DisplayName,
             ContextMenuStrip = new ContextMenuStrip(),
         };
-        _notifyIcon.DoubleClick += (_, _) => ShowStatus();
+        _notifyIcon.DoubleClick += (_, _) => ShowOverallStatus();
 
         BuildMenu();
         RefreshStatus();
@@ -50,10 +50,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         // "al arrancar y cada 12h mientras este abierta" (variante portable e
         // instalada por igual: no hace dano comprobarlo tambien aqui aunque
         // exista ademas la tarea programada, GetStatus/simplereenroll son
-        // idempotentes respecto a si "toca renovar" o no).
-        _ = RenewIfDueAsync();
+        // idempotentes respecto a si "toca renovar" o no). Renueva TODAS las
+        // conexiones, una por una.
+        _ = RenewAllIfDueAsync();
         _renewalTimer = new System.Windows.Forms.Timer { Interval = (int)TimeSpan.FromHours(12).TotalMilliseconds };
-        _renewalTimer.Tick += async (_, _) => await RenewIfDueAsync();
+        _renewalTimer.Tick += async (_, _) => await RenewAllIfDueAsync();
         _renewalTimer.Start();
 
         _refreshTimer = new System.Windows.Forms.Timer { Interval = 15_000 };
@@ -74,35 +75,31 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         var variant = AppPaths.DetectVariant();
         var version = AppVersionHelper.GetAppVersion();
-        var headerText = _deviceState is null
-            ? "Sin dispositivo dado de alta"
-            : $"{_deviceState.Cn} ({(variant == AppVariant.Installed ? "instalada" : "portable")} {version})";
+        var connections = ConnectionStore.List();
+
+        var headerText = $"didev VPN ({(variant == AppVariant.Installed ? "instalada" : "portable")} {version})";
         menu.Items.Add(new ToolStripMenuItem(headerText) { Enabled = false });
         menu.Items.Add(new ToolStripSeparator());
 
-        if (_deviceState is not null)
+        if (connections.Count == 0)
         {
-            var connected = _vpnService.ConnectionExists(AppPaths.ConnectionName) && _vpnService.IsConnected(AppPaths.ConnectionName);
-            var toggleConnection = new ToolStripMenuItem(connected ? "Desconectar" : "Conectar");
-            toggleConnection.Click += (_, _) => ToggleConnection(connected);
-            menu.Items.Add(toggleConnection);
-
-            var statusItem = new ToolStripMenuItem("Ver estado...");
-            statusItem.Click += (_, _) => ShowStatus();
-            menu.Items.Add(statusItem);
-
-            var renewItem = new ToolStripMenuItem("Renovar ahora");
-            renewItem.Click += async (_, _) => await RenewIfDueAsync(force: true);
-            menu.Items.Add(renewItem);
-
-            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(new ToolStripMenuItem("Sin conexiones configuradas") { Enabled = false });
+        }
+        else
+        {
+            foreach (var connection in connections.OrderBy(c => c.Cn, StringComparer.OrdinalIgnoreCase))
+            {
+                menu.Items.Add(BuildConnectionSubmenu(connection));
+            }
         }
 
-        var importItem = new ToolStripMenuItem(_deviceState is null ? "Importar perfil..." : "Importar otro perfil...");
+        menu.Items.Add(new ToolStripSeparator());
+
+        var importItem = new ToolStripMenuItem("Importar perfil...");
         importItem.Click += (_, _) => ImportProfile();
         menu.Items.Add(importItem);
 
-        if (variant == AppVariant.Portable && _deviceState is not null)
+        if (variant == AppVariant.Portable && connections.Count > 0)
         {
             var taskRegistered = _taskScheduler.PerUserRenewalTaskExists(RenewalTaskName);
             var toggleTask = new ToolStripMenuItem("Renovar aunque la app este cerrada") { Checked = taskRegistered, CheckOnClick = true };
@@ -113,15 +110,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
         var logsItem = new ToolStripMenuItem("Ver registro");
         logsItem.Click += (_, _) => System.Diagnostics.Process.Start("explorer.exe", AppPaths.LogsDirectory);
         menu.Items.Add(logsItem);
-
-        menu.Items.Add(new ToolStripSeparator());
-
-        if (_deviceState is not null)
-        {
-            var removeItem = new ToolStripMenuItem("Quitar de este equipo...");
-            removeItem.Click += (_, _) => RemoveFromThisComputer();
-            menu.Items.Add(removeItem);
-        }
 
         var aboutItem = new ToolStripMenuItem("Acerca de didev VPN");
         aboutItem.Click += (_, _) => ShowAbout(variant, version);
@@ -134,23 +122,49 @@ internal sealed class TrayApplicationContext : ApplicationContext
         menu.Items.Add(exitItem);
     }
 
-    private void ToggleConnection(bool currentlyConnected)
+    private ToolStripMenuItem BuildConnectionSubmenu(ConnectionRecord connection)
+    {
+        var connected = _vpnService.ConnectionExists(connection.Cn) && _vpnService.IsConnected(connection.Cn);
+        var submenu = new ToolStripMenuItem($"{connection.Cn} ({connection.Server}) - {(connected ? "conectado" : "desconectado")}");
+
+        var toggleConnection = new ToolStripMenuItem(connected ? "Desconectar" : "Conectar");
+        toggleConnection.Click += (_, _) => ToggleConnection(connection.Cn, connected);
+        submenu.DropDownItems.Add(toggleConnection);
+
+        var statusItem = new ToolStripMenuItem("Ver estado...");
+        statusItem.Click += (_, _) => ShowConnectionStatus(connection.Cn);
+        submenu.DropDownItems.Add(statusItem);
+
+        var renewItem = new ToolStripMenuItem("Renovar ahora");
+        renewItem.Click += async (_, _) => await RenewIfDueAsync(connection.Cn, force: true);
+        submenu.DropDownItems.Add(renewItem);
+
+        submenu.DropDownItems.Add(new ToolStripSeparator());
+
+        var removeItem = new ToolStripMenuItem("Quitar de este equipo...");
+        removeItem.Click += (_, _) => RemoveConnection(connection.Cn);
+        submenu.DropDownItems.Add(removeItem);
+
+        return submenu;
+    }
+
+    private void ToggleConnection(string cn, bool currentlyConnected)
     {
         try
         {
             if (currentlyConnected)
             {
-                _vpnService.Disconnect(AppPaths.ConnectionName);
+                _vpnService.Disconnect(cn);
             }
             else
             {
-                _vpnService.Connect(AppPaths.ConnectionName);
+                _vpnService.Connect(cn);
             }
             _lastErrorMessage = null;
         }
         catch (Exception ex)
         {
-            HandleError("No se ha podido cambiar el estado de la conexion", ex);
+            HandleError($"No se ha podido cambiar el estado de la conexion \"{cn}\"", ex);
         }
         RefreshStatus();
     }
@@ -165,8 +179,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         try
         {
-            var verifier = ProfileSigningKeyLoader.CreateVerifier();
-            var result = verifier.Verify(form.EnvelopeJson, DateTimeOffset.UtcNow);
+            var result = ProfileVerifier.Verify(form.EnvelopeJson, DateTimeOffset.UtcNow);
             if (!result.Success)
             {
                 MessageBox.Show(
@@ -179,10 +192,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
             var orchestrator = new EnrollmentOrchestrator(
                 _certificateService, _estClient, _vpnService, _rootStore, _confirmations, _logger, AppVersionHelper.GetAppVersion());
-            _deviceState = await orchestrator.EnrollAsync(result.Profile!, CancellationToken.None);
+            var connection = await orchestrator.EnrollAsync(result.Profile!, CancellationToken.None);
             _lastErrorMessage = null;
             MessageBox.Show(
-                $"Dispositivo \"{_deviceState.Cn}\" dado de alta. Ya puedes conectar desde el menu de la bandeja.",
+                $"Conexion \"{connection.Cn}\" ({connection.Server}) dada de alta. Ya puedes conectar desde el menu de la bandeja.",
                 "Alta completada",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
@@ -190,6 +203,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         catch (OperationCanceledException ex)
         {
             MessageBox.Show(ex.Message, "Alta cancelada", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        catch (TrustAnchorMismatchException ex)
+        {
+            _lastErrorMessage = ex.Message;
+            MessageBox.Show(ex.Message, "Identidad del servidor cambiada", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
         catch (MinAppVersionRequiredException ex)
         {
@@ -203,9 +221,18 @@ internal sealed class TrayApplicationContext : ApplicationContext
         RefreshStatus();
     }
 
-    private async Task RenewIfDueAsync(bool force = false)
+    private async Task RenewAllIfDueAsync()
     {
-        if (_deviceState is null)
+        foreach (var connection in ConnectionStore.List())
+        {
+            await RenewIfDueAsync(connection.Cn, force: false);
+        }
+    }
+
+    private async Task RenewIfDueAsync(string cn, bool force)
+    {
+        var connection = ConnectionStore.Load(cn);
+        if (connection is null)
         {
             return;
         }
@@ -213,14 +240,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
         try
         {
             var orchestrator = new RenewalOrchestrator(_certificateService, _estClient, _confirmations, _logger, AppVersionHelper.GetAppVersion());
-            var result = await orchestrator.RenewIfDueAsync(_deviceState, CancellationToken.None);
+            var result = await orchestrator.RenewIfDueAsync(connection, CancellationToken.None);
             switch (result.Outcome)
             {
                 case RenewalOutcome.Renewed:
                     _lastErrorMessage = null;
                     if (force)
                     {
-                        MessageBox.Show("Certificado renovado.", "didev VPN", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        MessageBox.Show($"Certificado de \"{cn}\" renovado.", "didev VPN", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     }
                     break;
                 case RenewalOutcome.BlockedByMinAppVersion:
@@ -230,14 +257,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 case RenewalOutcome.NotDue:
                     if (force)
                     {
-                        MessageBox.Show("Todavia no toca renovar.", "didev VPN", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        MessageBox.Show($"\"{cn}\" todavia no toca renovarla.", "didev VPN", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     }
                     break;
             }
         }
         catch (Exception ex)
         {
-            HandleError("No se ha podido comprobar/renovar el certificado", ex);
+            HandleError($"No se ha podido comprobar/renovar el certificado de \"{cn}\"", ex);
         }
         RefreshStatus();
     }
@@ -261,17 +288,17 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
-    private void RemoveFromThisComputer()
+    private void RemoveConnection(string cn)
     {
-        if (_deviceState is null)
+        var connection = ConnectionStore.Load(cn);
+        if (connection is null)
         {
             return;
         }
 
         var confirm = MessageBox.Show(
-            $"Se borrara la conexion \"{AppPaths.ConnectionName}\", la configuracion guardada y la tarea de renovacion si existe.\n\n" +
-            "?Borrar tambien el certificado del dispositivo de este equipo?",
-            "Quitar didev VPN de este equipo",
+            $"Se borrara la conexion \"{cn}\" y la configuracion guardada.\n\n?Borrar tambien el certificado del dispositivo de este equipo?",
+            $"Quitar \"{cn}\" de este equipo",
             MessageBoxButtons.YesNoCancel,
             MessageBoxIcon.Warning);
         if (confirm == DialogResult.Cancel)
@@ -281,8 +308,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         try
         {
-            _vpnService.RemoveConnection(AppPaths.ConnectionName);
-            _taskScheduler.RemovePerUserRenewalTask(RenewalTaskName);
+            _vpnService.RemoveConnection(cn);
 
             if (confirm == DialogResult.Yes)
             {
@@ -292,49 +318,81 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 store.Open(System.Security.Cryptography.X509Certificates.OpenFlags.ReadWrite);
                 var matches = store.Certificates.Find(
                     System.Security.Cryptography.X509Certificates.X509FindType.FindByThumbprint,
-                    _deviceState.CertificateThumbprint, validOnly: false);
+                    connection.CertificateThumbprint, validOnly: false);
                 foreach (var cert in matches)
                 {
                     store.Remove(cert);
                 }
             }
 
-            DeviceStateStore.Delete();
-            _deviceState = null;
-            _logger.Info("Dispositivo eliminado de este equipo.");
+            ConnectionStore.Delete(cn);
+
+            // Si ya no queda ninguna conexion, la tarea de renovacion en
+            // segundo plano (si estaba activada) ya no tiene nada que hacer.
+            if (ConnectionStore.List().Count == 0)
+            {
+                try { _taskScheduler.RemovePerUserRenewalTask(RenewalTaskName); } catch { /* best effort */ }
+            }
+
+            _logger.Info($"Conexion \"{cn}\" eliminada de este equipo.");
         }
         catch (Exception ex)
         {
-            HandleError("No se ha podido quitar el dispositivo por completo", ex);
+            HandleError($"No se ha podido quitar \"{cn}\" por completo", ex);
         }
         RefreshStatus();
     }
 
-    private void ShowStatus()
+    private void ShowConnectionStatus(string cn)
     {
-        if (_deviceState is null)
+        var connection = ConnectionStore.Load(cn);
+        if (connection is null)
         {
-            MessageBox.Show("Todavia no hay ningun dispositivo dado de alta. Usa \"Importar perfil...\".", "didev VPN");
             return;
         }
 
-        var connected = _vpnService.ConnectionExists(AppPaths.ConnectionName) && _vpnService.IsConnected(AppPaths.ConnectionName);
-        var ip = connected ? _vpnService.GetAssignedIPv4Address(AppPaths.ConnectionName) : null;
+        var connected = _vpnService.ConnectionExists(cn) && _vpnService.IsConnected(cn);
+        var ip = connected ? _vpnService.GetAssignedIPv4Address(cn) : null;
         var lines = new List<string>
         {
-            $"Dispositivo: {_deviceState.Cn}",
-            $"Servidor: {_deviceState.Server}",
+            $"Conexion: {connection.Cn}",
+            $"Servidor: {connection.Server}",
             $"Estado: {(connected ? "Conectado" : "Desconectado")}",
             $"IP asignada: {ip ?? "(no conectado)"}",
-            $"Clave: {(_deviceState.IsTpmBacked ? "TPM" : "software")}",
-            $"Ultima emision/renovacion: {_deviceState.LastEnrolledAtUtc:u}",
+            $"Clave: {(connection.IsTpmBacked ? "TPM" : "software")}",
+            $"Ultima emision/renovacion: {connection.LastEnrolledAtUtc:u}",
         };
         if (_lastErrorMessage is not null)
         {
             lines.Add("");
             lines.Add($"Ultimo error: {_lastErrorMessage}");
         }
-        MessageBox.Show(string.Join(Environment.NewLine, lines), "Estado de didev VPN");
+        MessageBox.Show(string.Join(Environment.NewLine, lines), $"Estado de \"{cn}\"");
+    }
+
+    private void ShowOverallStatus()
+    {
+        var connections = ConnectionStore.List();
+        if (connections.Count == 0)
+        {
+            MessageBox.Show("Todavia no hay ninguna conexion configurada. Usa \"Importar perfil...\".", "didev VPN");
+            return;
+        }
+
+        if (connections.Count == 1)
+        {
+            ShowConnectionStatus(connections[0].Cn);
+            return;
+        }
+
+        var lines = connections
+            .OrderBy(c => c.Cn, StringComparer.OrdinalIgnoreCase)
+            .Select(c =>
+            {
+                var connected = _vpnService.ConnectionExists(c.Cn) && _vpnService.IsConnected(c.Cn);
+                return $"{c.Cn} ({c.Server}): {(connected ? "conectado" : "desconectado")}";
+            });
+        MessageBox.Show(string.Join(Environment.NewLine, lines), "Conexiones de didev VPN");
     }
 
     private void ShowAbout(AppVariant variant, AppVersion version)
@@ -346,14 +404,17 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void RefreshStatus()
     {
-        if (_deviceState is null)
+        var connections = ConnectionStore.List();
+        if (connections.Count == 0)
         {
-            _notifyIcon.Text = $"{AppPaths.DisplayName} - sin dispositivo";
+            _notifyIcon.Text = $"{AppPaths.DisplayName} - sin conexiones";
             return;
         }
 
-        var connected = _vpnService.ConnectionExists(AppPaths.ConnectionName) && _vpnService.IsConnected(AppPaths.ConnectionName);
-        var tooltip = $"{AppPaths.DisplayName} - {_deviceState.Cn} - {(connected ? "conectado" : "desconectado")}";
+        var connectedCount = connections.Count(c => _vpnService.ConnectionExists(c.Cn) && _vpnService.IsConnected(c.Cn));
+        var tooltip = connections.Count == 1
+            ? $"{AppPaths.DisplayName} - {connections[0].Cn} - {(connectedCount > 0 ? "conectado" : "desconectado")}"
+            : $"{AppPaths.DisplayName} - {connectedCount}/{connections.Count} conectadas";
         // NotifyIcon.Text tiene un limite de 63 caracteres.
         _notifyIcon.Text = tooltip.Length > 63 ? tooltip[..63] : tooltip;
     }

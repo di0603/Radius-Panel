@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text.Json;
 using Org.BouncyCastle.Crypto.Parameters;
 using Org.BouncyCastle.Crypto.Signers;
@@ -6,51 +7,41 @@ namespace DidevVpn.Core.Profile;
 
 /// <summary>
 /// Verifica un sobre firmado del panel (fichero .didevvpn, o el texto de un
-/// QR) y devuelve el perfil ya comprobado. Nunca confia en nada del sobre
-/// hasta que la firma Ed25519 valida contra la clave publica incrustada en
-/// la app -y aun asi, solo acepta la variante "full" con la cadena de CA
-/// completa (la variante "qr", sin ella, es para la app de Android)-.
+/// QR) y devuelve el perfil ya comprobado -pero, a diferencia de antes del
+/// prompt 12.5, esto NO es "confiar en el panel": esta app es un cliente
+/// GENERICO sin ninguna clave de didev incrustada, asi que solo comprueba
+/// que el sobre es AUTOCONSISTENTE (la firma verifica con la clave publica
+/// que el propio sobre trae, y esa clave coincide con la huella que lleva el
+/// payload). Que esa clave sea realmente la del panel esperado es una
+/// decision de confianza en el primer uso (TOFU) que toma el llamador
+/// (EnrollmentOrchestrator, comparando contra el ancla guardada de la
+/// conexion, o pidiendole confirmacion al usuario si es la primera vez) -
+/// esta clase, a proposito, no sabe nada de conexiones ni anclas.
+/// Solo acepta la variante "full" con la cadena de CA completa (la variante
+/// "qr", sin ella, es para la app de Android).
 /// </summary>
-public sealed class ProfileVerifier
+public static class ProfileVerifier
 {
     /// <summary>Version de esquema que entiende esta version de la app (server/src/services/vpnProvisioning.ts: PROFILE_SCHEMA_VERSION).</summary>
     public const int SupportedSchemaVersion = 1;
 
-    /// <summary>
-    /// Identificador de la clave de firma que espera esta version de la app: EXACTAMENTE
-    /// el mismo valor constante que <c>PROFILE_SIGNING_KEY_ID</c> en
-    /// server/src/lib/vpnProfileSigning.ts del panel (no se deriva de la clave publica: es
-    /// solo una etiqueta de version, para rotar la clave en el futuro sin romper apps ya
-    /// provisionadas -ver ese fichero-). Si el panel rota a "vpn-profile-signing-v2" hay que
-    /// tambien recompilar esta app con la clave nueva Y actualizar esta constante.
-    /// </summary>
-    public const string ExpectedKeyId = "vpn-profile-signing-v1";
-
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = false };
-
-    private readonly Ed25519PublicKeyParameters _publicKey;
-
-    public ProfileVerifier(Ed25519PublicKeyParameters publicKey)
-    {
-        _publicKey = publicKey ?? throw new ArgumentNullException(nameof(publicKey));
-    }
-
-    public static ProfileVerifier FromPublicKeyPem(string publicKeyPem) => new(Ed25519PublicKeyPem.Parse(publicKeyPem));
 
     /// <summary>
     /// EN ESTE ORDEN, parando en el primer fallo: (1) el sobre es JSON valido
-    /// con payload+signature; (2) el payload/firma son base64url validos;
-    /// (3) el keyId del sobre es el que esta version de la app conoce -no es
-    /// una comprobacion de seguridad (la firma ya cubre eso), es para dar un
-    /// mensaje claro de "hace falta actualizar la app" si el panel rota de
-    /// clave, en vez de un generico "firma invalida"-; (4) la firma Ed25519
-    /// verifica contra la clave publica incrustada -esto va ANTES de leer
-    /// nada del contenido: nada de lo que venga despues es de fiar hasta
-    /// aqui-; (5) el payload decodificado es el JSON de perfil esperado; (6)
-    /// la version de esquema esta soportada; (7) la variante es "full"
-    /// (nunca "qr"); (8) trae la cadena de CA; (9) no ha caducado.
+    /// con payload+signature+signerPublicKey; (2) esos tres campos son
+    /// base64url/SPKI validos; (3) la firma Ed25519 verifica contra la
+    /// signerPublicKey del PROPIO sobre -esto va ANTES de leer nada del
+    /// contenido: nada de lo que venga despues es de fiar hasta aqui-; (4)
+    /// el payload decodificado es el JSON de perfil esperado; (5)
+    /// signerKeySha256 (DENTRO del payload firmado) es el SHA-256 exacto de
+    /// signerPublicKey (FUERA del payload): si no coincide, el sobre es
+    /// incoherente -no es una decision del usuario, se rechaza directamente,
+    /// nunca se ofrece "aceptar de todas formas"-; (6) la version de esquema
+    /// esta soportada; (7) la variante es "full" (nunca "qr"); (8) trae la
+    /// cadena de CA; (9) no ha caducado.
     /// </summary>
-    public ProfileImportResult Verify(string envelopeJson, DateTimeOffset now)
+    public static ProfileImportResult Verify(string envelopeJson, DateTimeOffset now)
     {
         ProfileEnvelope envelope;
         try
@@ -62,42 +53,47 @@ public sealed class ProfileVerifier
         {
             return ProfileImportResult.Fail(
                 ProfileRejectionReason.InvalidEnvelope,
-                $"El perfil no tiene un formato reconocible (no es un sobre payload/signature/keyId valido): {ex.Message}");
+                $"El perfil no tiene un formato reconocible (no es un sobre payload/signature/signerPublicKey valido): {ex.Message}");
         }
 
-        if (string.IsNullOrEmpty(envelope.Payload) || string.IsNullOrEmpty(envelope.Signature))
+        if (string.IsNullOrEmpty(envelope.Payload) || string.IsNullOrEmpty(envelope.Signature) ||
+            string.IsNullOrEmpty(envelope.SignerPublicKey))
         {
-            return ProfileImportResult.Fail(ProfileRejectionReason.InvalidEnvelope, "El perfil no trae payload o firma.");
+            return ProfileImportResult.Fail(
+                ProfileRejectionReason.InvalidEnvelope, "El perfil no trae payload, firma o la clave publica del panel.");
         }
 
         byte[] payloadBytes;
         byte[] signatureBytes;
+        byte[] signerPublicKeyDer;
         try
         {
             payloadBytes = Base64Url.Decode(envelope.Payload);
             signatureBytes = Base64Url.Decode(envelope.Signature);
+            signerPublicKeyDer = Base64Url.Decode(envelope.SignerPublicKey);
         }
         catch (FormatException ex)
         {
             return ProfileImportResult.Fail(
                 ProfileRejectionReason.InvalidEnvelope,
-                $"El payload o la firma del perfil no estan en base64url valido: {ex.Message}");
+                $"El payload, la firma o la clave publica del perfil no estan en base64url valido: {ex.Message}");
         }
 
-        if (!string.Equals(envelope.KeyId, ExpectedKeyId, StringComparison.Ordinal))
+        Ed25519PublicKeyParameters signerPublicKey;
+        try
         {
-            return ProfileImportResult.Fail(
-                ProfileRejectionReason.UnknownKeyId,
-                $"Este perfil esta firmado con la clave \"{envelope.KeyId}\", pero esta version de didev VPN " +
-                $"solo reconoce \"{ExpectedKeyId}\". Actualiza la app, o pide un perfil nuevo si el panel ha " +
-                "rotado su clave de firma.");
+            signerPublicKey = Ed25519PublicKeySpki.Parse(signerPublicKeyDer);
+        }
+        catch (FormatException ex)
+        {
+            return ProfileImportResult.Fail(ProfileRejectionReason.InvalidEnvelope, ex.Message);
         }
 
-        if (!VerifySignature(payloadBytes, signatureBytes))
+        if (!VerifySignature(signerPublicKey, payloadBytes, signatureBytes))
         {
             return ProfileImportResult.Fail(
                 ProfileRejectionReason.InvalidSignature,
-                "La firma del perfil no es valida: no viene de este panel, o el contenido se ha manipulado.");
+                "La firma del perfil no verifica con la clave publica que trae el propio sobre: el contenido se ha manipulado.");
         }
 
         ProvisioningProfile profile;
@@ -111,6 +107,15 @@ public sealed class ProfileVerifier
             return ProfileImportResult.Fail(
                 ProfileRejectionReason.InvalidPayload,
                 $"El contenido firmado no es el JSON de perfil esperado: {ex.Message}");
+        }
+
+        var actualSignerKeySha256 = Convert.ToHexString(SHA256.HashData(signerPublicKeyDer)).ToLowerInvariant();
+        if (!string.Equals(profile.SignerKeySha256, actualSignerKeySha256, StringComparison.OrdinalIgnoreCase))
+        {
+            return ProfileImportResult.Fail(
+                ProfileRejectionReason.SignerKeyMismatch,
+                "El perfil es incoherente: la huella de la clave de firma (signerKeySha256) no coincide con la " +
+                "clave publica que realmente trae el sobre. Pide un perfil nuevo desde el panel.");
         }
 
         if (profile.Version != SupportedSchemaVersion)
@@ -147,12 +152,12 @@ public sealed class ProfileVerifier
         return ProfileImportResult.Ok(profile);
     }
 
-    private bool VerifySignature(byte[] payload, byte[] signature)
+    private static bool VerifySignature(Ed25519PublicKeyParameters publicKey, byte[] payload, byte[] signature)
     {
         try
         {
             var signer = new Ed25519Signer();
-            signer.Init(forSigning: false, _publicKey);
+            signer.Init(forSigning: false, publicKey);
             signer.BlockUpdate(payload, 0, payload.Length);
             return signer.VerifySignature(signature);
         }

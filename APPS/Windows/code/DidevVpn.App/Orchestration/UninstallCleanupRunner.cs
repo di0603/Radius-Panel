@@ -13,18 +13,18 @@ namespace DidevVpn.App.Orchestration;
 ///   1. Si UILevel indica una desinstalacion silenciosa (msiexec /qn: nadie
 ///      puede contestar a nada), no se pregunta nada y no se borra nada -es
 ///      el valor por defecto mas seguro, ver MsiUiLevel-.
-///   2. Si este usuario tiene un dispositivo dado de alta (device.json),
-///      pregunta (Si/No/Cancelar, igual que "Quitar de este equipo" del menu
-///      de la bandeja) si borrar tambien su certificado; Cancelar aborta todo
-///      este proceso sin tocar nada, ni siquiera la conexion.
-///   3. Solo si, tras eso, NINGUN otro perfil de usuario de este equipo tiene
-///      ya un dispositivo dado de alta (se comprueba enumerando
-///      C:\Users\*\AppData\Local\didev-vpn\device.json: esto SI es fiable
-///      desde una custom action elevada, a diferencia de manipular la
-///      conexion VPN o el certificado de otro usuario, que exigiria cargar
-///      su perfil/hive -ver la limitacion documentada en el README-), se
-///      pregunta si retirar tambien la raiz "didev Root CA" de
-///      LocalMachine\Root.
+///   2. Si este usuario tiene alguna conexion configurada (ConnectionStore.List,
+///      esta app es un cliente generico desde el prompt 12.5: puede haber
+///      varias), pregunta UNA vez (Si/No/Cancelar) si borrar tambien sus
+///      certificados; Cancelar aborta todo este proceso sin tocar nada.
+///
+/// A diferencia del prompt 12 original, esta version YA NO ofrece retirar
+/// ninguna raiz de confianza durante la desinstalacion: con varias conexiones
+/// posibles, cada una a un servidor (y por tanto una raiz) distintos, decidir
+/// con seguridad cual raiz retirar sin arriesgarse a romper otra conexion que
+/// comparta la misma raiz es mas dificil que instalar, y no se ha
+/// implementado (ver IRootCertificateStoreService y el README). Se recomienda
+/// certlm.msc a mano si hace falta limpiarla.
 ///
 /// Nunca lanza: un fallo aqui no debe bloquear la desinstalacion (por eso
 /// Package.wxs marca esta custom action con Return="ignore" de todas formas,
@@ -36,7 +36,6 @@ internal static class UninstallCleanupRunner
         int uiLevel,
         ICertificateEnrollmentService certificateService,
         IVpnConnectionService vpnService,
-        IRootCertificateStoreService rootStore,
         FileLogger logger)
     {
         try
@@ -60,39 +59,35 @@ internal static class UninstallCleanupRunner
                 return 0;
             }
 
-            var state = DeviceStateStore.Load();
-            string? rootSha256ToConsider = null;
-
-            if (state is not null)
+            var connections = ConnectionStore.List();
+            if (connections.Count == 0)
             {
-                rootSha256ToConsider = state.RootCaSha256;
-
-                var confirm = MessageBox.Show(
-                    $"Se va a desinstalar didev VPN. Se borrara la conexion \"{AppPaths.ConnectionName}\" y la " +
-                    "configuracion guardada de ESTE usuario.\n\n?Borrar tambien el certificado del dispositivo de este equipo?",
-                    "Desinstalando didev VPN",
-                    MessageBoxButtons.YesNoCancel,
-                    MessageBoxIcon.Warning);
-
-                if (confirm == DialogResult.Cancel)
-                {
-                    logger.Info("--uninstall-cleanup: cancelado por el usuario, no se toca ni la conexion ni la raiz.");
-                    return 0;
-                }
-
-                TryRemoveConnection(vpnService, logger);
-
-                if (confirm == DialogResult.Yes)
-                {
-                    TryRemoveCertificate(state.CertificateThumbprint, logger);
-                }
-
-                DeviceStateStore.Delete();
+                logger.Info("--uninstall-cleanup: este usuario no tiene ninguna conexion configurada, nada que preguntar.");
+                return 0;
             }
 
-            if (!string.IsNullOrEmpty(rootSha256ToConsider))
+            var names = string.Join(", ", connections.Select(c => c.Cn));
+            var confirm = MessageBox.Show(
+                $"Se va a desinstalar didev VPN. Este usuario tiene {connections.Count} conexion(es) configurada(s): {names}.\n\n" +
+                "Se borraran todas ellas (conexion y configuracion guardada).\n\n?Borrar tambien sus certificados de este equipo?",
+                "Desinstalando didev VPN",
+                MessageBoxButtons.YesNoCancel,
+                MessageBoxIcon.Warning);
+
+            if (confirm == DialogResult.Cancel)
             {
-                OfferToRetireRoot(rootSha256ToConsider!, rootStore, logger);
+                logger.Info("--uninstall-cleanup: cancelado por el usuario, no se toca ninguna conexion.");
+                return 0;
+            }
+
+            foreach (var connection in connections)
+            {
+                TryRemoveConnection(vpnService, connection.Cn, logger);
+                if (confirm == DialogResult.Yes)
+                {
+                    TryRemoveCertificate(connection.CertificateThumbprint, logger);
+                }
+                ConnectionStore.Delete(connection.Cn);
             }
 
             return 0;
@@ -104,51 +99,15 @@ internal static class UninstallCleanupRunner
         }
     }
 
-    private static void OfferToRetireRoot(string rootSha256, IRootCertificateStoreService rootStore, FileLogger logger)
-    {
-        var others = CountOtherUserProfilesWithDeviceState();
-        if (others > 0)
-        {
-            logger.Info(
-                $"--uninstall-cleanup: {others} otro(s) perfil(es) de usuario en este equipo siguen teniendo un " +
-                "dispositivo didev VPN dado de alta; la raiz de confianza NO se retira.");
-            return;
-        }
-
-        var confirmRoot = MessageBox.Show(
-            "Ningun otro usuario de este equipo parece tener un dispositivo didev VPN dado de alta.\n\n" +
-            "?Retirar tambien la raiz de confianza \"didev Root CA\" de este equipo (LocalMachine\\Root)? " +
-            "Hazlo solo si estas seguro de que nada mas en esta maquina depende de ella; si tienes dudas, elige No " +
-            "(podras retirarla luego a mano con certlm.msc).",
-            "Retirar raiz de confianza",
-            MessageBoxButtons.YesNo,
-            MessageBoxIcon.Question);
-
-        if (confirmRoot != DialogResult.Yes)
-        {
-            return;
-        }
-
-        try
-        {
-            rootStore.Remove(StoreLocation.LocalMachine, rootSha256);
-            logger.Info("--uninstall-cleanup: raiz \"didev Root CA\" retirada de LocalMachine\\Root.");
-        }
-        catch (Exception ex)
-        {
-            logger.Warn($"--uninstall-cleanup: no se ha podido retirar la raiz de confianza: {ex.Message}");
-        }
-    }
-
-    private static void TryRemoveConnection(IVpnConnectionService vpnService, FileLogger logger)
+    private static void TryRemoveConnection(IVpnConnectionService vpnService, string connectionName, FileLogger logger)
     {
         try
         {
-            vpnService.RemoveConnection(AppPaths.ConnectionName);
+            vpnService.RemoveConnection(connectionName);
         }
         catch (Exception ex)
         {
-            logger.Warn($"--uninstall-cleanup: no se ha podido quitar la conexion VPN: {ex.Message}");
+            logger.Warn($"--uninstall-cleanup: no se ha podido quitar la conexion \"{connectionName}\": {ex.Message}");
         }
     }
 
@@ -166,72 +125,7 @@ internal static class UninstallCleanupRunner
         }
         catch (Exception ex)
         {
-            logger.Warn($"--uninstall-cleanup: no se ha podido borrar el certificado del dispositivo: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// Cuenta cuantos perfiles de usuario de este equipo, DISTINTOS del que se
-    /// esta procesando (que ya ha borrado su propio device.json antes de
-    /// llegar aqui), siguen teniendo un dispositivo dado de alta. Best-effort:
-    /// un perfil sin permiso de lectura (poco frecuente para una custom
-    /// action elevada, pero no imposible) se ignora en vez de fallar.
-    /// </summary>
-    private static int CountOtherUserProfilesWithDeviceState()
-    {
-        var usersRoot = Path.GetDirectoryName(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
-        if (string.IsNullOrEmpty(usersRoot) || !Directory.Exists(usersRoot))
-        {
-            return 0;
-        }
-
-        var count = 0;
-        foreach (var profileDir in SafeEnumerateDirectories(usersRoot))
-        {
-            var deviceJsonPath = Path.Combine(profileDir, "AppData", "Local", "didev-vpn", "device.json");
-            try
-            {
-                if (File.Exists(deviceJsonPath))
-                {
-                    count++;
-                }
-            }
-            catch
-            {
-                // Sin permiso para comprobar este perfil: se ignora, no se cuenta ni se falla.
-            }
-        }
-        return count;
-    }
-
-    private static IEnumerable<string> SafeEnumerateDirectories(string path)
-    {
-        IEnumerator<string>? enumerator = null;
-        try
-        {
-            enumerator = Directory.EnumerateDirectories(path).GetEnumerator();
-        }
-        catch
-        {
-            yield break;
-        }
-
-        using (enumerator)
-        {
-            while (true)
-            {
-                bool moved;
-                try
-                {
-                    moved = enumerator.MoveNext();
-                }
-                catch
-                {
-                    yield break;
-                }
-                if (!moved) yield break;
-                yield return enumerator.Current;
-            }
+            logger.Warn($"--uninstall-cleanup: no se ha podido borrar un certificado: {ex.Message}");
         }
     }
 }

@@ -8,19 +8,20 @@ namespace DidevVpn.Core.Profile;
 /// </summary>
 public enum ProfileRejectionReason
 {
-    /// <summary>El texto/fichero no es un sobre { payload, signature, keyId } valido (JSON roto, campos vacios...).</summary>
+    /// <summary>El texto/fichero no es un sobre { payload, signature, keyId, signerPublicKey } valido (JSON roto, campos vacios, signerPublicKey con un formato SPKI irreconocible...).</summary>
     InvalidEnvelope,
 
-    /// <summary>La firma Ed25519 no verifica contra la clave publica incrustada: el perfil no viene de este panel, o esta corrupto/manipulado.</summary>
+    /// <summary>La firma Ed25519 no verifica contra la signerPublicKey del propio sobre: el contenido se ha manipulado, o la firma no corresponde a esa clave.</summary>
     InvalidSignature,
 
     /// <summary>
-    /// El sobre trae un <c>keyId</c> distinto del que espera esta version de la app
-    /// (<see cref="ProfileVerifier.ExpectedKeyId"/>). No es un problema de firma -la firma
-    /// ni se comprueba todavia en este punto-, sino de rotacion de claves: el panel firma
-    /// ahora con una clave que esta version de la app no conoce.
+    /// <see cref="ProvisioningProfile.SignerKeySha256"/> (DENTRO del payload
+    /// firmado) no es el SHA-256 exacto de <see cref="ProfileEnvelope.SignerPublicKey"/>
+    /// (FUERA del payload): el sobre es incoherente -no es una decision del
+    /// usuario, se rechaza sin preguntar nada-. Ver el comentario de
+    /// ProfileVerifier sobre por que esto es distinto de InvalidSignature.
     /// </summary>
-    UnknownKeyId,
+    SignerKeyMismatch,
 
     /// <summary>El payload decodificado no es el JSON esperado del perfil.</summary>
     InvalidPayload,

@@ -38,33 +38,49 @@ internal static class Program
         return 0;
     }
 
+    /// <summary>
+    /// Renueva TODAS las conexiones de este usuario (cliente generico desde
+    /// el prompt 12.5: puede haber varias). Cada una se procesa por separado
+    /// -un fallo en una no debe impedir renovar las demas-; el codigo de
+    /// salida refleja el peor resultado (2 si alguna quedo bloqueada por
+    /// version minima, 1 si alguna fallo de verdad, 0 si todas fueron bien o
+    /// no habia ninguna).
+    /// </summary>
     private static int RunRenewSilent()
     {
         var logger = new FileLogger();
-        var state = DeviceStateStore.Load();
-        if (state is null)
+        var connections = ConnectionStore.List();
+        if (connections.Count == 0)
         {
-            logger.Info("--renew-silent: no hay ningun dispositivo dado de alta todavia, nada que hacer.");
+            logger.Info("--renew-silent: no hay ninguna conexion configurada todavia, nada que hacer.");
             return 0;
         }
 
-        try
+        var worstExitCode = 0;
+        foreach (var connection in connections)
         {
-            var orchestrator = new RenewalOrchestrator(
-                new CertificateEnrollmentService(),
-                new EstClient(),
-                new MessageBoxUserConfirmations(),
-                logger,
-                AppVersionHelper.GetAppVersion());
-            var result = orchestrator.RenewIfDueAsync(state, CancellationToken.None).GetAwaiter().GetResult();
-            logger.Info($"--renew-silent: resultado {result.Outcome}.");
-            return result.Outcome == RenewalOutcome.BlockedByMinAppVersion ? 2 : 0;
+            try
+            {
+                var orchestrator = new RenewalOrchestrator(
+                    new CertificateEnrollmentService(),
+                    new EstClient(),
+                    new MessageBoxUserConfirmations(),
+                    logger,
+                    AppVersionHelper.GetAppVersion());
+                var result = orchestrator.RenewIfDueAsync(connection, CancellationToken.None).GetAwaiter().GetResult();
+                logger.Info($"--renew-silent: \"{connection.Cn}\" -> {result.Outcome}.");
+                if (result.Outcome == RenewalOutcome.BlockedByMinAppVersion)
+                {
+                    worstExitCode = Math.Max(worstExitCode, 2);
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.Error($"--renew-silent: fallo renovando \"{connection.Cn}\"", ex);
+                worstExitCode = Math.Max(worstExitCode, 1);
+            }
         }
-        catch (Exception ex)
-        {
-            logger.Error("--renew-silent: fallo al renovar", ex);
-            return 1;
-        }
+        return worstExitCode;
     }
 
     /// <summary>
@@ -90,7 +106,6 @@ internal static class Program
             uiLevel,
             new CertificateEnrollmentService(),
             new VpnConnectionService(),
-            new RootCertificateStoreService(),
             logger);
     }
 }

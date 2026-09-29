@@ -9,17 +9,14 @@
     2) Publica DidevVpn.App dos veces: self-contained "normal" (para el MSI)
        y self-contained single-file (para el .zip portable).
     3) Firma el .exe portable con signtool (si se da un certificado).
-    4) Empaqueta el portable en didev-vpn-portable-<version>.zip.
-    5) Compila el instalador WiX (DidevVpn.Installer) contra la publicacion
+    4) Copia el .exe portable y lo empaqueta en didev-vpn-portable-<version>.zip.
+    5) Intenta compilar el instalador WiX (DidevVpn.Installer) contra la publicacion
        "normal", produciendo didev-vpn-setup-<version>.msi.
     6) Firma el .msi con signtool (si se da un certificado).
-    7) Genera SHA256SUMS.txt de los dos artefactos finales.
+    7) Genera SHA256SUMS.txt de todos los artefactos presentes.
 
-    La clave publica Ed25519 (DidevVpn.App/SigningKey/*.pub.pem) y la raiz de
-    didev (DidevVpn.Installer/didev-root-ca.cer) tienen que estar YA
-    configuradas antes de llamar a este script: si siguen siendo el
-    placeholder del repo, el paso de publicacion falla solo (ver el target
-    ValidateProfileSigningKey en DidevVpn.App.csproj) con un mensaje claro.
+    Este cliente generico no necesita ninguna clave, certificado ni servidor
+    de didev para compilar. La confianza se decide al importar cada perfil.
 
 .PARAMETER Version
     Version X.Y.Z de este build (se usa tal cual como -p:Version/-p:ProductVersion
@@ -158,29 +155,36 @@ Invoke-SignTool -FilePath $portableExe
 # ------------------------------------------------------------------------
 Write-Step "4/7 - Empaquetando la variante portable"
 New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+$finalPortableExe = Join-Path $outputDir "didev-vpn-$Version.exe"
+Copy-Item -Path $portableExe -Destination $finalPortableExe -Force
 $portableZip = Join-Path $outputDir "didev-vpn-portable-$Version.zip"
 Remove-Item -Path $portableZip -ErrorAction SilentlyContinue
 Compress-Archive -Path $portableExe -DestinationPath $portableZip -CompressionLevel Optimal
 
 # ------------------------------------------------------------------------
-Write-Step "5/7 - Compilando el instalador (WiX)"
+Write-Step "5/7 - Intentando compilar el instalador (WiX)"
 dotnet build (Join-Path $root 'DidevVpn.Installer\DidevVpn.Installer.wixproj') `
     -c Release -p:Platform=x64 -p:ProductVersion=$Version `
     "-p:AppPublishDir=$publishNormalDir\"
-if ($LASTEXITCODE -ne 0) { throw "Fallo compilando el instalador WiX." }
-
 $builtMsi = Join-Path $root 'DidevVpn.Installer\bin\x64\Release\didev-vpn-setup.msi'
 $finalMsi = Join-Path $outputDir "didev-vpn-setup-$Version.msi"
-Copy-Item -Path $builtMsi -Destination $finalMsi -Force
+if ($LASTEXITCODE -eq 0 -and (Test-Path $builtMsi)) {
+    Copy-Item -Path $builtMsi -Destination $finalMsi -Force
+}
+else {
+    Write-Warning "WiX no esta disponible o no pudo generar el MSI. Se continua con el EXE, ZIP y SHA256SUMS."
+}
 
 # ------------------------------------------------------------------------
 Write-Step "6/7 - Firmando el instalador"
-Invoke-SignTool -FilePath $finalMsi
+if (Test-Path $finalMsi) { Invoke-SignTool -FilePath $finalMsi }
 
 # ------------------------------------------------------------------------
 Write-Step "7/7 - SHA256SUMS.txt"
 $sumsPath = Join-Path $outputDir 'SHA256SUMS.txt'
-$lines = Get-ChildItem -Path $outputDir -File | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } | ForEach-Object {
+$lines = Get-ChildItem -Path $outputDir -File | Where-Object {
+    $_.Name -ne 'SHA256SUMS.txt' -and $_.Extension -in '.exe', '.zip', '.msi'
+} | ForEach-Object {
     $hash = (Get-FileHash -Path $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
     "$hash  $($_.Name)"
 }

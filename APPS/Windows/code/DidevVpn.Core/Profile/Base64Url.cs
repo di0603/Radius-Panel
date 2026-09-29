@@ -26,4 +26,8 @@ public static class Base64Url
         };
         return Convert.FromBase64String(padded);
     }
+
+    /// <summary>Inverso de <see cref="Decode"/>: mismo alfabeto ('-'/'_'), sin relleno '='.</summary>
+    public static string Encode(byte[] value) =>
+        Convert.ToBase64String(value).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 }

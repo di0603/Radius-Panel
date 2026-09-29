@@ -25,32 +25,4 @@
     <PackageReference Include="TaskScheduler" Version="2.12.2" />
   </ItemGroup>
 
-  <!--
-    Clave publica Ed25519 de firma de perfiles: fichero de configuracion de
-    compilacion (SigningKey/*.pub.pem), NUNCA incrustada a mano en un .cs.
-    Se embebe en el .exe como recurso (ProfileSigningKeyLoader la lee de ahi
-    en tiempo de ejecucion) y su contenido se valida ANTES de compilar: si
-    sigue siendo el placeholder del repo, el build falla con un mensaje
-    claro. La app nunca debe poder compilarse sin poder verificar firmas.
-  -->
-  <ItemGroup>
-    <EmbeddedResource Include="SigningKey\vpn-profile-signing-ed25519.pub.pem" LogicalName="DidevVpn.App.SigningKey.vpn-profile-signing-ed25519.pub.pem" />
-  </ItemGroup>
-
-  <Target Name="ValidateProfileSigningKey" BeforeTargets="CoreCompile">
-    <PropertyGroup>
-      <_SigningKeyPath>$(MSBuildProjectDirectory)\SigningKey\vpn-profile-signing-ed25519.pub.pem</_SigningKeyPath>
-    </PropertyGroup>
-    <Error Condition="!Exists('$(_SigningKeyPath)')"
-           Text="Falta $(_SigningKeyPath). No se puede compilar sin el fichero de configuracion de la clave publica de firma de perfiles." />
-    <ReadLinesFromFile Condition="Exists('$(_SigningKeyPath)')" File="$(_SigningKeyPath)">
-      <Output TaskParameter="Lines" ItemName="_SigningKeyLines" />
-    </ReadLinesFromFile>
-    <PropertyGroup>
-      <_SigningKeyContent>@(_SigningKeyLines, '%0a')</_SigningKeyContent>
-    </PropertyGroup>
-    <Error Condition="Exists('$(_SigningKeyPath)') And (!$(_SigningKeyContent.Contains('-----BEGIN PUBLIC KEY-----')) Or !$(_SigningKeyContent.Contains('-----END PUBLIC KEY-----')) Or $(_SigningKeyContent.Contains('PEGAR AQUI')))"
-           Text="Falta configurar la clave publica Ed25519 de firma de perfiles. Edita DidevVpn.App/SigningKey/vpn-profile-signing-ed25519.pub.pem y sustituye el placeholder por la salida real de 'openssl pkey -in vpn-profile-signing-ed25519.pem -pubout' (ver README de didev-vpn-windows y la seccion 'Aprovisionamiento de apps' del panel). Esta app nunca debe compilarse sin poder verificar la firma de los perfiles de aprovisionamiento." />
-  </Target>
-
 </Project>

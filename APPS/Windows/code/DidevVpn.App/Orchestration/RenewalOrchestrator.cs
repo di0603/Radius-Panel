@@ -16,8 +16,9 @@ internal sealed record RenewalResult(RenewalOutcome Outcome, string? Message = n
 
 /// <summary>
 /// Comprueba GET /status con TLS mutuo usando el certificado vigente y
-/// renueva por simplereenroll si toca. La app NO necesita reconfigurar la
-/// conexion VPN tras renovar: "didev VPN" selecciona el certificado de
+/// renueva por simplereenroll si toca, para UNA conexion (el llamador itera
+/// todas las de ConnectionStore.List()). La app NO necesita reconfigurar la
+/// conexion VPN tras renovar: la conexion selecciona el certificado de
 /// CurrentUser\My por el filtro EAP (SimpleCertSelection), no por huella fija,
 /// asi que un certificado nuevo con el mismo CN ya vale sin tocar nada mas.
 /// </summary>
@@ -43,7 +44,7 @@ internal sealed class RenewalOrchestrator
         _currentAppVersion = currentAppVersion;
     }
 
-    public async Task<RenewalResult> RenewIfDueAsync(DeviceState state, CancellationToken ct)
+    public async Task<RenewalResult> RenewIfDueAsync(ConnectionRecord state, CancellationToken ct)
     {
         using var currentCertificate = FindCurrentCertificate(state)
             ?? throw new InvalidOperationException(
@@ -95,7 +96,7 @@ internal sealed class RenewalOrchestrator
         state.CertificateThumbprint = installedCertificate.Thumbprint;
         state.IsTpmBacked = newKey.IsTpmBacked;
         state.LastEnrolledAtUtc = DateTimeOffset.UtcNow;
-        DeviceStateStore.Save(state);
+        ConnectionStore.Save(state);
 
         _logger.Info($"Renovacion: completada para \"{state.Cn}\".");
         return new RenewalResult(RenewalOutcome.Renewed);
@@ -117,7 +118,7 @@ internal sealed class RenewalOrchestrator
         return _certificateService.CreateSoftwareBackedKey(cn);
     }
 
-    private static X509Certificate2? FindCurrentCertificate(DeviceState state)
+    private static X509Certificate2? FindCurrentCertificate(ConnectionRecord state)
     {
         using var store = new X509Store(StoreName.My, StoreLocation.CurrentUser);
         store.Open(OpenFlags.ReadOnly);

@@ -27,29 +27,55 @@ internal sealed class MinAppVersionRequiredException : Exception
 }
 
 /// <summary>
-/// Alta de un dispositivo a partir de un perfil ya verificado (ver
-/// ProfileVerifier: firma valida, variante "full", no caducado). Orden fijo,
-/// parando en el primer fallo -nunca deja una conexion VPN configurada con un
-/// certificado a medio instalar, ni un certificado instalado sin la conexion
-/// que lo usa-:
+/// Confianza en el primer uso (TOFU, prompt 12.5): esta conexion YA tenia un
+/// ancla guardada (signerKeySha256/rootCaSha256 de una importacion anterior)
+/// y el perfil que se acaba de importar trae una identidad distinta. Se
+/// rechaza SIEMPRE, sin ofrecer "aceptar de todas formas" desde este punto
+/// del flujo -cambiar de ancla es una decision aparte y deliberada: quitar
+/// la conexion y volver a anadirla-.
+/// </summary>
+internal sealed class TrustAnchorMismatchException : Exception
+{
+    public TrustAnchorMismatchException(string message) : base(message)
+    {
+    }
+}
+
+/// <summary>
+/// Alta de un dispositivo a partir de un perfil ya verificado por
+/// ProfileVerifier (firma autoconsistente, variante "full", no caducado) -
+/// pero ProfileVerifier NO sabe nada de confianza: eso lo decide esta clase,
+/// comparando con el ancla guardada de la conexion (o pidiendo confirmacion
+/// si es la primera vez, ver IUserConfirmations.ConfirmTrustAnchor). Orden
+/// fijo, parando en el primer fallo -nunca deja una conexion VPN configurada
+/// con un certificado a medio instalar, ni un certificado instalado sin la
+/// conexion que lo usa-:
 ///   1. La huella de la raiz que trae el perfil coincide con la cadena que
 ///      trae el propio perfil (deberian ser consistentes por construccion,
 ///      ya que los dos van dentro del mismo payload firmado; si no
 ///      coincidieran seria un perfil corrupto o un bug del panel, no un
 ///      ataque -la firma ya cubre el payload entero-).
-///   2. La raiz esta en LocalMachine\Root (root a los dos: el certificado del
-///      propio gateway IKE lo exige ahi, no solo el de RADIUS -ver
+///   2. Confianza en el primer uso: si esta conexion (por "cn") ya tiene un
+///      ancla guardada, el signerKeySha256/rootCaSha256 de este perfil deben
+///      coincidir EXACTAMENTE (si no, TrustAnchorMismatchException, sin
+///      opcion de aceptar). Si es la primera vez (sin ancla), se pide
+///      confirmacion explicita mostrando las huellas; sin confirmar, no se
+///      continua.
+///   3. La raiz esta en LocalMachine\Root (el certificado del propio gateway
+///      IKE lo exige ahi, no solo el de RADIUS -ver
 ///      APPS/Windows/NOTAS-prompt-12-en-pausa.md, riesgo 1-); si no, pide
 ///      la elevacion de un solo uso.
-///   3. Clave del dispositivo: TPM primero, con confirmacion explicita si
+///   4. Clave del dispositivo: TPM primero, con confirmacion explicita si
 ///      hay que caer a software.
-///   4. simpleenroll con el token del perfil.
-///   5. Version minima de la app (ver MinAppVersionRequiredException): si el
+///   5. simpleenroll con el token del perfil.
+///   6. Version minima de la app (ver MinAppVersionRequiredException): si el
 ///      panel exige una version superior a esta, se aborta AQUI, sin instalar
 ///      el certificado ni tocar la conexion VPN.
-///   6. Instala el certificado emitido, enlazado a esa misma clave.
-///   7. Configura la conexion IKEv2/EAP-TLS "didev VPN".
-///   8. Guarda el estado del dispositivo para poder renovar despues.
+///   7. Instala el certificado emitido, enlazado a esa misma clave.
+///   8. Configura la conexion IKEv2/EAP-TLS, nombrada "cn" (cada conexion de
+///      este cliente generico tiene su propio nombre RAS/VpnClient).
+///   9. Guarda el ancla y el resto del estado de la conexion para poder
+///      renovar despues.
 /// </summary>
 internal sealed class EnrollmentOrchestrator
 {
@@ -79,9 +105,9 @@ internal sealed class EnrollmentOrchestrator
         _currentAppVersion = currentAppVersion;
     }
 
-    public async Task<DeviceState> EnrollAsync(ProvisioningProfile profile, CancellationToken ct)
+    public async Task<ConnectionRecord> EnrollAsync(ProvisioningProfile profile, CancellationToken ct)
     {
-        _logger.Info($"Alta: empezando para \"{profile.Cn}\" (modo {profile.TunnelMode}).");
+        _logger.Info($"Alta: empezando para \"{profile.Cn}\" (servidor {profile.Server}, modo {profile.TunnelMode}).");
 
         var chain = EstTrustValidator.ParseChain(profile.CaChainPem!);
         var root = chain.FirstOrDefault(c => c.SubjectName.RawData.AsSpan().SequenceEqual(c.IssuerName.RawData))
@@ -93,6 +119,7 @@ internal sealed class EnrollmentOrchestrator
                 "El perfil es inconsistente: la huella de la raiz no coincide con la cadena que trae. Pide uno nuevo desde el panel.");
         }
 
+        EnsureTrustAnchor(profile);
         EnsureRootTrusted(root, actualRootSha256);
 
         using var key = CreateDeviceKey(profile.Cn);
@@ -119,13 +146,14 @@ internal sealed class EnrollmentOrchestrator
 
         ConfigureVpnConnection(profile, root);
 
-        var state = new DeviceState
+        var record = new ConnectionRecord
         {
             Cn = profile.Cn,
             Server = profile.Server,
             EstBaseUrl = profile.EstBaseUrl,
             CaChainPem = profile.CaChainPem!,
             RootCaSha256 = profile.RootCaSha256,
+            SignerKeySha256 = profile.SignerKeySha256,
             CertificateThumbprint = installedCertificate.Thumbprint,
             IsTpmBacked = key.IsTpmBacked,
             TunnelMode = profile.TunnelMode,
@@ -138,9 +166,48 @@ internal sealed class EnrollmentOrchestrator
             EspPfsGroup = profile.Esp.DhGroup,
             LastEnrolledAtUtc = DateTimeOffset.UtcNow,
         };
-        DeviceStateStore.Save(state);
+        ConnectionStore.Save(record);
         _logger.Info($"Alta: completada para \"{profile.Cn}\".");
-        return state;
+        return record;
+    }
+
+    /// <summary>
+    /// Confianza en el primer uso: ver el resumen de la clase. Nunca deja
+    /// pasar un perfil cuya identidad no se ha confirmado (primera vez) o no
+    /// coincide con lo ya confirmado (veces siguientes).
+    /// </summary>
+    private void EnsureTrustAnchor(ProvisioningProfile profile)
+    {
+        // El ancla pertenece al servidor, no al nombre de una conexion. Asi,
+        // otro perfil del mismo servidor no puede abrir una segunda decision
+        // de confianza usando un cn distinto.
+        var existing = ConnectionStore.List().FirstOrDefault(connection =>
+            string.Equals(connection.Server, profile.Server, StringComparison.OrdinalIgnoreCase));
+        if (existing is null)
+        {
+            _logger.Info($"Alta: \"{profile.Cn}\" es un servidor nuevo (sin ancla de confianza todavia), pidiendo confirmacion.");
+            var confirmed = _confirmations.ConfirmTrustAnchor(
+                profile.Server,
+                profile.Cn,
+                FingerprintFormatter.Format(profile.SignerKeySha256),
+                FingerprintFormatter.Format(profile.RootCaSha256));
+            if (!confirmed)
+            {
+                throw new OperationCanceledException(
+                    "Alta cancelada: no se ha confirmado la identidad de este servidor (las huellas no coincidian, o se ha cancelado).");
+            }
+            _logger.Info($"Alta: confianza confirmada por el usuario para \"{profile.Cn}\".");
+            return;
+        }
+
+        if (!string.Equals(existing.SignerKeySha256, profile.SignerKeySha256, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(existing.RootCaSha256, profile.RootCaSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new TrustAnchorMismatchException(
+                $"La identidad del servidor \"{profile.Server}\" (\"{profile.Cn}\") ha cambiado respecto a la que se " +
+                "confirmo la primera vez. Por seguridad no se acepta automaticamente: si esperabas este cambio, quita " +
+                "la conexion y vuelve a anadirla desde cero.");
+        }
     }
 
     /// <summary>
@@ -186,11 +253,11 @@ internal sealed class EnrollmentOrchestrator
             return;
         }
 
-        _logger.Info("Alta: la raiz de didev no esta en LocalMachine\\Root todavia, pidiendo elevacion.");
+        _logger.Info("Alta: la raiz de este servidor no esta en LocalMachine\\Root todavia, pidiendo elevacion.");
         if (!_confirmations.ConfirmRootCertificateElevation())
         {
             throw new OperationCanceledException(
-                "Alta cancelada: hace falta confiar en la raiz de didev (una elevacion de administrador, una unica vez) para poder conectar.");
+                "Alta cancelada: hace falta confiar en la raiz de este servidor (una elevacion de administrador, una unica vez) para poder conectar.");
         }
 
         if (!RootCertificateElevatedInstaller.InstallWithUacPrompt(root))
@@ -226,8 +293,11 @@ internal sealed class EnrollmentOrchestrator
             ? profile.AaaId[3..]
             : profile.AaaId;
 
+        // El nombre de la conexion RAS/VpnClient es "cn": cada conexion de
+        // este cliente generico tiene el suyo (ya es unico por construccion,
+        // es el username RADIUS del dispositivo).
         var spec = new VpnConnectionSpec(
-            ConnectionName: AppPaths.ConnectionName,
+            ConnectionName: profile.Cn,
             ServerAddress: profile.Server,
             EapServerName: eapServerName,
             RootCertificateThumbprintSha1: root.Thumbprint,
@@ -240,6 +310,6 @@ internal sealed class EnrollmentOrchestrator
             EspPfsGroup: WindowsIpsecProposalMapper.MapDhOrPfsGroup(profile.Esp.DhGroup));
 
         _vpnConnectionService.CreateOrUpdateConnection(spec);
-        _logger.Info($"Alta: conexion \"{AppPaths.ConnectionName}\" configurada (servidor {profile.Server}).");
+        _logger.Info($"Alta: conexion \"{profile.Cn}\" configurada (servidor {profile.Server}).");
     }
 }

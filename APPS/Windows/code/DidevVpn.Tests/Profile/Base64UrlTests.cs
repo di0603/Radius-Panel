@@ -38,4 +38,30 @@ public class Base64UrlTests
     {
         Assert.Throws<FormatException>(() => Base64Url.Decode(string.Empty));
     }
+
+    [Fact]
+    public void Encode_UsaGuionYGuionBajoSinRelleno()
+    {
+        var original = new byte[] { 0xFB, 0xFF, 0xBE };
+        var encoded = Base64Url.Encode(original);
+
+        Assert.DoesNotContain('+', encoded);
+        Assert.DoesNotContain('/', encoded);
+        Assert.DoesNotContain('=', encoded);
+    }
+
+    [Theory]
+    [InlineData(new byte[] { })]
+    [InlineData(new byte[] { 1 })]
+    [InlineData(new byte[] { 1, 2, 3, 4, 5 })]
+    [InlineData(new byte[] { 0xFB, 0xFF, 0xBE, 0x00, 0x7F })]
+    public void EncodeDecode_IdaYVuelta(byte[] original)
+    {
+        if (original.Length == 0)
+        {
+            // Decode rechaza la cadena vacia a proposito (ver el test de arriba): no aplica el roundtrip.
+            return;
+        }
+        Assert.Equal(original, Base64Url.Decode(Base64Url.Encode(original)));
+    }
 }

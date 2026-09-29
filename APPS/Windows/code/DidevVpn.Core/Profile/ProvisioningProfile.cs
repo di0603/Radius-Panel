@@ -78,6 +78,17 @@ public sealed class ProvisioningProfile
     public string RootCaSha256 { get; set; } = string.Empty;
 
     /// <summary>
+    /// SHA-256 (hex, minusculas) del SPKI DER de <see cref="ProfileEnvelope.SignerPublicKey"/>.
+    /// Va DENTRO del payload firmado a proposito: liga esa clave publica al
+    /// payload (ProfileVerifier comprueba que coincide con el SHA-256 real
+    /// de la clave que verifico la firma), y es lo que esta app fija como
+    /// ancla de confianza por conexion (junto a RootCaSha256) al confirmar
+    /// un servidor la primera vez.
+    /// </summary>
+    [JsonPropertyName("signerKeySha256")]
+    public string SignerKeySha256 { get; set; } = string.Empty;
+
+    /// <summary>
     /// Cadena de CA completa (intermedia + raiz, PEM concatenado). Solo en la
     /// variante "full" -el JSON de origen simplemente omite esta clave en la
     /// variante "qr", por eso es nullable aqui-.

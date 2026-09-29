@@ -18,15 +18,18 @@ internal enum AppVariant
 internal static class AppPaths
 {
     public const string DisplayName = "didev VPN";
-    public const string ConnectionName = "didev VPN";
-    public const string RootCertificateSubject = "CN=didev Root CA";
 
     public static string DataDirectory { get; } =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "didev-vpn");
 
     public static string LogsDirectory => Path.Combine(DataDirectory, "logs");
 
-    public static string ConfigFilePath => Path.Combine(DataDirectory, "device.json");
+    /// <summary>
+    /// Un fichero JSON por conexion (nombrado por su "cn", ver ConnectionStore):
+    /// esta app es un cliente GENERICO desde el prompt 12.5, puede tener varias
+    /// conexiones/servidores a la vez -ya no hay un unico "device.json"-.
+    /// </summary>
+    public static string ConnectionsDirectory => Path.Combine(DataDirectory, "connections");
 
     /// <summary>
     /// Instalada = el .exe vive bajo Program Files (lo pone ahi el MSI).
@@ -56,5 +59,6 @@ internal static class AppPaths
     {
         Directory.CreateDirectory(DataDirectory);
         Directory.CreateDirectory(LogsDirectory);
+        Directory.CreateDirectory(ConnectionsDirectory);
     }
 }

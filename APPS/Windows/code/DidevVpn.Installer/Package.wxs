@@ -16,7 +16,7 @@
            Scope="perMachine"
            InstallerVersion="500">
 
-    <SummaryInformation Description="didev VPN - IKEv2/EAP-TLS para la VPN de didev" />
+    <SummaryInformation Description="didev VPN - cliente IKEv2/EAP-TLS generico para VPNs con perfil .didevvpn" />
 
     <MajorUpgrade
       DowngradeErrorMessage="Ya hay instalada una version mas reciente de didev VPN. Desinstalala primero si quieres bajar de version."
@@ -24,17 +24,20 @@
     <MediaTemplate EmbedCab="yes" />
 
     <!--
-      La raiz de confianza offline de didev (no la genera este proyecto,
-      ver didev-root-ca.cer) y los scripts de las custom actions.
+      Desde el prompt 12.5 esta app es un cliente GENERICO (como
+      FortiClient): no incrusta ninguna raiz ni clave de ningun servidor
+      concreto, asi que el instalador ya NO trae ni instala ninguna raiz de
+      confianza (a diferencia del prompt 12 original). La confianza se fija
+      por conexion, en tiempo de ejecucion, la primera vez que se importa un
+      perfil (ver TrustAnchorConfirmationForm/EnrollmentOrchestrator) -y
+      es entonces cuando, si hace falta, se pide la UNICA elevacion UAC para
+      instalar esa raiz en LocalMachine\Root, igual en la variante instalada
+      que en la portable-. Solo quedan los scripts de la tarea programada.
     -->
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="didev-vpn">
-        <Component Id="RootCertificateComponent" Guid="6B1F0B7E-5A2E-4C3E-9E3E-1A2B3C4D5E6F">
-          <File Id="RootCertificateFile" Source="didev-root-ca.cer" Name="didev-root-ca.cer" KeyPath="yes" />
-        </Component>
         <Component Id="ScriptsComponent" Guid="7C2E1C8F-6B3F-4D4F-8F4F-2B3C4D5E6F70">
-          <File Id="InstallRootCertScript" Source="Scripts\Install-RootCertificate.ps1" KeyPath="yes" />
-          <File Id="InstallTaskScript" Source="Scripts\Install-ScheduledTask.ps1" />
+          <File Id="InstallTaskScript" Source="Scripts\Install-ScheduledTask.ps1" KeyPath="yes" />
           <File Id="RemoveTaskScript" Source="Scripts\Remove-ScheduledTask.ps1" />
         </Component>
         <!-- Inicio automatico de la app en la bandeja, para todos los usuarios (HKLM, no HKCU). -->
@@ -55,40 +58,30 @@
     </ComponentGroup>
 
     <Feature Id="MainFeature" Title="didev VPN" Level="1">
-      <ComponentRef Id="RootCertificateComponent" />
       <ComponentRef Id="ScriptsComponent" />
       <ComponentRef Id="AutostartComponent" />
       <ComponentGroupRef Id="AppFilesGroup" />
     </Feature>
 
     <!--
-      Tres pasos elevados de un solo uso durante la instalacion (nunca en un
+      Un unico paso elevado durante la instalacion (nunca en un
       repair/reinstalado: "NOT Installed" es la condicion estandar de MSI
       para "esto es una instalacion nueva o una version distinta", no una
-      reparacion de la misma version):
-        1. Confiar en la raiz offline en LocalMachine\Root (evita el UAC en
-           tiempo de ejecucion que si hace falta en la variante portable).
-        2. Registrar la tarea programada de renovacion para todos los
-           usuarios (logon + cada 12h, ver Scripts/Install-ScheduledTask.ps1).
+      reparacion de la misma version): registrar la tarea programada de
+      renovacion para todos los usuarios (logon + cada 12h, ver
+      Scripts/Install-ScheduledTask.ps1).
       Al desinstalar (solo desinstalacion real, no la baja de la version
       vieja durante un MajorUpgrade: "NOT UPGRADINGPRODUCTCODE"), se retira
       la tarea y, ANTES que nada (UninstallCleanupCmd, mientras el .exe
       todavia existe), se le pregunta al usuario que esta desinstalando -si
       la desinstalacion es interactiva, ver MsiUiLevel- si quiere borrar
-      tambien su propio certificado/conexion y, solo si ningun otro perfil de
-      usuario de este equipo sigue teniendo un dispositivo dado de alta, si
-      quiere retirar tambien la raiz de confianza. Ver
+      tambien sus propias conexiones/certificados. Ver
       DidevVpn.App/Orchestration/UninstallCleanupRunner.cs para el detalle
-      -y el README para la limitacion que queda: esto NO puede tocar la
-      conexion/certificado de OTROS usuarios de la maquina (pediria cargar su
-      perfil), asi que cada uno debe usar "Quitar de este equipo" primero.
+      -y el README para la limitacion que queda: esto NO puede tocar las
+      conexiones/certificados de OTROS usuarios de la maquina (pediria
+      cargar su perfil), asi que cada uno debe usar "Quitar de este equipo"
+      primero.
     -->
-    <SetProperty Id="InstallRootCertCmd"
-                 Before="InstallRootCertCmd"
-                 Sequence="execute"
-                 Value="&quot;powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]Install-RootCertificate.ps1&quot; -CertificatePath &quot;[INSTALLFOLDER]didev-root-ca.cer&quot;" />
-    <CustomAction Id="InstallRootCertCmd" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec" Execute="deferred" Impersonate="no" Return="check" />
-
     <SetProperty Id="InstallTaskCmd"
                  Before="InstallTaskCmd"
                  Sequence="execute"
@@ -102,7 +95,7 @@
     <CustomAction Id="RemoveTaskCmd" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec" Execute="deferred" Impersonate="no" Return="ignore" />
 
     <!--
-      INMEDIATA (no deferred): a diferencia de las otras tres custom actions
+      INMEDIATA (no deferred): a diferencia de las otras dos custom actions
       de arriba, esta pregunta cosas al usuario (MessageBox), y una custom
       action deferred corre en el proceso de servicio de Windows Installer,
       no en la sesion visible del usuario -no podria mostrar nada de forma
@@ -119,8 +112,7 @@
     <CustomAction Id="UninstallCleanupCmd" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec" Execute="immediate" Return="ignore" />
 
     <InstallExecuteSequence>
-      <Custom Action="InstallRootCertCmd" After="InstallFiles" Condition="NOT Installed" />
-      <Custom Action="InstallTaskCmd" After="InstallRootCertCmd" Condition="NOT Installed" />
+      <Custom Action="InstallTaskCmd" After="InstallFiles" Condition="NOT Installed" />
       <Custom Action="UninstallCleanupCmd" Before="RemoveTaskCmd" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
       <Custom Action="RemoveTaskCmd" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
     </InstallExecuteSequence>
