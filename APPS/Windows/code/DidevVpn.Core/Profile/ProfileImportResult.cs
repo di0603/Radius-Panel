@@ -14,6 +14,14 @@ public enum ProfileRejectionReason
     /// <summary>La firma Ed25519 no verifica contra la clave publica incrustada: el perfil no viene de este panel, o esta corrupto/manipulado.</summary>
     InvalidSignature,
 
+    /// <summary>
+    /// El sobre trae un <c>keyId</c> distinto del que espera esta version de la app
+    /// (<see cref="ProfileVerifier.ExpectedKeyId"/>). No es un problema de firma -la firma
+    /// ni se comprueba todavia en este punto-, sino de rotacion de claves: el panel firma
+    /// ahora con una clave que esta version de la app no conoce.
+    /// </summary>
+    UnknownKeyId,
+
     /// <summary>El payload decodificado no es el JSON esperado del perfil.</summary>
     InvalidPayload,
 

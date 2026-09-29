@@ -18,6 +18,14 @@ internal interface IRootCertificateStoreService
 {
     bool IsInstalled(StoreLocation location, string sha256ThumbprintHex);
     void Install(StoreLocation location, X509Certificate2 rootCertificate);
+
+    /// <summary>
+    /// Retira la raiz por huella SHA-256 (no falla si ya no esta). Solo la usa
+    /// el flujo de desinstalacion (--uninstall-cleanup), y solo tras
+    /// comprobar que ningun otro perfil de usuario de este equipo sigue
+    /// teniendo un dispositivo dado de alta -ver UninstallCleanupRunner-.
+    /// </summary>
+    void Remove(StoreLocation location, string sha256ThumbprintHex);
 }
 
 internal sealed class RootCertificateStoreService : IRootCertificateStoreService
@@ -42,6 +50,20 @@ internal sealed class RootCertificateStoreService : IRootCertificateStoreService
         using var store = new X509Store(StoreName.Root, location);
         store.Open(OpenFlags.ReadWrite);
         store.Add(rootCertificate);
+    }
+
+    public void Remove(StoreLocation location, string sha256ThumbprintHex)
+    {
+        using var store = new X509Store(StoreName.Root, location);
+        store.Open(OpenFlags.ReadWrite);
+        var target = sha256ThumbprintHex.Trim().ToLowerInvariant();
+        foreach (var cert in store.Certificates)
+        {
+            if (ComputeSha256Thumbprint(cert) == target)
+            {
+                store.Remove(cert);
+            }
+        }
     }
 
     public static string ComputeSha256Thumbprint(X509Certificate2 cert) =>

@@ -177,7 +177,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 return;
             }
 
-            var orchestrator = new EnrollmentOrchestrator(_certificateService, _estClient, _vpnService, _rootStore, _confirmations, _logger);
+            var orchestrator = new EnrollmentOrchestrator(
+                _certificateService, _estClient, _vpnService, _rootStore, _confirmations, _logger, AppVersionHelper.GetAppVersion());
             _deviceState = await orchestrator.EnrollAsync(result.Profile!, CancellationToken.None);
             _lastErrorMessage = null;
             MessageBox.Show(
@@ -189,6 +190,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         catch (OperationCanceledException ex)
         {
             MessageBox.Show(ex.Message, "Alta cancelada", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        catch (MinAppVersionRequiredException ex)
+        {
+            _lastErrorMessage = ex.Message;
+            MessageBox.Show(ex.Message, "Hace falta actualizar didev VPN", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
         catch (Exception ex)
         {

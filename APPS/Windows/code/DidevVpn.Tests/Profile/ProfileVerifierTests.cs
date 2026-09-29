@@ -134,6 +134,36 @@ public class ProfileVerifierTests
     }
 
     [Fact]
+    public void Verify_KeyIdDesconocido_SeRechazaAntesDeMirarLaFirma()
+    {
+        var (privateKey, publicPem) = GenerateKeyPairPem();
+        var payload = BuildValidProfilePayload();
+        var payloadBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(payload));
+        var signer = new Ed25519Signer();
+        signer.Init(forSigning: true, privateKey);
+        signer.BlockUpdate(payloadBytes, 0, payloadBytes.Length);
+        var signature = signer.GenerateSignature();
+        var payloadB64Url = Convert.ToBase64String(payloadBytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        var signatureB64Url = Convert.ToBase64String(signature).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        var envelopeJson = BuildEnvelopeJson(payloadB64Url, signatureB64Url, keyId: "vpn-profile-signing-v2");
+        var verifier = ProfileVerifier.FromPublicKeyPem(publicPem);
+
+        var result = verifier.Verify(envelopeJson, DateTimeOffset.UtcNow);
+
+        Assert.False(result.Success);
+        Assert.Equal(ProfileRejectionReason.UnknownKeyId, result.RejectionReason);
+    }
+
+    [Fact]
+    public void ExpectedKeyId_CoincideConLaConstanteDelPanel()
+    {
+        // server/src/lib/vpnProfileSigning.ts: PROFILE_SIGNING_KEY_ID. Si esto falla porque
+        // alguien cambio uno de los dos lados sin el otro, las apps ya distribuidas
+        // empezarian a rechazar todos los perfiles nuevos con UnknownKeyId.
+        Assert.Equal("vpn-profile-signing-v1", ProfileVerifier.ExpectedKeyId);
+    }
+
+    [Fact]
     public void Verify_SobreConJsonRoto_RechazaComoInvalidEnvelope()
     {
         var (_, publicPem) = GenerateKeyPairPem();

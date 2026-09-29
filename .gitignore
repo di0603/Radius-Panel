@@ -30,9 +30,9 @@ coverage/
 .claude/settings.local.json
 
 # didev-vpn-windows: build.ps1 deja aqui el .exe/.msi/SHA256SUMS.txt en local,
-# nunca se suben al repo (ver APPS/Windows/README.md)
+# nunca se suben al repo (ver APPS/Windows/ejecutables/README.md)
 APPS/Windows/ejecutables/*
-!APPS/Windows/ejecutables/.gitkeep
+!APPS/Windows/ejecutables/README.md
 
 # Salida de compilacion .NET (bin/obj de cada proyecto de APPS/Windows/code)
 APPS/Windows/code/**/bin/

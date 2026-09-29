@@ -51,6 +51,13 @@ que importa un perfil, valida la raiz que trae por su huella SHA-256 contra
 `EnrollmentOrchestrator` en el codigo). Ese fichero solo evita un UAC
 redundante en la variante instalada.
 
+`ProfileVerifier` tambien comprueba el `keyId` del sobre contra
+`ProfileVerifier.ExpectedKeyId` (igual al `PROFILE_SIGNING_KEY_ID` del
+panel, `server/src/lib/vpnProfileSigning.ts`) ANTES de verificar la firma:
+no es una comprobacion de seguridad (la firma ya cubre eso), es para dar un
+mensaje claro de "hace falta actualizar la app" si el panel rota de clave
+de firma en el futuro, en vez de un generico "firma invalida".
+
 ## Estructura de la solucion
 
 ```
@@ -67,8 +74,9 @@ APPS/Windows/
     DidevVpn.Tests/                <- xUnit, cubre DidevVpn.Core a fondo.
     DidevVpn.Installer/            <- proyecto WiX (instalador .msi).
     build.ps1                      <- compila las dos variantes, firma, empaqueta.
-  ejecutables/                    <- SOLO LOCAL (.gitignore): build.ps1 deja
-                                     aqui el .msi, el .zip y SHA256SUMS.txt.
+  ejecutables/                    <- SOLO LOCAL (.gitignore, salvo su propio
+                                     README.md): build.ps1 deja aqui el .msi,
+                                     el .zip y SHA256SUMS.txt.
 ```
 
 ## Compilar
@@ -126,14 +134,36 @@ contraseña.
 | Inicio automatico en la bandeja | Si (`HKLM\...\Run`, todos los usuarios) | No (hay que abrirla a mano, o usar la tarea programada de renovacion, que solo renueva, no abre la bandeja) |
 | Requiere permisos de administrador | Para instalar/desinstalar | Solo para ese unico paso de la raiz, si hace falta |
 | Actualizacion | `MajorUpgrade` in situ, conserva perfiles VPN y certificados de cada usuario | Sustituir el `.exe`; los datos en `%LOCALAPPDATA%\didev-vpn` no cambian |
-| Desinstalacion | Quita la tarea, el inicio automatico y los propios ficheros; **no** toca las conexiones VPN/certificados de cada usuario (usa "Quitar de este equipo" en la app antes, por cada usuario) ni la raiz de confianza (se deja, por si otro dispositivo de la maquina depende de ella; retirala a mano con `certmgr.msc` si hiciera falta) | "Quitar de este equipo" desde el propio menu: conexion, tarea, certificado (a elegir) y configuracion |
+| Desinstalacion | Quita la tarea y el inicio automatico; para el usuario que esta desinstalando, PREGUNTA (si es interactiva) si borrar tambien su conexion/certificado, y si ningun otro perfil de este equipo tiene ya un dispositivo dado de alta, PREGUNTA tambien si retirar la raiz de confianza (ver debajo) | "Quitar de este equipo" desde el propio menu: conexion, tarea, certificado (a elegir) y configuracion |
 
-**Limitacion conocida y deliberada**: el desinstalador del MSI no recorre los
-perfiles de cada usuario de la maquina para borrar la conexion VPN de cada
-uno (technicamente dificil de hacer bien desde un contexto elevado sin
-suplantar a cada usuario, y no se ha podido probar en un entorno real
-multiusuario). Antes de una desinstalacion completa en un equipo compartido,
-pide a cada usuario que use "Quitar de este equipo" primero.
+### Desinstalacion del MSI: que pregunta y que no puede tocar
+
+Al desinstalar (no en un `MajorUpgrade`), una custom action interactiva
+llama a `didev-vpn.exe --uninstall-cleanup --uilevel=[UILevel]` ANTES de
+borrar los ficheros de la app (ver `Package.wxs`,
+`DidevVpn.App/Orchestration/UninstallCleanupRunner.cs`):
+
+1. Si la desinstalacion es **silenciosa** (`msiexec /x ... /qn`, `UILevel`
+   2 o menos): no se pregunta nada y no se borra nada del usuario ni la
+   raiz -no hay nadie que pueda contestar, y el valor por defecto mas
+   seguro es no destruir datos-.
+2. Si el usuario que esta desinstalando tiene un dispositivo dado de alta:
+   pregunta (Si/No/Cancelar, igual que "Quitar de este equipo" del menu) si
+   borrar tambien su certificado; "Cancelar" deja todo intacto (ni la
+   conexion, ni el certificado, ni se pregunta por la raiz).
+3. Solo si, tras eso, **ningun otro perfil de usuario de este equipo** tiene
+   ya un dispositivo dado de alta (se comprueba enumerando
+   `C:\Users\*\AppData\Local\didev-vpn\device.json`: fiable desde una custom
+   action elevada), pregunta si retirar tambien la raiz "didev Root CA" de
+   `LocalMachine\Root`.
+
+**Limitacion que queda, y por que**: esto solo puede preguntar y actuar por
+el usuario que esta ejecutando la desinstalacion. No puede tocar la conexion
+VPN ni el certificado de OTROS usuarios de la maquina (haria falta cargar el
+perfil/hive de cada uno desde un contexto elevado, algo que no se ha podido
+implementar ni probar de forma fiable). En un equipo compartido, pide a cada
+uno de los demas usuarios que use "Quitar de este equipo" ANTES de
+desinstalar el MSI.
 
 ## La clave del dispositivo no viaja entre equipos (variante portable)
 
@@ -143,6 +173,26 @@ El `.exe` portable no lleva consigo ninguna identidad: si lo copias a otro
 PC, ese PC necesita su propia alta (con un token de alta nuevo del panel, y
 normalmente un nombre de dispositivo distinto). Esto se avisa tambien en la
 pantalla de alta de la app.
+
+## Version minima de app
+
+`GET /.well-known/est/status` del panel devuelve `minAppVersion`: si esta
+version de `didev-vpn.exe` es inferior, la app avisa y bloquea la renovacion
+hasta actualizar (en la portable, indicando que hay que descargar el
+ejecutable nuevo del panel). Esto se comprueba:
+
+- **En cada renovacion** (al abrir la app, cada 12h, o "Renovar ahora"):
+  trivial, ya hay un certificado vigente con el que hacer la llamada.
+- **En el alta**: el perfil `.didevvpn` NO trae `minAppVersion` (solo lo
+  sabe `/status`, que exige TLS mutuo con un certificado que, durante el
+  alta, todavia no existe). Por eso la comprobacion aqui es distinta: se
+  hace justo DESPUES de `simpleenroll` -en cuanto hay un certificado recien
+  emitido, aunque siga sin instalar- y ANTES de instalar ese certificado o
+  tocar la conexion VPN. Si el panel exige actualizar, el alta se aborta sin
+  dejar nada a medias, pero el **token de alta ya se ha consumido** (es de
+  un solo uso): hay que actualizar la app Y pedir un perfil nuevo desde el
+  panel, no basta con reintentar. Ver `EnsureMinAppVersionAsync` en
+  `EnrollmentOrchestrator.cs`.
 
 ## Riesgos e incognitas heredados de la investigacion previa
 
@@ -176,8 +226,24 @@ ver mas abajo-:
    `WINDOWS_INSTALL_PS1`) en vez de reinventarla.
 5. El instalador WiX **si se ha compilado y enlazado de verdad** (WiX
    Toolset v5, `wix build` real, ICE incluidas) durante el desarrollo, pero
-   sus custom actions (confiar en la raiz, registrar la tarea) no se han
-   ejecutado en una instalacion elevada real todavia.
+   sus custom actions (confiar en la raiz, registrar la tarea, y la nueva
+   `UninstallCleanupCmd` de la desinstalacion) no se han ejecutado en una
+   instalacion/desinstalacion elevada real todavia.
+6. `UninstallCleanupCmd` es una custom action **inmediata** (no `deferred`)
+   que llama a `didev-vpn.exe` para mostrar un par de `MessageBox`. Este
+   patron es habitual en instaladores reales para una desinstalacion
+   interactiva (la sesion de MSI corre en el mismo escritorio visible que el
+   usuario que dio el consentimiento UAC), pero **no se ha podido verificar
+   en una desinstalacion MSI real** que el dialogo aparece donde se espera.
+   `UninstallCleanupRunner` comprueba `UILevel` (silencioso -> no pregunta) y
+   ademas `Environment.UserInteractive` (sin escritorio real -> tampoco
+   pregunta) para reducir el riesgo de que un `MessageBox` que nadie puede
+   ver deje la desinstalacion colgada esperando una respuesta que no llega;
+   aun asi, un escenario de escritorio "tecnicamente interactivo pero no
+   usable" no verificado no queda descartado al cien por cien -es el mismo
+   tipo de limitacion que el resto de esta lista: la logica esta escrita y
+   es defendible, pero solo una desinstalacion real en Windows 11 la
+   confirma del todo-.
 
 ## Que SI esta verificado de verdad (no solo escrito)
 
@@ -188,9 +254,16 @@ ver mas abajo-:
   verdad por esta app. Tambien: firma manipulada byte a byte rechazada,
   variante incorrecta rechazada, version de esquema no soportada rechazada,
   perfil caducado rechazado, y que el QR compacto/perfil completo son sobres
-  independientes con firmas independientes.
-- **Compilacion real de las tres capas** (`DidevVpn.Core`, `DidevVpn.App`,
-  `DidevVpn.Tests`) contra .NET 8, sin advertencias.
+  independientes con firmas independientes. Tambien: un `keyId` que no es
+  `ProfileVerifier.ExpectedKeyId` se rechaza (`UnknownKeyId`) sin ni siquiera
+  llegar a comprobar la firma, y un test fija que esa constante coincide
+  exactamente con `PROFILE_SIGNING_KEY_ID` del panel.
+- `MsiUiLevel.IsSilent` (que usa `--uninstall-cleanup` para decidir si puede
+  preguntar algo durante la desinstalacion) esta cubierto para los valores
+  documentados de la propiedad MSI `UILevel` (2=silenciosa, 3-5=con UI).
+- **Compilacion real de las cuatro capas** (`DidevVpn.Core`, `DidevVpn.App`,
+  `DidevVpn.Tests`, `DidevVpn.Installer`) contra .NET 8 / WiX v5, sin
+  advertencias ni errores ICE.
 - **El `.exe` arranca de verdad**: se ha ejecutado el binario compilado (no
   solo compilado) y confirmado que crea su carpeta de datos
   (`%LOCALAPPDATA%\didev-vpn`) y se mantiene en la bandeja sin excepciones

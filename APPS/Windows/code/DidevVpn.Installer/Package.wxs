@@ -72,9 +72,16 @@
            usuarios (logon + cada 12h, ver Scripts/Install-ScheduledTask.ps1).
       Al desinstalar (solo desinstalacion real, no la baja de la version
       vieja durante un MajorUpgrade: "NOT UPGRADINGPRODUCTCODE"), se retira
-      la tarea. La raiz NO se retira automaticamente (podria haber otros
-      dispositivos de este equipo dependiendo de ella): se deja como paso
-      manual documentado en el README.
+      la tarea y, ANTES que nada (UninstallCleanupCmd, mientras el .exe
+      todavia existe), se le pregunta al usuario que esta desinstalando -si
+      la desinstalacion es interactiva, ver MsiUiLevel- si quiere borrar
+      tambien su propio certificado/conexion y, solo si ningun otro perfil de
+      usuario de este equipo sigue teniendo un dispositivo dado de alta, si
+      quiere retirar tambien la raiz de confianza. Ver
+      DidevVpn.App/Orchestration/UninstallCleanupRunner.cs para el detalle
+      -y el README para la limitacion que queda: esto NO puede tocar la
+      conexion/certificado de OTROS usuarios de la maquina (pediria cargar su
+      perfil), asi que cada uno debe usar "Quitar de este equipo" primero.
     -->
     <SetProperty Id="InstallRootCertCmd"
                  Before="InstallRootCertCmd"
@@ -94,9 +101,27 @@
                  Value="&quot;powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]Remove-ScheduledTask.ps1&quot;" />
     <CustomAction Id="RemoveTaskCmd" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec" Execute="deferred" Impersonate="no" Return="ignore" />
 
+    <!--
+      INMEDIATA (no deferred): a diferencia de las otras tres custom actions
+      de arriba, esta pregunta cosas al usuario (MessageBox), y una custom
+      action deferred corre en el proceso de servicio de Windows Installer,
+      no en la sesion visible del usuario -no podria mostrar nada de forma
+      fiable-. El argumento "uilevel" (igual a la propiedad UILevel de MSI)
+      le dice a la app si esta desinstalacion es silenciosa (msiexec /qn),
+      para no intentar preguntar nada en ese caso. Debe correr ANTES de
+      RemoveTaskCmd (que a su vez va antes de RemoveFiles): el ejecutable
+      todavia tiene que existir en el disco.
+    -->
+    <SetProperty Id="UninstallCleanupCmd"
+                 Before="UninstallCleanupCmd"
+                 Sequence="execute"
+                 Value="&quot;[INSTALLFOLDER]didev-vpn.exe&quot; --uninstall-cleanup --uilevel=[UILevel]" />
+    <CustomAction Id="UninstallCleanupCmd" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec" Execute="immediate" Return="ignore" />
+
     <InstallExecuteSequence>
       <Custom Action="InstallRootCertCmd" After="InstallFiles" Condition="NOT Installed" />
       <Custom Action="InstallTaskCmd" After="InstallRootCertCmd" Condition="NOT Installed" />
+      <Custom Action="UninstallCleanupCmd" Before="RemoveTaskCmd" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
       <Custom Action="RemoveTaskCmd" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
     </InstallExecuteSequence>
 

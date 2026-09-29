@@ -1,9 +1,30 @@
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using DidevVpn.App.Services;
 using DidevVpn.Core.Ipsec;
 using DidevVpn.Core.Profile;
+using DidevVpn.Core.Versioning;
 
 namespace DidevVpn.App.Orchestration;
+
+/// <summary>
+/// El panel exige actualizar la app (GET /status, minAppVersion) antes de
+/// completar el alta: se lanza DESPUES de simpleenroll (el unico momento en
+/// que ya hay un certificado con el que hacer esa llamada -/status exige TLS
+/// mutuo, y antes de simpleenroll el dispositivo no tiene ningun certificado
+/// todavia-) pero ANTES de instalar el certificado o tocar la conexion VPN:
+/// no queda nada a medio configurar. El token de alta del perfil YA se ha
+/// gastado en ese simpleenroll (es de un solo uso): quien vea este error
+/// tiene que actualizar la app Y pedir un token nuevo desde el panel, no solo
+/// reintentar. Ver la seccion "Version minima" del README para el porque de
+/// este orden (el perfil no trae minAppVersion: solo /status lo sabe).
+/// </summary>
+internal sealed class MinAppVersionRequiredException : Exception
+{
+    public MinAppVersionRequiredException(string message) : base(message)
+    {
+    }
+}
 
 /// <summary>
 /// Alta de un dispositivo a partir de un perfil ya verificado (ver
@@ -23,9 +44,12 @@ namespace DidevVpn.App.Orchestration;
 ///   3. Clave del dispositivo: TPM primero, con confirmacion explicita si
 ///      hay que caer a software.
 ///   4. simpleenroll con el token del perfil.
-///   5. Instala el certificado emitido, enlazado a esa misma clave.
-///   6. Configura la conexion IKEv2/EAP-TLS "didev VPN".
-///   7. Guarda el estado del dispositivo para poder renovar despues.
+///   5. Version minima de la app (ver MinAppVersionRequiredException): si el
+///      panel exige una version superior a esta, se aborta AQUI, sin instalar
+///      el certificado ni tocar la conexion VPN.
+///   6. Instala el certificado emitido, enlazado a esa misma clave.
+///   7. Configura la conexion IKEv2/EAP-TLS "didev VPN".
+///   8. Guarda el estado del dispositivo para poder renovar despues.
 /// </summary>
 internal sealed class EnrollmentOrchestrator
 {
@@ -35,6 +59,7 @@ internal sealed class EnrollmentOrchestrator
     private readonly IRootCertificateStoreService _rootCertificateStore;
     private readonly IUserConfirmations _confirmations;
     private readonly FileLogger _logger;
+    private readonly AppVersion _currentAppVersion;
 
     public EnrollmentOrchestrator(
         ICertificateEnrollmentService certificateService,
@@ -42,7 +67,8 @@ internal sealed class EnrollmentOrchestrator
         IVpnConnectionService vpnConnectionService,
         IRootCertificateStoreService rootCertificateStore,
         IUserConfirmations confirmations,
-        FileLogger logger)
+        FileLogger logger,
+        AppVersion currentAppVersion)
     {
         _certificateService = certificateService;
         _estClient = estClient;
@@ -50,6 +76,7 @@ internal sealed class EnrollmentOrchestrator
         _rootCertificateStore = rootCertificateStore;
         _confirmations = confirmations;
         _logger = logger;
+        _currentAppVersion = currentAppVersion;
     }
 
     public async Task<DeviceState> EnrollAsync(ProvisioningProfile profile, CancellationToken ct)
@@ -85,6 +112,8 @@ internal sealed class EnrollmentOrchestrator
             throw;
         }
 
+        await EnsureMinAppVersionAsync(issuedCertificate, key, estBaseUri, chain, ct).ConfigureAwait(false);
+
         var installedCertificate = _certificateService.InstallIssuedCertificate(issuedCertificate, key);
         _logger.Info($"Alta: certificado instalado (huella {installedCertificate.Thumbprint}).");
 
@@ -112,6 +141,42 @@ internal sealed class EnrollmentOrchestrator
         DeviceStateStore.Save(state);
         _logger.Info($"Alta: completada para \"{profile.Cn}\".");
         return state;
+    }
+
+    /// <summary>
+    /// Comprueba GET /status (TLS mutuo, con el certificado RECIEN EMITIDO
+    /// por simpleenroll pero AUN SIN INSTALAR: se enlaza a la clave en
+    /// memoria con CopyWithPrivateKey, sin tocar el almacen de certificados
+    /// todavia). Si el panel exige una version de app superior a esta,
+    /// aborta el alta sin instalar nada: mejor eso que dejar un dispositivo
+    /// funcionando con una app que el panel ya considera obsoleta. Un fallo
+    /// de red al comprobarlo NO bloquea el alta (best-effort: la version
+    /// minima es una salvaguarda adicional, no la unica forma de controlar
+    /// que puede darse de alta -eso ya lo hace el admin al generar el token-).
+    /// </summary>
+    private async Task EnsureMinAppVersionAsync(
+        X509Certificate2 issuedCertificate, EnrolledKey key, Uri estBaseUri, X509Certificate2Collection chain, CancellationToken ct)
+    {
+        EstStatus status;
+        try
+        {
+            using var ecdsa = new ECDsaCng(key.CngKey);
+            using var certificateWithKeyForStatusCheck = issuedCertificate.CopyWithPrivateKey(ecdsa);
+            status = await _estClient.GetStatusAsync(estBaseUri, certificateWithKeyForStatusCheck, chain, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.Warn($"Alta: no se ha podido comprobar la version minima de app tras simpleenroll (se continua sin bloquear): {ex.Message}");
+            return;
+        }
+
+        if (AppVersion.TryParse(status.MinAppVersion, out var minVersion) && _currentAppVersion.IsBelow(minVersion))
+        {
+            throw new MinAppVersionRequiredException(
+                $"El panel exige la version {minVersion} o superior de didev VPN (esta instalada la {_currentAppVersion}). " +
+                "El certificado recien emitido NO se ha instalado. Actualiza la app y pide un token de alta nuevo desde " +
+                "el panel: el que acabas de usar ya se ha consumido.");
+        }
     }
 
     private void EnsureRootTrusted(X509Certificate2 root, string rootSha256)
