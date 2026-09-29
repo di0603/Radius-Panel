@@ -409,3 +409,17 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
   lado del panel (rama `feat/vpn-12.5-huellas-panel`); la reescritura de
   `didev-vpn-windows` como cliente generico va en
   `feat/vpn-12-windows-wip`. Detalle completo en el CHANGELOG.
+- [x] **Prompt 12 (app de Windows)**: `didev-vpn-windows`
+  (`APPS/Windows/code/`), app de bandeja en C#/.NET 8 WinForms que gestiona
+  la VPN IKEv2/EAP-TLS nativa de Windows (RAS/`VpnClient`, sin IPsec propio),
+  en dos variantes (instalador MSI con WiX v5, portable de un solo `.exe`)
+  desde el mismo codigo. Importa y verifica el perfil `.didevvpn` (variante
+  `full`, con comprobacion de `keyId` ademas de la firma), alta y renovacion
+  por EST con clave TPM (CNG) no exportable, version minima de app bloqueando
+  tanto la renovacion como el alta (esta ultima tras `simpleenroll`, ya que
+  `/status` exige TLS mutuo y el perfil no trae `minAppVersion`), y una
+  desinstalacion del MSI que pregunta (si es interactiva) por el
+  certificado/conexion del usuario actual y, solo si nadie mas en el equipo
+  sigue usando la VPN, por retirar la raiz de confianza. En rama
+  `feat/vpn-12-windows-wip`, pendiente de revision antes de fusionar en
+  `vpn`. Detalle completo en el CHANGELOG.

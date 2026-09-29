@@ -1,0 +1,20 @@
+<Project Sdk="WixToolset.Sdk/5.0.2">
+
+  <PropertyGroup>
+    <OutputType>Package</OutputType>
+    <OutputName>didev-vpn-setup</OutputName>
+    <Platform Condition="'$(Platform)'=='' Or '$(Platform)'=='AnyCPU'">x64</Platform>
+    <!-- build.ps1 pasa -p:ProductVersion=X.Y.Z; por defecto para "dotnet build" suelto. -->
+    <ProductVersion Condition="'$(ProductVersion)'==''">0.1.0</ProductVersion>
+    <!-- build.ps1 pasa -p:AppPublishDir=... apuntando a la publicacion self-contained (no single-file) de DidevVpn.App. -->
+    <AppPublishDir Condition="'$(AppPublishDir)'==''">..\DidevVpn.App\bin\Release\net8.0-windows\win-x64\publish\</AppPublishDir>
+    <DefineConstants>ProductVersion=$(ProductVersion);AppPublishDir=$(AppPublishDir)</DefineConstants>
+    <SuppressPdbOutput>true</SuppressPdbOutput>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="WixToolset.Util.wixext" Version="5.0.2" />
+    <PackageReference Include="WixToolset.UI.wixext" Version="5.0.2" />
+  </ItemGroup>
+
+</Project>

@@ -28,3 +28,13 @@ coverage/
 
 # Claude Code (config local, no compartida)
 .claude/settings.local.json
+
+# didev-vpn-windows: build.ps1 deja aqui el .exe/.msi/SHA256SUMS.txt en local,
+# nunca se suben al repo (ver APPS/Windows/ejecutables/README.md)
+APPS/Windows/ejecutables/*
+!APPS/Windows/ejecutables/README.md
+
+# Salida de compilacion .NET (bin/obj de cada proyecto de APPS/Windows/code)
+APPS/Windows/code/**/bin/
+APPS/Windows/code/**/obj/
+APPS/Windows/code/**/*.user

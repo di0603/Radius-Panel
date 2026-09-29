@@ -1,0 +1,16 @@
+<Solution>
+  <Project Path="DidevVpn.App/DidevVpn.App.csproj" />
+  <Project Path="DidevVpn.Core/DidevVpn.Core.csproj" />
+  <!--
+    El instalador solo se construye para x64 (es lo unico que soporta WiX en
+    este proyecto): sin este mapeo, "dotnet build DidevVpn.slnx" le pasa la
+    plataforma por defecto de la solucion (Any CPU) y falla con ICE80
+    (componentes de 32 bits en un directorio de 64 bits). build.ps1 ya
+    compila el .wixproj directamente con -p:Platform=x64 y no depende de
+    esto, pero abrir/compilar la solucion entera debe funcionar igual.
+  -->
+  <Project Path="DidevVpn.Installer/DidevVpn.Installer.wixproj" Type="b7dd6f7e-def8-4e67-b5b7-07ef123db6f0">
+    <Platform Solution="*|*" Project="x64" />
+  </Project>
+  <Project Path="DidevVpn.Tests/DidevVpn.Tests.csproj" />
+</Solution>

@@ -55,6 +55,84 @@ Este proyecto usa versionado semantico.
   - Solo el lado del panel: la reescritura de `didev-vpn-windows` como
     cliente generico con TOFU (mismo prompt 12.5) va en
     `feat/vpn-12-windows-wip`, no en esta rama.
+- **Prompt 12 (app de Windows)**: `didev-vpn-windows`
+  (`APPS/Windows/code/`), app de bandeja en C#/.NET 8 WinForms que configura
+  y mantiene la conexion VPN IKEv2/EAP-TLS de didev usando el cliente nativo
+  de Windows (RAS/cmdlets `VpnClient`, invocados via `powershell.exe`; sin
+  IPsec propio), en dos variantes generadas desde el mismo codigo:
+  - **Instalador** (`didev-vpn-setup-<version>.msi`, WiX v5): Program Files,
+    raiz "didev Root CA" en `LocalMachine\Root` y tarea de renovacion para
+    todos los usuarios en una unica elevacion; `MajorUpgrade` in situ.
+  - **Portable** (`didev-vpn-portable-<version>.zip`): un unico `.exe`
+    self-contained, sin instalar nada salvo una elevacion UAC puntual la
+    primera vez que hace falta confiar en la raiz (necesaria en
+    `LocalMachine\Root` porque el propio certificado del gateway IKE, no
+    solo el de RADIUS, lo exige ahi).
+  - Importa y verifica el perfil `.didevvpn` (variante `full` de los
+    prompts 11/11.5: firma Ed25519 con BouncyCastle, `caChainPem`,
+    `rootCaSha256`), comprobando ademas que el `keyId` del sobre coincida
+    con `ProfileVerifier.ExpectedKeyId` (mensaje claro de "actualiza la
+    app" si el panel rota de clave, en vez de un generico "firma
+    invalida") y que `variant` sea exactamente `"full"`.
+  - Alta: clave ECDSA P-256 no exportable en el TPM (CNG, "Microsoft
+    Platform Crypto Provider"; confirmacion explicita si hay que caer a
+    software), CSR con CN y SAN dNSName = `cn` del perfil, `simpleenroll`
+    con el token de un solo uso. Version minima de app: como el perfil no
+    trae `minAppVersion` (solo lo sabe `GET /status`, que exige TLS mutuo),
+    se comprueba justo DESPUES de `simpleenroll` -con el certificado recien
+    emitido, aun sin instalar- y ANTES de instalar el certificado o tocar
+    la conexion VPN; si el panel exige actualizar, el alta se aborta sin
+    dejar nada a medias (el token ya consumido: hace falta uno nuevo).
+  - Renovacion: `GET /status` con TLS mutuo al abrir la app/cada 12h/a mano;
+    si toca, clave nueva en el TPM, `simplereenroll`, e instala el
+    certificado nuevo borrando el anterior. Bloquea si `minAppVersion` del
+    panel supera la version instalada.
+  - Icono de bandeja: conectar/desconectar, estado, IP asignada, caducidad
+    del certificado, ultimo error, variante+version, "Quitar de este
+    equipo" (borra conexion/tarea/configuracion, pregunta por el
+    certificado).
+  - Validacion TLS de EST fijada a la raiz+intermedia del propio perfil
+    (`X509ChainTrustMode.CustomRootTrust`), nunca al almacen de confianza
+    general de Windows.
+  - Desinstalacion del MSI: una custom action interactiva
+    (`UninstallCleanupCmd`, inmediata, `--uninstall-cleanup --uilevel=N`)
+    pregunta, si la desinstalacion no es silenciosa, si borrar el
+    certificado/conexion del usuario que desinstala, y -solo si, tras eso,
+    ningun otro perfil de usuario de la maquina (`C:\Users\*\AppData\Local\
+    didev-vpn\device.json`) sigue teniendo un dispositivo dado de alta- si
+    retirar tambien la raiz de confianza. Limitacion que queda: no puede
+    tocar la conexion/certificado de OTROS usuarios de la maquina (haria
+    falta cargar su perfil); cada uno debe usar "Quitar de este equipo"
+    antes de una desinstalacion completa en un equipo compartido.
+  - Clave publica Ed25519 de firma de perfiles leida de un fichero de
+    configuracion de compilacion (`DidevVpn.App/SigningKey/
+    vpn-profile-signing-ed25519.pub.pem`, nunca escrita a mano en el
+    codigo): mientras siga siendo el placeholder del repositorio, un target
+    de MSBuild hace fallar la compilacion con un mensaje claro -nunca debe
+    salir un binario que no pueda verificar firmas-.
+  - `APPS/Windows/ejecutables/`: solo se versiona su propio `README.md`
+    explicando que `build.ps1` deja ahi el `.msi`/`.zip`/`SHA256SUMS.txt`
+    (nunca los binarios).
+  - Tests xUnit (49) sobre `DidevVpn.Core` (logica sin dependencias de
+    Windows): verificacion Ed25519 con un vector de interoperabilidad real
+    de OpenSSL, rechazo de variante/version/keyId/caducidad/firma
+    manipulada, comparacion de versiones semanticas, mapeo de propuestas
+    IPsec, e interpretacion de `UILevel` de MSI para saber cuando NO se
+    puede preguntar nada durante una desinstalacion.
+  - Verificado de verdad: compilacion real de las cuatro capas (incluido
+    el instalador WiX, `wix build` con ICE), ciclo real de fallo/exito del
+    build con el placeholder/una clave de prueba real, ejecucion real del
+    `.exe` compilado, y (en un build anterior de este mismo prompt) un
+    `build.ps1` completo produciendo un `.msi`/`.zip`/`SHA256SUMS.txt`
+    reales. Sin verificar en una maquina Windows 11 real: negociacion IKE
+    contra strongSwan real, necesidad exacta de `LocalMachine\Root` vs.
+    `CurrentUser\Root` para cada certificado, custom actions del MSI en una
+    instalacion/desinstalacion elevada real (incluida si el dialogo de
+    `UninstallCleanupCmd` aparece donde se espera), multiples usuarios de
+    Windows en la misma maquina. Detalle completo, riesgos y lista de
+    pruebas manuales en `APPS/Windows/README.md`.
+  - En rama `feat/vpn-12-windows-wip`, pendiente de revision antes de
+    fusionar en `vpn`.
 
 - **Correccion 11.5 (QR compacto)**: el sobre firmado completo, con la
   cadena de CA (raiz + intermedia P-384 reales) dentro, ocupa ~2800
