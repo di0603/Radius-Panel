@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+
+  <!--
+    UpgradeCode FIJO para siempre (nunca lo cambies entre versiones: es lo
+    que permite a MajorUpgrade detectar "esto es la misma app, version
+    distinta"). Generado una vez para este proyecto: 125D0C85-88C4-4F84-ADF8-ADF97E36C2F7.
+  -->
+  <Package Name="didev VPN"
+           Manufacturer="didev"
+           Version="$(ProductVersion)"
+           UpgradeCode="125D0C85-88C4-4F84-ADF8-ADF97E36C2F7"
+           Language="1033"
+           Compressed="yes"
+           Scope="perMachine"
+           InstallerVersion="500">
+
+    <SummaryInformation Description="didev VPN - IKEv2/EAP-TLS para la VPN de didev" />
+
+    <MajorUpgrade
+      DowngradeErrorMessage="Ya hay instalada una version mas reciente de didev VPN. Desinstalala primero si quieres bajar de version."
+      Schedule="afterInstallExecute" />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!--
+      La raiz de confianza offline de didev (no la genera este proyecto,
+      ver didev-root-ca.cer) y los scripts de las custom actions.
+    -->
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="didev-vpn">
+        <Component Id="RootCertificateComponent" Guid="6B1F0B7E-5A2E-4C3E-9E3E-1A2B3C4D5E6F">
+          <File Id="RootCertificateFile" Source="didev-root-ca.cer" Name="didev-root-ca.cer" KeyPath="yes" />
+        </Component>
+        <Component Id="ScriptsComponent" Guid="7C2E1C8F-6B3F-4D4F-8F4F-2B3C4D5E6F70">
+          <File Id="InstallRootCertScript" Source="Scripts\Install-RootCertificate.ps1" KeyPath="yes" />
+          <File Id="InstallTaskScript" Source="Scripts\Install-ScheduledTask.ps1" />
+          <File Id="RemoveTaskScript" Source="Scripts\Remove-ScheduledTask.ps1" />
+        </Component>
+        <!-- Inicio automatico de la app en la bandeja, para todos los usuarios (HKLM, no HKCU). -->
+        <Component Id="AutostartComponent" Guid="8D3F2D90-7C40-4E50-9050-3C4D5E6F7081">
+          <RegistryValue Root="HKLM"
+                         Key="Software\Microsoft\Windows\CurrentVersion\Run"
+                         Name="didev VPN"
+                         Type="string"
+                         Value="&quot;[INSTALLFOLDER]didev-vpn.exe&quot;"
+                         KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <!-- Publicacion self-contained (sin single-file: es mas simple para un MSI) de DidevVpn.App, harvesteada entera. -->
+    <ComponentGroup Id="AppFilesGroup" Directory="INSTALLFOLDER">
+      <Files Include="$(AppPublishDir)**" />
+    </ComponentGroup>
+
+    <Feature Id="MainFeature" Title="didev VPN" Level="1">
+      <ComponentRef Id="RootCertificateComponent" />
+      <ComponentRef Id="ScriptsComponent" />
+      <ComponentRef Id="AutostartComponent" />
+      <ComponentGroupRef Id="AppFilesGroup" />
+    </Feature>
+
+    <!--
+      Tres pasos elevados de un solo uso durante la instalacion (nunca en un
+      repair/reinstalado: "NOT Installed" es la condicion estandar de MSI
+      para "esto es una instalacion nueva o una version distinta", no una
+      reparacion de la misma version):
+        1. Confiar en la raiz offline en LocalMachine\Root (evita el UAC en
+           tiempo de ejecucion que si hace falta en la variante portable).
+        2. Registrar la tarea programada de renovacion para todos los
+           usuarios (logon + cada 12h, ver Scripts/Install-ScheduledTask.ps1).
+      Al desinstalar (solo desinstalacion real, no la baja de la version
+      vieja durante un MajorUpgrade: "NOT UPGRADINGPRODUCTCODE"), se retira
+      la tarea. La raiz NO se retira automaticamente (podria haber otros
+      dispositivos de este equipo dependiendo de ella): se deja como paso
+      manual documentado en el README.
+    -->
+    <SetProperty Id="InstallRootCertCmd"
+                 Before="InstallRootCertCmd"
+                 Sequence="execute"
+                 Value="&quot;powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]Install-RootCertificate.ps1&quot; -CertificatePath &quot;[INSTALLFOLDER]didev-root-ca.cer&quot;" />
+    <CustomAction Id="InstallRootCertCmd" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec" Execute="deferred" Impersonate="no" Return="check" />
+
+    <SetProperty Id="InstallTaskCmd"
+                 Before="InstallTaskCmd"
+                 Sequence="execute"
+                 Value="&quot;powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]Install-ScheduledTask.ps1&quot; -ExecutablePath &quot;[INSTALLFOLDER]didev-vpn.exe&quot;" />
+    <CustomAction Id="InstallTaskCmd" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec" Execute="deferred" Impersonate="no" Return="check" />
+
+    <SetProperty Id="RemoveTaskCmd"
+                 Before="RemoveTaskCmd"
+                 Sequence="execute"
+                 Value="&quot;powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]Remove-ScheduledTask.ps1&quot;" />
+    <CustomAction Id="RemoveTaskCmd" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec" Execute="deferred" Impersonate="no" Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="InstallRootCertCmd" After="InstallFiles" Condition="NOT Installed" />
+      <Custom Action="InstallTaskCmd" After="InstallRootCertCmd" Condition="NOT Installed" />
+      <Custom Action="RemoveTaskCmd" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
+
+  </Package>
+</Wix>

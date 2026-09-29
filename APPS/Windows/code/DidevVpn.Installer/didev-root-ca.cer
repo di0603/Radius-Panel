@@ -1,0 +1,13 @@
+PEGAR AQUI el certificado (DER, .cer) de "didev Root CA" antes de compilar el instalador.
+
+Esta raiz es OFFLINE y anterior a este modulo (ver CLAUDE.md del panel): no la
+genera este proyecto ni el panel. Exporta el .cer (formato DER, binario, no
+base64) de la raiz real y sustituye ESTE FICHERO POR COMPLETO por su
+contenido binario -no lo edites como texto, este placeholder solo existe
+para que el build falle con un mensaje claro mientras no se haya sustituido.
+
+Sirve unicamente para que el instalador (MSI) pueda confiar en la raiz en
+LocalMachine\Root durante la instalacion elevada, evitando el UAC en tiempo
+de ejecucion que si hace falta en la variante portable. La app en si SIEMPRE
+valida la raiz de verdad por su huella SHA-256 contra el perfil firmado
+(ProfileVerifier/rootCaSha256), nunca confia ciegamente en este fichero.

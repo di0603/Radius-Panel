@@ -1,16 +1,29 @@
-# Prompt 12 (app de Windows) — en pausa, esperando al prompt 11
+# Prompt 12 (app de Windows) — RETOMADO
 
-Esta rama (`feat/vpn-12-windows-wip`) existe solo para no perder la
-investigacion de APIs hecha antes de darnos cuenta de que el prompt 12
-depende del 11 (aprovisionamiento en el panel: modelo usuario + dispositivo,
-clave Ed25519 de firma, perfil `.didevvpn` **por dispositivo** — no generico
-como se penso al principio — generado por un admin al crear el token de
-alta, mostrado una vez como fichero + QR, caduco a las 24h igual que el
-token actual).
+**Este fichero ya es historico.** El prompt 12 se retomo una vez terminados
+los prompts 11 y 11.5 (aprovisionamiento en el panel: perfil `.didevvpn`
+firmado con Ed25519, variantes `full`/`qr`, `rootCaSha256`). El codigo de la
+app vive en `APPS/Windows/code/`; el estado real, la lista de lo verificado
+de verdad frente a lo que sigue sin poder probarse en una maquina Windows 11
+real, y como compilar/probar, estan en **`APPS/Windows/README.md`** — leelo
+primero, no este fichero.
 
-**No hay codigo de la app todavia.** Solo se creo la rama y se lanzo la
-investigacion de abajo antes de pausar. No fusionar esta rama a `vpn` ni a
-`main` hasta que el prompt 11 este hecho y el prompt 12 se retome de verdad.
+La investigacion de APIs de mas abajo sigue siendo valida y se referencia
+desde el codigo (comentarios en `DidevVpn.App/Services/*.cs`), se conserva
+tal cual como historial de las fuentes originales.
+
+---
+
+## Historial: por que se puso en pausa (contexto, ya resuelto)
+
+Esta rama (`feat/vpn-12-windows-wip`) se creo originalmente solo para no
+perder la investigacion de APIs hecha antes de darse cuenta de que el
+prompt 12 dependia del 11 (aprovisionamiento en el panel: modelo usuario +
+dispositivo, clave Ed25519 de firma, perfil `.didevvpn` **por dispositivo**
+— no generico como se penso al principio — generado por un admin al crear
+el token de alta, mostrado una vez como fichero + QR, caduco a las 24h
+igual que el token). En aquel momento no habia codigo de la app todavia;
+ahora si.
 
 ## Que hace falta del prompt 11 antes de poder seguir aqui
 
