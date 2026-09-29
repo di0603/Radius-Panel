@@ -396,6 +396,17 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
   README para las apps (piden `GET cacerts` sin TLS todavia y solo aceptan
   la raiz si su SHA-256 coincide con `rootCaSha256`). Detalle completo en el
   CHANGELOG.
+- [x] **Prompt 14 (sincronizacion de la CA con FreeRADIUS)**: nuevo
+  `deploy/freeradius-vpn-ca-sync.sh` (timer cada 15 min) para que FreeRADIUS
+  acepte certificados firmados por la intermedia del panel, no solo por la
+  raiz (hoy `ca_path` solo tenia la raiz, puesta a mano). Descarga
+  `ca-chain.pem`/`crl.pem` del panel por loopback, valida contra la raiz ya
+  presente (nunca la del HTTP) y anade solo sus propios ficheros. Hallazgo
+  importante: `@peculiar/x509` etiqueta las CRL como PEM `CRL`, no
+  `X509 CRL` (RFC 7468) — el script lo corrige, pero puede afectar a otros
+  consumidores de `GET /pki/crl.pem`; sin corregir en el panel todavia.
+  Rama `feat/vpn-14-freeradius-sync`, pendiente de revision. Detalle
+  completo en el CHANGELOG.
 - [x] **Prompt 12.5 (huellas del panel, lado servidor)**: cambio de diseno
   a clientes GENERICOS (como FortiClient) con confianza en el primer uso
   (TOFU) por servidor, en vez de una clave publica de didev incrustada en
