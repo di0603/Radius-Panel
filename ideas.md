@@ -409,6 +409,14 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
   lado del panel (rama `feat/vpn-12.5-huellas-panel`); la reescritura de
   `didev-vpn-windows` como cliente generico va en
   `feat/vpn-12-windows-wip`. Detalle completo en el CHANGELOG.
+- [x] **Prompt 12.6 (Windows: asociar la clave CNG sin exportarla)**: el
+  alta con una clave de TPM fallaba siempre ("Clave no valida para utilizar
+  en el estado especificado") porque `CopyWithPrivateKey` fuerza una
+  exportacion que el TPM no permite. Nueva `AssociatePrivateKey`
+  (`CertSetCertificateContextProperty`/`CERT_KEY_PROV_INFO_PROP_ID`), sin
+  exportar la clave; verificado con un test real de TPM (no solo software)
+  en una maquina con TPM disponible. Rama `feat/vpn-12.6-windows-cng`,
+  pendiente de revision. Detalle completo en el CHANGELOG.
 - [x] **Prompt 12 (app de Windows)**: `didev-vpn-windows`
   (`APPS/Windows/code/`), app de bandeja en C#/.NET 8 WinForms que gestiona
   la VPN IKEv2/EAP-TLS nativa de Windows (RAS/`VpnClient`, sin IPsec propio),

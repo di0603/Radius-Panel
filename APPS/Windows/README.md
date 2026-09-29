@@ -89,10 +89,26 @@ portable se ejecuta desde cualquier carpeta; el MSI registra renovacion e
 inicio automatico. La renovacion periodica consulta `/status` y bloquea el
 alta o la renovacion si `minAppVersion` exige actualizar.
 
+## Asociacion de la clave CNG al certificado (sin exportar la clave)
+
+`CertificateEnrollmentService.AssociatePrivateKey` enlaza el certificado
+emitido por EST a la clave CNG del dispositivo con
+`CertSetCertificateContextProperty`/`CERT_KEY_PROV_INFO_PROP_ID`, sin pasar
+por `CopyWithPrivateKey`/exportar a PKCS#12: una clave de TPM es
+deliberadamente no exportable, y `CopyWithPrivateKey` fuerza justo eso
+internamente. Antes de asociar se comparan las coordenadas publicas de la
+clave y del certificado; despues de instalar en `CurrentUser\My`, se
+comprueba que Windows recupera la clave privada y que una firma con ella
+verifica contra el certificado. `DidevVpn.App.Tests` (proyecto `net8.0-windows`
+aparte, no `DidevVpn.Tests`: necesita las APIs de Windows/CNG de verdad)
+cubre esto con una clave de software y, si hay TPM en la maquina de build,
+con una clave de TPM real.
+
 ## Comprobaciones manuales pendientes
 
 En un Windows real hay que probar importacion confirmada y cancelada, cambio
 de clave o raiz, UAC e instalacion de raiz, conexion y desconexion RAS,
 renovacion con la VPN activa e inactiva, tarea del MSI y desinstalacion.
-Tambien hay que comprobar TPM/CNG, SmartScreen y los mensajes de error con
-un panel de pruebas.
+Tambien hay que comprobar SmartScreen y los mensajes de error con un panel
+de pruebas (la asociacion de la clave CNG al certificado ya tiene cobertura
+automatizada real, ver arriba).

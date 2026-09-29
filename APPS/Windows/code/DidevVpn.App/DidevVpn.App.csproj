@@ -17,6 +17,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\DidevVpn.Core\DidevVpn.Core.csproj" />
+    <InternalsVisibleTo Include="DidevVpn.App.Tests" />
   </ItemGroup>
 
   <ItemGroup>
