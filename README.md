@@ -318,6 +318,7 @@ strongSwan (192.168.10.29) ──EAP──► FreeRADIUS (192.168.10.28, virtual
 | `EST_ENABLED` | `false` apaga el listener EST aunque haya certificado/clave configurados (def. `true`). |
 | `EST_PORT` / `EST_BIND` | Puerto/IP del listener HTTPS de EST (def. `8443` / `0.0.0.0`). Servidor separado de la API principal: necesita TLS mutuo real (`requestCert: true`), que un proxy que termina TLS (nginx) no puede reenviar. |
 | `EST_TLS_CERT` / `EST_TLS_KEY` | Certificado y clave propios del listener EST, para el nombre publico de la PKI (p.ej. `pki.vlc.didev.es`). Los firma la CA raiz offline (EKU `serverAuth`, SAN DNS = ese nombre), **no** Let's Encrypt: los dispositivos confian solo en esa raiz para esta conexion. Sin estas dos, el resto del panel funciona igual, solo que sin alta/renovacion automatica. |
+| `VPN_PROFILE_SIGNING_KEY` | Ruta a la clave privada Ed25519 (PEM, permisos 600) que firma el perfil de aprovisionamiento (`.didevvpn`) de cada token de alta. La clave publica va incrustada en las apps (Windows/Android), para que una app nunca acepte un perfil de otro origen. Sin ella, "Generar token de alta" sigue funcionando igual pero sin perfil firmado ni QR (alta manual con el token por EST). Ver "Aprovisionamiento de apps" mas abajo para como generarla. |
 
 Ver `.env.example` para el resto (comentarios inline).
 
@@ -337,9 +338,12 @@ migraciones** (opciones entre parentesis) o a mano con `mysql -u root -p
 | 11 | `panel-schema-vpn-4.5.sql` | `radius_panel` | `panel_vpn_settings.aaa_id`/`est_url`, `panel_vpn_enroll_tokens.token_sha256`. |
 | 12 | `panel-schema-vpn-android.sql` | `radius_panel` | `panel_vpn_settings.lan_cidr`, tabla `panel_vpn_android_downloads` (boton "Emitir certificado" para Android). |
 | 13 | `panel-schema-vpn-firewall.sql` | `radius_panel` | `allow_radius_host`/`allow_mariadb_host`, tabla `panel_vpn_device_rules`, `panel_vpn_settings.gateway_token_sha256` (firewall de la VM VPN). |
+| 24 | `panel-schema-vpn-provisioning.sql` | `radius_panel` | `panel_vpn_settings.min_app_version` (version minima de app, publicada por `GET /.well-known/est/status`). |
 
 `npm run menu` te dice cuales faltan contra tu base real (no solo si la tabla
-existe: tambien si tiene ya las columnas de la version actual).
+existe: tambien si tiene ya las columnas de la version actual). La migracion
+24 aparece con ese numero (no 14) porque se anadio despues de que el 14-23 ya
+estuviera reservado para los "Estado de..."; el propio menu la lista igual.
 
 ### Puesta en marcha de la CA intermedia
 
@@ -383,7 +387,14 @@ raiz, e importar el resultado.
    primera IP libre del pool, crea el usuario RADIUS (`radcheck`, `radreply`,
    `radusergroup`) y la ficha del panel en una sola operacion.
 2. **Genera un token de alta** (ficha del dispositivo → "Generar token de
-   alta"): un solo uso, valido 24h, se ensena una unica vez.
+   alta"): un solo uso, valido 24h, se ensena una unica vez. Si
+   `VPN_PROFILE_SIGNING_KEY` esta configurada (ver "Aprovisionamiento de
+   apps" mas abajo), el panel construye ademas, con ese mismo token
+   embebido, un perfil de aprovisionamiento firmado (`.didevvpn`) para las
+   apps propias de Windows/Android: se muestra como fichero descargable y
+   como codigo QR, tambien una unica vez y con la misma caducidad de 24h.
+   **El alta inicial exige estar en la red local o la WiFi de casa**: el
+   listener EST no esta expuesto a internet.
 3. Segun la plataforma:
    - **Windows / Linux**: descarga el "Paquete de conexion" desde la ficha
      del dispositivo (botón "Descargar paquete de conexion"). El zip/tar.gz
@@ -403,6 +414,97 @@ raiz, e importar el resultado.
      Android).
 4. Revisa **VPN > Dispositivos** (o la tarjeta "VPN" del panel) para ver el
    estado de cada certificado y las alertas de renovaciones atascadas.
+
+### Aprovisionamiento de apps (Windows/Android)
+
+Las apps propias (`didev-vpn-windows` y su equivalente de Android, en
+desarrollo aparte) se configuran importando el perfil `.didevvpn` firmado
+que genera el paso 2 de "Alta de un dispositivo". El panel firma ese perfil
+con una clave Ed25519 cuya clave publica va incrustada en cada app, para que
+ninguna acepte un perfil que no venga de este panel — la clave privada **no
+la genera el codigo**, es un paso manual, una unica vez:
+
+1. En la `.28`, como root, en un directorio fuera del arbol de git (para que
+   el autodeploy nunca lo toque ni lo sobrescriba):
+   ```bash
+   mkdir -p /etc/radius-panel/keys
+   umask 077
+   openssl genpkey -algorithm ED25519 -out /etc/radius-panel/keys/vpn-profile-signing-ed25519.pem
+   chmod 600 /etc/radius-panel/keys/vpn-profile-signing-ed25519.pem
+   chown root:root /etc/radius-panel/keys/vpn-profile-signing-ed25519.pem
+   ```
+   `openssl genpkey` escribe la clave privada directamente al fichero: nunca
+   pasa por la salida estandar, así que no puede acabar en el historial de la
+   shell ni en ningun log por este comando.
+2. Anade en `server/.env`:
+   ```
+   VPN_PROFILE_SIGNING_KEY=/etc/radius-panel/keys/vpn-profile-signing-ed25519.pem
+   ```
+   y reinicia el panel. Sin este paso, "Generar token de alta" sigue
+   funcionando igual, solo que sin perfil firmado ni QR.
+3. Extrae la clave **publica** para incrustarla en el codigo de las apps
+   (este comando solo muestra la parte publica, es seguro pegarlo donde
+   haga falta):
+   ```bash
+   openssl pkey -in /etc/radius-panel/keys/vpn-profile-signing-ed25519.pem -pubout
+   ```
+4. Aplica la migracion 24 (`panel-schema-vpn-provisioning.sql`) si no lo has
+   hecho ya, para que `panel_vpn_settings.min_app_version` exista: `GET
+   /.well-known/est/status` la publica en cada respuesta (junto al resto del
+   estado del certificado) para que las apps puedan bloquear el alta y la
+   renovacion si van por debajo de esa version.
+
+**Formato del perfil**: un sobre `{ payload, signature, keyId }` donde
+`payload` es el base64url de los bytes UTF-8 **exactos** de un JSON (nunca se
+re-serializa para verificar, para que comprobar la firma no dependa de
+reproducir bit a bit el mismo formateo en otro lenguaje/libreria) y
+`signature` es la firma Ed25519 (node:crypto, `sign(null, bytes, key)`) sobre
+esos mismos bytes. Verificar solo requiere decodificar `payload` en base64 y
+comprobar la firma con la clave publica del paso 3.
+
+El JSON firmado lleva `version`, `variant` (`"full"` o `"qr"`, ver abajo),
+`cn` (username del dispositivo), `server` (`vpn_fqdn`), `aaaId`,
+`rootCaSha256` (SHA-256 en hex del DER de la raiz offline — **presente en las
+dos variantes**), `ike`/`esp` (propuestas, sintaxis strongSwan), `tunnelMode`,
+`splitRoutes` (vacio en modo `full`), `dns`, `estBaseUrl`, `enrollToken` (el
+token de alta: el unico campo realmente secreto de todo el perfil) e
+`issuedAt`/`expiresAt`.
+
+**Dos variantes, firmadas por separado** (cada una con su propio sobre, y por
+tanto su propia firma — no es el mismo JSON reetiquetado):
+
+- **`"full"`** (fichero `.didevvpn` descargable): ademas de lo anterior, lleva
+  `caChainPem` con la cadena de CA completa (raiz + intermedia). Con una
+  raiz+intermedia reales (ECDSA P-384) esto son ~2800 caracteres.
+- **`"qr"`** (codigo QR, nivel de correccion M): **sin** `caChainPem`. Meter
+  la cadena completa en el QR lo deja en una version ~39 (con nivel L, que es
+  menos robusto) — casi imposible de escanear desde una pantalla, y con
+  nombres un poco mas largos dejaria de caber sin avisar. La variante `qr` se
+  queda comodamente por debajo de la version 25 incluso con nombres largos.
+
+**Contrato para quien consuma la variante `qr`** (obligatorio para los
+prompts 12 — Windows — y 13 — Android —, ya que esa variante no trae la
+cadena de CA):
+
+1. Nada mas escanear el QR, sin validar todavia el TLS de EST, la app hace
+   `GET /.well-known/est/cacerts` (paso inicial de RFC 7030 §4.1.1: esta
+   primera peticion no puede autenticar el servidor via TLS porque la app
+   todavia no tiene ninguna raiz en la que confiar) y extrae el certificado
+   raiz del PKCS7 "certs-only" que devuelve.
+2. La app calcula el SHA-256 del DER de esa raiz recibida y **solo la acepta
+   si coincide exactamente con `rootCaSha256`** del perfil escaneado. Si no
+   coincide, se rechaza el alta entera — no hay margen para "confiar de
+   todas formas".
+3. Solo entonces esa raiz (ya verificada por su huella) se usa para validar
+   de verdad el TLS del listener EST en las peticiones siguientes, y para
+   validar que la intermedia que EST presente en la cadena cuelga de ella.
+   A partir de aqui el flujo es el mismo que con la variante `full` (la app
+   nunca necesita el `.didevvpn` si entro por QR).
+
+La variante `full` no necesita nada de esto porque ya trae la cadena
+completa firmada — pero tambien lleva `rootCaSha256`, por si una
+implementacion prefiere verificar igual antes de confiar en el `caChainPem`
+del propio fichero.
 
 ### Firewall de la puerta de enlace VPN (192.168.10.29)
 

@@ -103,9 +103,11 @@ vpnDevicesRouter.post(
   '/:username/enroll-token',
   asyncHandler(async (req, res) => {
     const result = await generateEnrollToken(req.params.username, req.auth!.sub);
-    // Nunca se audita el token en claro, solo que se genero uno.
+    // Nunca se audita el token en claro ni el perfil firmado (lo lleva
+    // embebido), solo que se genero uno.
     await writeAudit(req, 'create', 'vpn_enroll_token', req.params.username, {
       expiresAt: result.expiresAt,
+      profileGenerated: result.profile !== null,
     });
     res.status(201).json(result);
   }),

@@ -23,6 +23,8 @@ export interface VpnSettings {
   androidCertDays: number;
   /** URL del endpoint EST (RFC 7030), pendiente de implementar. */
   estUrl: string;
+  /** Version minima de app soportada (didev-vpn-windows/android), publicada por GET /.well-known/est/status. */
+  minAppVersion: string;
 }
 
 export const DEFAULT_VPN_SETTINGS: VpnSettings = {
@@ -37,7 +39,11 @@ export const DEFAULT_VPN_SETTINGS: VpnSettings = {
   overlapHours: 48,
   androidCertDays: 365,
   estUrl: 'https://pki.vlc.didev.es:8443',
+  minAppVersion: '0.0.0',
 };
+
+/** Semver simplificado (X.Y.Z, sin prerelease/build): basta para comparar versiones de las apps. */
+const SEMVER_RE = /^\d+\.\d+\.\d+$/;
 
 const ipv4 = z.string().refine(isValidIpv4, 'Direccion IPv4 invalida');
 const cidr = z.string().refine((v) => {
@@ -64,6 +70,7 @@ export const vpnSettingsSchema = z
     overlapHours: z.number().int().positive(),
     androidCertDays: z.number().int().positive(),
     estUrl: z.string().min(1, 'estUrl no puede estar vacio'),
+    minAppVersion: z.string().regex(SEMVER_RE, 'minAppVersion debe ser X.Y.Z'),
   })
   .refine((s) => s.renewAfterDays < s.deviceCertDays, {
     message: 'renewAfterDays debe ser menor que deviceCertDays',
@@ -89,6 +96,7 @@ export function parseVpnSettingsRow(row: RowDataPacket | undefined): VpnSettings
     overlapHours: Number(row.overlap_hours),
     androidCertDays: Number(row.android_cert_days),
     estUrl: row.est_url ?? DEFAULT_VPN_SETTINGS.estUrl,
+    minAppVersion: row.min_app_version ?? DEFAULT_VPN_SETTINGS.minAppVersion,
   });
 }
 

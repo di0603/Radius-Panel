@@ -7,6 +7,87 @@ Este proyecto usa versionado semantico.
 
 ### Anadido
 
+- **Correccion 11.5 (QR compacto)**: el sobre firmado completo, con la
+  cadena de CA (raiz + intermedia P-384 reales) dentro, ocupa ~2800
+  caracteres — cabe por poco en un QR de nivel L (maximo 2953 en modo
+  byte), pero sale una version ~39 practicamente imposible de escanear
+  desde una pantalla, y con nombres un poco mas largos habria dejado de
+  caber sin avisar (`buildProvisioningQrDataUrl` se limitaba a devolver
+  `null` en silencio).
+  - Anadido `rootCaSha256` (SHA-256 en hex del DER de la raiz) al payload
+    firmado, presente siempre, en las dos variantes.
+  - El perfil ahora tiene dos variantes, cada una firmada por separado (su
+    propio sobre, mismo `keyId`, campo `variant` dentro del payload para
+    que no se puedan confundir): `"full"` (fichero `.didevvpn`, con
+    `caChainPem`) y `"qr"` (sin `caChainPem`, solo `rootCaSha256`). El QR
+    ahora codifica siempre la variante `qr`, con nivel de correccion M (mas
+    robusto que L; sobra margen sin la cadena) — cabe con holgura en una
+    version ≤ 25 incluso con nombres largos.
+  - Contrato documentado en el README ("Aprovisionamiento de apps") para
+    quien construya las apps (prompts 12/13): al recibir la variante `qr`,
+    la app pide `GET /.well-known/est/cacerts` sin validar TLS todavia (RFC
+    7030 §4.1.1), calcula el SHA-256 de la raiz recibida y solo la acepta
+    si coincide exactamente con `rootCaSha256` — solo entonces esa raiz se
+    usa para validar de verdad el TLS de EST y la intermedia.
+  - Si el QR compacto aun asi no llegara a caber, la pantalla lo dice
+    explicitamente (ya lo hacia desde el prompt 11: la alternativa del
+    fichero `.didevvpn` siempre esta visible) en vez de omitirlo en
+    silencio.
+  - `buildSignedProvisioningProfile` (una sola variante) pasa a llamarse
+    `buildSignedProvisioningProfiles` (construye y firma las dos a la vez,
+    reutilizando una unica consulta de ajustes/cadena de CA).
+  - Tests: con una cadena P-384 realista (raiz "didev Root CA" + intermedia,
+    generadas en el test) se comprueba que el QR compacto cabe en version
+    ≤ 25 mientras el completo ni siquiera cabe en nivel M; que solo la
+    variante `full` lleva `caChainPem`; que las dos llevan `rootCaSha256` y
+    verifican con la clave publica: y que las dos firmas son independientes
+    (la de una variante no vale para el payload de la otra).
+
+- **Aprovisionamiento de apps (prompt 11)**: perfil de conexion firmado
+  (`.didevvpn`) para configurar las futuras apps propias de Windows/Android
+  con un solo paso, en vez de tener que introducir cada parametro a mano.
+  - Al generar el token de alta de un dispositivo (ficha del dispositivo →
+    "Generar token de alta"), si `VPN_PROFILE_SIGNING_KEY` esta configurada,
+    el panel construye ademas un perfil JSON (servidor, identidad AAA,
+    cadena de CA, propuestas IKE/ESP, modo de tunel y sus rutas de split
+    tunnel, DNS, URL de EST, y el propio token de alta) y lo firma con
+    Ed25519. Se entrega una unica vez, con la misma caducidad de 24h que el
+    token: como fichero `.didevvpn` descargable (Windows) y como codigo QR
+    (Android). Sin esa variable configurada, "Generar token de alta" sigue
+    funcionando exactamente igual que antes (solo el token, sin perfil).
+  - La clave privada **no la genera el codigo**: es un paso manual de
+    `openssl genpkey -algorithm ED25519` en la `.28`, fuera del arbol de git,
+    referenciada solo por ruta (`VPN_PROFILE_SIGNING_KEY`, PEM, permisos
+    600) — igual que `EST_TLS_KEY`. La clave publica correspondiente se
+    incrusta en las apps para que ninguna acepte un perfil que no venga de
+    este panel. Documentado en el README ("Aprovisionamiento de apps"), con
+    los comandos exactos.
+  - Formato de firma: un sobre `{ payload, signature, keyId }` donde
+    `payload` es el base64url de los bytes UTF-8 **exactos** del JSON (nunca
+    se re-serializa para verificar, asi que verificar no depende de
+    reproducir bit a bit el mismo formateo en otro lenguaje/libreria) y
+    `signature` es la firma Ed25519 de node:crypto sobre esos mismos bytes.
+  - `GET /.well-known/est/status` publica ahora tambien `minAppVersion`
+    (`panel_vpn_settings.min_app_version`, migracion nueva
+    `sql/panel-schema-vpn-provisioning.sql`, por defecto `0.0.0`), para que
+    las apps puedan bloquear el alta y la renovacion si van por debajo de la
+    version minima soportada.
+  - El QR se genera con la libreria `qrcode` que ya usaba el 2FA; si el
+    contenido no cupiera en un QR legible (la cadena de CA puede ser larga),
+    se omite sin fallar -el fichero `.didevvpn` sigue siempre disponible-.
+  - Verificado: el modelo de datos ya soportaba varios dispositivos para el
+    mismo equipo, uno por usuario (`vpn-<owner_user>-<device_label>`,
+    correccion 4.5) y el limite de 32 caracteres/unicidad de cada parte ya
+    se validaban; se anadieron los tests que faltaban para dejarlo
+    demostrado (`NAME_PART_RE`, dos dispositivos con el mismo
+    `device_label` y distinto `owner_user`).
+  - Tests: firma y verificacion Ed25519 (incluida una firma manipulada byte
+    a byte, y una firma cruzada con la clave publica de otra clave),
+    contenido exacto del payload por modo de tunel, que el unico campo
+    secreto del perfil es `enrollToken` (todo lo demas ya es publico por su
+    cuenta), y el flujo completo de `generateEnrollToken` con y sin la clave
+    de firma configurada.
+
 - **Modulo VPN IKEv2/EAP-TLS (en curso)**: primer paso, esquema de base de datos.
   `vpn_certificates` en la base `radius` (serial, huella de clave publica,
   vigencia, estado activo/renovado/revocado) y, en la base del panel,

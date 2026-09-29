@@ -28,6 +28,7 @@ import {
   vpnSettingsExtendedSchemaExists,
   vpnAndroidSchemaExists,
   vpnFirewallSchemaExists,
+  vpnProvisioningSchemaExists,
 } from '../db/pools.js';
 import { createUser, deleteUser, listUsers } from '../services/radiusUsers.js';
 import { createAdmin, listAdmins, updateAdmin } from '../services/admins.js';
@@ -223,6 +224,19 @@ async function vpnFirewallMigrationStatus(): Promise<void> {
   }
 }
 
+/** Comprueba si esta aplicada la migracion de version minima de app (perfil de aprovisionamiento). */
+async function vpnProvisioningMigrationStatus(): Promise<void> {
+  if (await vpnProvisioningSchemaExists()) {
+    console.log('\x1b[32m✔\x1b[0m panel_vpn_settings.min_app_version existe');
+  } else {
+    console.log(
+      '\x1b[33m!\x1b[0m falta panel_vpn_settings.min_app_version: GET /.well-known/est/status no\n' +
+        '  podra publicar la version minima de app.\n' +
+        `  Aplica: mysql -u root -p ${config.panelDb.database} < sql/panel-schema-vpn-provisioning.sql`,
+    );
+  }
+}
+
 async function schemaMenu(): Promise<void> {
   for (;;) {
     heading('Esquema / migraciones');
@@ -250,6 +264,8 @@ async function schemaMenu(): Promise<void> {
         ` 21) Estado de ajustes VPN\n` +
         ` 22) Estado de la descarga de .p12 para Android\n` +
         ` 23) Estado del firewall de la VPN\n` +
+        ` 24) Aplicar sql/panel-schema-vpn-provisioning.sql (version minima de app, opcional)\n` +
+        ` 25) Estado del aprovisionamiento (version minima de app)\n` +
         ` 0) Volver`,
     );
     const c = (await ask('> ')).trim();
@@ -340,6 +356,13 @@ async function schemaMenu(): Promise<void> {
       else if (c === '21') await vpnSettingsMigrationStatus();
       else if (c === '22') await vpnAndroidMigrationStatus();
       else if (c === '23') await vpnFirewallMigrationStatus();
+      else if (c === '24') {
+        console.log(
+          'Idempotente. Anade panel_vpn_settings.min_app_version (por defecto "0.0.0"), para que\n' +
+            'GET /.well-known/est/status pueda publicar la version minima de app soportada.',
+        );
+        await runSqlFile('panel-schema-vpn-provisioning.sql', config.panelDb, true);
+      } else if (c === '25') await vpnProvisioningMigrationStatus();
       else if (c === '0') return;
     } catch (err) {
       console.log(`\x1b[31merror:\x1b[0m ${(err as Error).message}`);
