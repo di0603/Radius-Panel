@@ -7,6 +7,42 @@ Este proyecto usa versionado semantico.
 
 ### Anadido
 
+- **Prompt 12.7 (Windows: item 10, clave del dispositivo por CertEnroll)**:
+  Schannel rechazaba en EAP-TLS el certificado instalado por el alta con
+  0x8009030D SEC_E_UNKNOWN_CREDENTIALS, aunque la clave CNG asociada a mano
+  (prompt 12.6, `CertSetCertificateContextProperty`) firmaba y verificaba
+  bien -verificado con un handshake TLS mutuo real (`SslStream`,
+  `AuthenticateAsClient`) en esta maquina: el fallo solo se manifiesta ahi,
+  nunca en un `ECDsa.SignData`/`VerifyData` suelto-. Arreglado generando la
+  clave y el CSR con CertEnroll (COM, `X509Enrollment.*`: `CX509PrivateKey`
+  ECDSA P-256 no exportable, `CX509CertificateRequestPkcs10` con SAN
+  dNSName = CN, `CX509Enrollment`) e instalando la respuesta de EST con
+  `CX509Enrollment.InstallResponse` -instalar y enlazar la clave es un unico
+  paso con CertEnroll, verificado con un handshake TLS mutuo real que SI la
+  acepta-. TPM primero ("Microsoft Platform Crypto Provider"), con
+  confirmacion explicita antes de caer a software ("Microsoft Software Key
+  Storage Provider"), igual que antes. `CertificateEnrollmentService` ahora
+  expone un unico `EnrollAsync` (clave+CSR+simpleenroll/simplereenroll+
+  instalacion en un solo hilo STA dedicado -CertEnroll es COM de apartamento
+  unico, no se puede repartir entre hilos-, nunca en el hilo de interfaz);
+  `EstClient` devuelve tambien el cuerpo PKCS7 crudo de EST (antes se
+  descartaba tras parsear el certificado), que hace falta sin tocar para
+  `InstallResponse`. La comprobacion de version minima del alta ahora se
+  hace CON el certificado ya instalado (antes se enlazaba en memoria sin
+  instalar): si el panel exige una version superior, se desinstala el
+  certificado recien puesto en vez de no instalarlo nunca -con CertEnroll no
+  hay forma de "probar sin instalar"-.
+  - Tests: `CertificateEnrollmentServiceTests` reescrito para comprobar la
+    aceptacion REAL por Schannel (handshake TLS mutuo de verdad, TPM y
+    software), no solo firma/verifica -esa comprobacion antigua no detectaba
+    el bug real-; 9 tests en verde en esta maquina (con TPM disponible).
+  - Documentado en el codigo por que `KeySpec` tiene que ser `AT_SIGNATURE`
+    (2) y no `AT_KEYEXCHANGE` (1): con una clave puramente CNG, `AT_KEYEXCHANGE`
+    da "Acceso denegado" (NTE_PERM) al firmar el CSR -verificado en esta
+    maquina-.
+  - Pendiente en la misma rama: items 7 (filtrado del certificado EAP +
+    RasDial no interactivo) y 11 (compilar 0.1.6) del prompt 12.7.
+
 - **Prompt 12.7 (Windows: rendimiento)**: la app iba muy lenta -cada
   consulta de estado lanzaba un `powershell.exe` nuevo (con el modulo
   `VpnClient`), en el hilo de interfaz, varias veces por conexion y varias

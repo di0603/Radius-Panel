@@ -65,16 +65,20 @@ internal sealed class TrustAnchorMismatchException : Exception
 ///      IKE lo exige ahi, no solo el de RADIUS -ver
 ///      APPS/Windows/NOTAS-prompt-12-en-pausa.md, riesgo 1-); si no, pide
 ///      la elevacion de un solo uso.
-///   4. Clave del dispositivo: TPM primero, con confirmacion explicita si
-///      hay que caer a software.
-///   5. simpleenroll con el token del perfil.
-///   6. Version minima de la app (ver MinAppVersionRequiredException): si el
-///      panel exige una version superior a esta, se aborta AQUI, sin instalar
-///      el certificado ni tocar la conexion VPN.
-///   7. Instala el certificado emitido, enlazado a esa misma clave.
-///   8. Configura la conexion IKEv2/EAP-TLS, nombrada "cn" (cada conexion de
+///   4. Clave del dispositivo + simpleenroll + instalacion, TODO junto en
+///      ICertificateEnrollmentService.EnrollAsync (TPM primero, con
+///      confirmacion explicita si hay que caer a software): con CertEnroll
+///      (COM) instalar y enlazar la clave es un unico paso indivisible -no
+///      hay forma de "asociar sin persistir" para comprobar algo antes de
+///      instalar de verdad, a diferencia del enfoque anterior-.
+///   5. Version minima de la app (ver MinAppVersionRequiredException),
+///      comprobada YA CON el certificado instalado: si el panel exige una
+///      version superior a esta, se desinstala el certificado que se acaba
+///      de poner (ver el catch en EnrollAsync) y se aborta, sin tocar la
+///      conexion VPN.
+///   6. Configura la conexion IKEv2/EAP-TLS, nombrada "cn" (cada conexion de
 ///      este cliente generico tiene su propio nombre RAS/VpnClient).
-///   9. Guarda el ancla y el resto del estado de la conexion para poder
+///   7. Guarda el ancla y el resto del estado de la conexion para poder
 ///      renovar despues.
 /// </summary>
 internal sealed class EnrollmentOrchestrator
@@ -122,27 +126,36 @@ internal sealed class EnrollmentOrchestrator
         EnsureTrustAnchor(profile);
         EnsureRootTrusted(root, actualRootSha256);
 
-        using var key = CreateDeviceKey(profile.Cn);
-
-        _logger.Info($"Alta: pidiendo certificado por simpleenroll para \"{profile.Cn}\".");
+        _logger.Info($"Alta: generando clave y pidiendo certificado por simpleenroll para \"{profile.Cn}\".");
         var estBaseUri = EstBaseUrl.Normalize(profile.EstBaseUrl);
-        X509Certificate2 issuedCertificate;
+        InstalledCertificateResult enrolled;
         try
         {
-            issuedCertificate = await _estClient
-                .SimpleEnrollAsync(estBaseUri, profile.Cn, profile.EnrollToken, key.CsrDer, chain, ct)
-                .ConfigureAwait(false);
+            enrolled = await _certificateService.EnrollAsync(
+                profile.Cn,
+                _confirmations.ConfirmSoftwareKeyFallback,
+                (csrDer, enrollCt) => _estClient.SimpleEnrollAsync(estBaseUri, profile.Cn, profile.EnrollToken, csrDer, chain, enrollCt),
+                ct).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            _logger.Error("Alta: simpleenroll ha fallado", ex);
+            _logger.Error("Alta: simpleenroll/instalacion del certificado ha fallado", ex);
             throw;
         }
 
-        await EnsureMinAppVersionAsync(issuedCertificate, key, estBaseUri, chain, ct).ConfigureAwait(false);
+        using var installedCertificate = enrolled.Certificate;
+        _logger.Info($"Alta: certificado instalado (huella {installedCertificate.Thumbprint}, TPM={enrolled.IsTpmBacked}).");
 
-        var installedCertificate = _certificateService.InstallIssuedCertificate(issuedCertificate, key);
-        _logger.Info($"Alta: certificado instalado (huella {installedCertificate.Thumbprint}).");
+        try
+        {
+            await EnsureMinAppVersionAsync(installedCertificate, estBaseUri, chain, ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            _logger.Warn("Alta: bloqueada tras instalar el certificado, desinstalandolo para no dejar nada a medias.");
+            _certificateService.RemoveCertificate(installedCertificate);
+            throw;
+        }
 
         ConfigureVpnConnection(profile, root);
 
@@ -155,7 +168,7 @@ internal sealed class EnrollmentOrchestrator
             RootCaSha256 = profile.RootCaSha256,
             SignerKeySha256 = profile.SignerKeySha256,
             CertificateThumbprint = installedCertificate.Thumbprint,
-            IsTpmBacked = key.IsTpmBacked,
+            IsTpmBacked = enrolled.IsTpmBacked,
             TunnelMode = profile.TunnelMode,
             SplitRoutes = new List<string>(profile.SplitRoutes),
             Dns = profile.Dns,
@@ -211,24 +224,23 @@ internal sealed class EnrollmentOrchestrator
     }
 
     /// <summary>
-    /// Comprueba GET /status (TLS mutuo, con el certificado RECIEN EMITIDO
-    /// por simpleenroll pero AUN SIN INSTALAR: se enlaza a la clave en
-    /// memoria con CopyWithPrivateKey, sin tocar el almacen de certificados
-    /// todavia). Si el panel exige una version de app superior a esta,
-    /// aborta el alta sin instalar nada: mejor eso que dejar un dispositivo
-    /// funcionando con una app que el panel ya considera obsoleta. Un fallo
-    /// de red al comprobarlo NO bloquea el alta (best-effort: la version
-    /// minima es una salvaguarda adicional, no la unica forma de controlar
-    /// que puede darse de alta -eso ya lo hace el admin al generar el token-).
+    /// Comprueba GET /status (TLS mutuo) con el certificado YA INSTALADO -con
+    /// CertEnroll no hay forma de enlazarlo a la clave sin instalarlo, ver el
+    /// resumen de la clase-. Si el panel exige una version de app superior a
+    /// esta, el llamador desinstala el certificado que se acaba de poner:
+    /// mejor eso que dejar un dispositivo funcionando con una app que el
+    /// panel ya considera obsoleta. Un fallo de red al comprobarlo NO bloquea
+    /// el alta (best-effort: la version minima es una salvaguarda adicional,
+    /// no la unica forma de controlar quien puede darse de alta -eso ya lo
+    /// hace el admin al generar el token-).
     /// </summary>
     private async Task EnsureMinAppVersionAsync(
-        X509Certificate2 issuedCertificate, EnrolledKey key, Uri estBaseUri, X509Certificate2Collection chain, CancellationToken ct)
+        X509Certificate2 installedCertificate, Uri estBaseUri, X509Certificate2Collection chain, CancellationToken ct)
     {
         EstStatus status;
         try
         {
-            using var certificateWithKeyForStatusCheck = _certificateService.AssociatePrivateKey(issuedCertificate, key);
-            status = await _estClient.GetStatusAsync(estBaseUri, certificateWithKeyForStatusCheck, chain, ct).ConfigureAwait(false);
+            status = await _estClient.GetStatusAsync(estBaseUri, installedCertificate, chain, ct).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -266,24 +278,6 @@ internal sealed class EnrollmentOrchestrator
         }
 
         _logger.Info("Alta: raiz instalada en LocalMachine\\Root.");
-    }
-
-    private EnrolledKey CreateDeviceKey(string cn)
-    {
-        if (_certificateService.TryCreateTpmBackedKey(cn, out var tpmKey, out var failure))
-        {
-            _logger.Info("Alta: clave generada en el TPM.");
-            return tpmKey!;
-        }
-
-        _logger.Warn($"Alta: no se pudo usar el TPM ({failure?.Message}). Pidiendo confirmacion para clave por software.");
-        if (!_confirmations.ConfirmSoftwareKeyFallback(failure?.Message ?? "TPM no disponible"))
-        {
-            throw new OperationCanceledException(
-                "Alta cancelada: no hay TPM disponible y no se confirmo continuar con una clave por software.");
-        }
-
-        return _certificateService.CreateSoftwareBackedKey(cn);
     }
 
     private void ConfigureVpnConnection(ProvisioningProfile profile, X509Certificate2 root)

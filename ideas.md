@@ -440,9 +440,17 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
   intermedia dentro de `ca_path` rompia la validacion de su propia
   revocacion con "unable to get certificate CRL") separando la intermedia
   (fuera de `ca_path`) de su CRL (dentro), y documentando que hace falta
-  `ca_file` (raiz+su CRL) y `ecdh_curve = "secp384r1:prime256v1"`. Rama
-  `feat/vpn-12.7-windows-rendimiento`, pendiente de revision. Detalle
-  completo en el CHANGELOG.
+  `ca_file` (raiz+su CRL) y `ecdh_curve = "secp384r1:prime256v1"`. Item 10
+  (clave del dispositivo por CertEnroll en vez de CngKey.Create asociada a
+  mano, porque Schannel rechazaba esa via en EAP-TLS con 0x8009030D pese a
+  firmar/verificar bien -verificado con un handshake TLS mutuo real-):
+  `CertificateEnrollmentService` genera la clave (TPM primero, con
+  confirmacion para caer a software) y el CSR con CertEnroll (COM) e
+  instala la respuesta de EST con `CX509Enrollment.InstallResponse`, todo
+  en un hilo STA dedicado. Rama `feat/vpn-12.7-windows-rendimiento`,
+  pendiente de revision. Faltan items 7 (filtrado EAP + RasDial no
+  interactivo) y 11 (compilar 0.1.6 final). Detalle completo en el
+  CHANGELOG.
 - [x] **Prompt 12.6 (Windows: asociar la clave CNG sin exportarla)**: el
   alta con una clave de TPM fallaba siempre ("Clave no valida para utilizar
   en el estado especificado") porque `CopyWithPrivateKey` fuerza una
