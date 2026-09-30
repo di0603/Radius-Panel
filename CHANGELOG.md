@@ -7,6 +7,30 @@ Este proyecto usa versionado semantico.
 
 ### Anadido
 
+- **Prompt 12.8 (Windows 0.1.7: XML de EAP valido y reintento del alta)**: la
+  0.1.6 llegaba a EST pero `Add-VpnConnection` fallaba con "Failed to generate
+  the EAP Configuration ... (WIN32 1)" porque el XML del item 7a no cumplia el
+  esquema estricto de EapHost.
+  - `VpnConnectionService.BuildEapConfigXml` se reescribe tomando como base
+    exacta el XML que genero Windows para una conexion EAP-TLS que si
+    funciono (`New-EapConfiguration -Tls -UserCertificate
+    -VerifyServerIdentity`): mismo orden y namespaces, en una sola linea.
+    Encima: `ServerNames` = identidad AAA, `TrustedRootCA` = huella de la raiz
+    del perfil (sin aviso de verificar el servidor), `PerformServerValidation`
+    y `AcceptServerName` (V2) y `TLSExtensions` (V2) > `FilteringInfo` (V3) >
+    `CAHashList Enabled="true"` > `IssuerHash` = huella de la intermedia.
+    Las huellas van en el formato de EapHost ("5c 0d ed ... ").
+  - Test de integracion en Windows (`BuildEapConfigXml_IsAcceptedByAddVpnConnection`):
+    crea `didev-vpn-xmltest` con el XML generado y la borra, sin alta EST ni
+    tokens. Comprobado que el XML de la 0.1.6 se rechaza con el mismo error y
+    el nuevo se acepta.
+  - Reintento sin token nuevo: si el alta falla tras instalar el certificado,
+    `EnrollmentOrchestrator` reutiliza el certificado de CurrentUser\My que
+    sea del dispositivo (CN), vigente, con clave privada, emitido por la
+    intermedia del perfil (o la raiz si no hay) y con cadena valida hasta la
+    raiz del perfil, y solo crea la conexion
+    (`SelectReusableCertificate`, 7 tests con una PKI de prueba).
+
 - **Prompt 12.7 (Windows: item 7, filtrado del certificado EAP)**: conectar
   fallaba con "Error de Acceso remoto 703: la conexion necesita informacion
   de su parte, pero la aplicacion no permite interaccion del usuario" -

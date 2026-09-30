@@ -126,36 +126,58 @@ internal sealed class EnrollmentOrchestrator
         EnsureTrustAnchor(profile);
         EnsureRootTrusted(root, actualRootSha256);
 
-        _logger.Info($"Alta: generando clave y pidiendo certificado por simpleenroll para \"{profile.Cn}\".");
         var estBaseUri = EstBaseUrl.Normalize(profile.EstBaseUrl);
-        InstalledCertificateResult enrolled;
-        try
+        X509Certificate2 installedCertificate;
+        bool isTpmBacked;
+
+        // Reintento tras un alta que fallo DESPUES de que EST emitiera e
+        // instalara el certificado (p.ej. al crear la conexion): el token ya
+        // esta gastado, asi que si en CurrentUser\My hay un certificado valido
+        // de este dispositivo, de la intermedia del perfil y con su clave
+        // privada, se reutiliza y solo se crea la conexion.
+        var reusable = FindReusableCertificate(profile.Cn, chain, root);
+        if (reusable is not null)
         {
-            enrolled = await _certificateService.EnrollAsync(
-                profile.Cn,
-                _confirmations.ConfirmSoftwareKeyFallback,
-                (csrDer, enrollCt) => _estClient.SimpleEnrollAsync(estBaseUri, profile.Cn, profile.EnrollToken, csrDer, chain, enrollCt),
-                ct).ConfigureAwait(false);
+            installedCertificate = reusable;
+            isTpmBacked = IsTpmKey(reusable);
+            _logger.Info($"Alta: se reutiliza el certificado ya instalado para \"{profile.Cn}\" (huella {reusable.Thumbprint}, caduca {reusable.NotAfter:u}); no se pide otro a EST ni hace falta token nuevo.");
         }
-        catch (Exception ex)
+        else
         {
-            _logger.Error("Alta: simpleenroll/instalacion del certificado ha fallado", ex);
-            throw;
+            _logger.Info($"Alta: generando clave y pidiendo certificado por simpleenroll para \"{profile.Cn}\".");
+            InstalledCertificateResult enrolled;
+            try
+            {
+                enrolled = await _certificateService.EnrollAsync(
+                    profile.Cn,
+                    _confirmations.ConfirmSoftwareKeyFallback,
+                    (csrDer, enrollCt) => _estClient.SimpleEnrollAsync(estBaseUri, profile.Cn, profile.EnrollToken, csrDer, chain, enrollCt),
+                    ct).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.Error("Alta: simpleenroll/instalacion del certificado ha fallado", ex);
+                throw;
+            }
+
+            installedCertificate = enrolled.Certificate;
+            isTpmBacked = enrolled.IsTpmBacked;
+            _logger.Info($"Alta: certificado instalado (huella {installedCertificate.Thumbprint}, TPM={isTpmBacked}).");
+
+            try
+            {
+                await EnsureMinAppVersionAsync(installedCertificate, estBaseUri, chain, ct).ConfigureAwait(false);
+            }
+            catch
+            {
+                _logger.Warn("Alta: bloqueada tras instalar el certificado, desinstalandolo para no dejar nada a medias.");
+                _certificateService.RemoveCertificate(installedCertificate);
+                installedCertificate.Dispose();
+                throw;
+            }
         }
 
-        using var installedCertificate = enrolled.Certificate;
-        _logger.Info($"Alta: certificado instalado (huella {installedCertificate.Thumbprint}, TPM={enrolled.IsTpmBacked}).");
-
-        try
-        {
-            await EnsureMinAppVersionAsync(installedCertificate, estBaseUri, chain, ct).ConfigureAwait(false);
-        }
-        catch
-        {
-            _logger.Warn("Alta: bloqueada tras instalar el certificado, desinstalandolo para no dejar nada a medias.");
-            _certificateService.RemoveCertificate(installedCertificate);
-            throw;
-        }
+        using var certificateToRelease = installedCertificate;
 
         ConfigureVpnConnection(profile, root, chain, installedCertificate);
 
@@ -168,7 +190,7 @@ internal sealed class EnrollmentOrchestrator
             RootCaSha256 = profile.RootCaSha256,
             SignerKeySha256 = profile.SignerKeySha256,
             CertificateThumbprint = installedCertificate.Thumbprint,
-            IsTpmBacked = enrolled.IsTpmBacked,
+            IsTpmBacked = isTpmBacked,
             TunnelMode = profile.TunnelMode,
             SplitRoutes = new List<string>(profile.SplitRoutes),
             Dns = profile.Dns,
@@ -182,6 +204,69 @@ internal sealed class EnrollmentOrchestrator
         ConnectionStore.Save(record);
         _logger.Info($"Alta: completada para \"{profile.Cn}\".");
         return record;
+    }
+
+    /// <summary>
+    /// Certificado ya instalado en CurrentUser\My que sirve para este
+    /// dispositivo (ver <see cref="SelectReusableCertificate"/>), o null.
+    /// El llamador es dueno del certificado devuelto.
+    /// </summary>
+    private static X509Certificate2? FindReusableCertificate(string cn, X509Certificate2Collection chain, X509Certificate2 root)
+    {
+        using var store = new X509Store(StoreName.My, StoreLocation.CurrentUser);
+        store.Open(OpenFlags.ReadOnly);
+        var selected = SelectReusableCertificate(store.Certificates.Cast<X509Certificate2>(), cn, chain, root, DateTimeOffset.UtcNow);
+        return selected is null ? null : new X509Certificate2(selected);
+    }
+
+    /// <summary>
+    /// Entre los candidatos: CN == cn, vigente ahora, con clave privada,
+    /// emitido por la intermedia del perfil (o por la raiz si el perfil no
+    /// trae intermedia, dispositivo "vps") y con cadena valida hasta la raiz
+    /// del perfil (sin mirar revocacion: eso lo hace FreeRADIUS). Si hay
+    /// varios, el que empezo a valer mas tarde.
+    /// </summary>
+    internal static X509Certificate2? SelectReusableCertificate(
+        IEnumerable<X509Certificate2> candidates, string cn, X509Certificate2Collection chain, X509Certificate2 root, DateTimeOffset now)
+    {
+        var intermediates = new X509Certificate2Collection(chain.Cast<X509Certificate2>().Where(c => !IsSelfSigned(c)).ToArray());
+        var issuers = intermediates.Count > 0 ? intermediates.Cast<X509Certificate2>().ToList() : new List<X509Certificate2> { root };
+
+        return candidates
+            .Where(c => string.Equals(c.GetNameInfo(X509NameType.SimpleName, false), cn, StringComparison.OrdinalIgnoreCase))
+            .Where(c => c.NotBefore <= now && now < c.NotAfter)
+            .Where(c => c.HasPrivateKey)
+            .Where(c => issuers.Any(i => i.SubjectName.RawData.AsSpan().SequenceEqual(c.IssuerName.RawData)))
+            .Where(c => ChainsToRoot(c, root, intermediates, now))
+            .OrderByDescending(c => c.NotBefore)
+            .FirstOrDefault();
+    }
+
+    private static bool IsSelfSigned(X509Certificate2 certificate) =>
+        certificate.SubjectName.RawData.AsSpan().SequenceEqual(certificate.IssuerName.RawData);
+
+    private static bool ChainsToRoot(X509Certificate2 certificate, X509Certificate2 root, X509Certificate2Collection intermediates, DateTimeOffset now)
+    {
+        using var chain = new X509Chain();
+        chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+        chain.ChainPolicy.CustomTrustStore.Add(root);
+        chain.ChainPolicy.ExtraStore.AddRange(intermediates);
+        chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+        chain.ChainPolicy.VerificationTime = now.UtcDateTime;
+        return chain.Build(certificate);
+    }
+
+    private static bool IsTpmKey(X509Certificate2 certificate)
+    {
+        try
+        {
+            using var key = certificate.GetECDsaPrivateKey() as ECDsaCng;
+            return key?.Key.Provider?.Provider == "Microsoft Platform Crypto Provider";
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>

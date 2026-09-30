@@ -269,52 +269,63 @@ internal sealed class VpnConnectionService : IVpnConnectionService
     }
 
     /// <summary>
-    /// FilteringInfo/CAHashList (item 7 del prompt 12.7): sin esto, si
-    /// CurrentUser\My tiene mas de un certificado con EKU clientAuth (p.ej.
-    /// uno de otra VPN, o uno viejo tras una renovacion que no se borro),
-    /// Windows no puede decidir cual usar el solo y rasdial.exe falla con
-    /// "Error de Acceso remoto 703: la conexion necesita informacion de su
-    /// parte, pero la aplicacion no permite interaccion del usuario" -no hay
-    /// consola para responder ese dialogo-. Con el emisor fijado aqui, solo
-    /// el certificado de ESTE dispositivo encaja, y SimpleCertSelection ya
-    /// no tiene que elegir entre varios.
+    /// XML de EapHost (EAP-TLS, tipo 13). La estructura, el ORDEN de los
+    /// elementos y los namespaces son los del XML que el propio Windows genero
+    /// con New-EapConfiguration -Tls -UserCertificate -VerifyServerIdentity
+    /// para una conexion que conecto bien (prueba real de la 0.1.6): EapHost
+    /// valida contra un esquema estricto y un orden o namespace distinto hace
+    /// fallar Add-VpnConnection con "Failed to generate the EAP Configuration"
+    /// (WIN32 1). Por eso va en UNA linea, sin sangrias, y las huellas en el
+    /// formato que usa Windows ("5c 0d ed ...": pares hex en minusculas
+    /// separados por espacio, con un espacio final).
+    ///
+    /// Sobre esa base se anade, como en el ejemplo de Microsoft para EAP-TLS
+    /// con filtrado por emisor: ServerNames + TrustedRootCA (sin aviso de
+    /// "verificar el servidor") y TLSExtensions (V2) > FilteringInfo (V3) >
+    /// CAHashList/IssuerHash (item 7 del prompt 12.7): con el emisor fijado
+    /// solo el certificado de ESTE dispositivo encaja y SimpleCertSelection no
+    /// tiene que elegir entre varios en CurrentUser\My (sin eso rasdial.exe
+    /// falla con el error 703 porque no hay consola con la que preguntar).
     /// </summary>
     internal static string BuildEapConfigXml(string serverName, string rootThumbprintSha1, string clientCertificateIssuerThumbprintSha1) =>
-        $"""
-        <EapHostConfig xmlns="http://www.microsoft.com/provisioning/EapHostConfig">
-          <EapMethod>
-            <Type xmlns="http://www.microsoft.com/provisioning/EapCommon">13</Type>
-            <VendorId xmlns="http://www.microsoft.com/provisioning/EapCommon">0</VendorId>
-            <VendorType xmlns="http://www.microsoft.com/provisioning/EapCommon">0</VendorType>
-            <AuthorId xmlns="http://www.microsoft.com/provisioning/EapCommon">0</AuthorId>
-          </EapMethod>
-          <Config xmlns="http://www.microsoft.com/provisioning/EapHostConfig">
-            <Eap xmlns="http://www.microsoft.com/provisioning/BaseEapConnectionPropertiesV1">
-              <Type>13</Type>
-              <EapType xmlns="http://www.microsoft.com/provisioning/EapTlsConnectionPropertiesV1">
-                <CredentialsSource>
-                  <CertificateStore>
-                    <SimpleCertSelection>true</SimpleCertSelection>
-                  </CertificateStore>
-                </CredentialsSource>
-                <ServerValidation>
-                  <DisableUserPromptForServerValidation>true</DisableUserPromptForServerValidation>
-                  <ServerNames>{serverName}</ServerNames>
-                  <TrustedRootCA>{rootThumbprintSha1}</TrustedRootCA>
-                </ServerValidation>
-                <DifferentUsername>false</DifferentUsername>
-                <PerformServerValidation xmlns="http://www.microsoft.com/provisioning/EapTlsConnectionPropertiesV2">true</PerformServerValidation>
-                <AcceptServerName xmlns="http://www.microsoft.com/provisioning/EapTlsConnectionPropertiesV2">true</AcceptServerName>
-                <FilteringInfo xmlns="http://www.microsoft.com/provisioning/EapTlsConnectionPropertiesV2">
-                  <CAHashList Enabled="true">
-                    <IssuerHash>{clientCertificateIssuerThumbprintSha1}</IssuerHash>
-                  </CAHashList>
-                </FilteringInfo>
-              </EapType>
-            </Eap>
-          </Config>
-        </EapHostConfig>
-        """;
+        "<EapHostConfig xmlns=\"http://www.microsoft.com/provisioning/EapHostConfig\">" +
+        "<EapMethod>" +
+        "<Type xmlns=\"http://www.microsoft.com/provisioning/EapCommon\">13</Type>" +
+        "<VendorId xmlns=\"http://www.microsoft.com/provisioning/EapCommon\">0</VendorId>" +
+        "<VendorType xmlns=\"http://www.microsoft.com/provisioning/EapCommon\">0</VendorType>" +
+        "<AuthorId xmlns=\"http://www.microsoft.com/provisioning/EapCommon\">0</AuthorId>" +
+        "</EapMethod>" +
+        "<Config xmlns=\"http://www.microsoft.com/provisioning/EapHostConfig\">" +
+        "<Eap xmlns=\"http://www.microsoft.com/provisioning/BaseEapConnectionPropertiesV1\">" +
+        "<Type>13</Type>" +
+        "<EapType xmlns=\"http://www.microsoft.com/provisioning/EapTlsConnectionPropertiesV1\">" +
+        "<CredentialsSource><CertificateStore><SimpleCertSelection>true</SimpleCertSelection></CertificateStore></CredentialsSource>" +
+        "<ServerValidation>" +
+        "<DisableUserPromptForServerValidation>false</DisableUserPromptForServerValidation>" +
+        $"<ServerNames>{System.Security.SecurityElement.Escape(serverName)}</ServerNames>" +
+        $"<TrustedRootCA>{FormatThumbprint(rootThumbprintSha1)}</TrustedRootCA>" +
+        "</ServerValidation>" +
+        "<DifferentUsername>false</DifferentUsername>" +
+        "<PerformServerValidation xmlns=\"http://www.microsoft.com/provisioning/EapTlsConnectionPropertiesV2\">true</PerformServerValidation>" +
+        "<AcceptServerName xmlns=\"http://www.microsoft.com/provisioning/EapTlsConnectionPropertiesV2\">true</AcceptServerName>" +
+        "<TLSExtensions xmlns=\"http://www.microsoft.com/provisioning/EapTlsConnectionPropertiesV2\">" +
+        "<FilteringInfo xmlns=\"http://www.microsoft.com/provisioning/EapTlsConnectionPropertiesV3\">" +
+        $"<CAHashList Enabled=\"true\"><IssuerHash>{FormatThumbprint(clientCertificateIssuerThumbprintSha1)}</IssuerHash></CAHashList>" +
+        "</FilteringInfo>" +
+        "</TLSExtensions>" +
+        "</EapType></Eap></Config></EapHostConfig>";
+
+    /// <summary>"5C0DED..." (o ya con espacios) -> "5c 0d ed ... " (formato de EapHost: minusculas, pares separados por espacio, espacio final).</summary>
+    internal static string FormatThumbprint(string thumbprint)
+    {
+        var hex = new string(thumbprint.Where(Uri.IsHexDigit).ToArray()).ToLowerInvariant();
+        var sb = new StringBuilder();
+        for (var i = 0; i + 1 < hex.Length; i += 2)
+        {
+            sb.Append(hex, i, 2).Append(' ');
+        }
+        return sb.ToString();
+    }
 
     /// <summary>Cadena literal de PowerShell entre comillas simples, con las comillas simples internas dobladas (escape estandar de PS).</summary>
     private static string PsString(string value) => "'" + value.Replace("'", "''") + "'";
