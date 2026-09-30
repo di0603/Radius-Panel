@@ -433,7 +433,14 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
   temporizadores de sondeo propio; `ConnectionManagerForm` ya no reconstruye
   toda la lista en cada refresco. `PublishReadyToRun=true`. Medido de
   verdad: arranque ~360ms->~241ms, un refresco con 3 conexiones
-  ~6,3s->~10ms. Version 0.1.6 compilada y ejecutada de verdad. Rama
+  ~6,3s->~10ms. Version 0.1.6 compilada y ejecutada de verdad. Ademas
+  (items 8-9 del prompt): scripts de `deploy/` marcados ejecutables en git
+  (se subieron como 644 desde Windows); arreglado un bug real de
+  `freeradius-vpn-ca-sync.sh` (con `X509_V_FLAG_PARTIAL_CHAIN`, tener la
+  intermedia dentro de `ca_path` rompia la validacion de su propia
+  revocacion con "unable to get certificate CRL") separando la intermedia
+  (fuera de `ca_path`) de su CRL (dentro), y documentando que hace falta
+  `ca_file` (raiz+su CRL) y `ecdh_curve = "secp384r1:prime256v1"`. Rama
   `feat/vpn-12.7-windows-rendimiento`, pendiente de revision. Detalle
   completo en el CHANGELOG.
 - [x] **Prompt 12.6 (Windows: asociar la clave CNG sin exportarla)**: el

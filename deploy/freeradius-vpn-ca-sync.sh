@@ -1,11 +1,27 @@
 #!/usr/bin/env bash
-# Sincroniza la CA intermedia (y su CRL) del panel con el ca_path de
-# FreeRADIUS para el virtual server `vpn` (EAP-TLS). FreeRADIUS valida ahi
-# con ca_path + check_crl + check_all_crl = yes: hoy ese directorio solo
-# tiene la raiz offline y su CRL, puestas a mano, asi que cualquier
-# certificado de dispositivo firmado por la intermedia del panel (en vez de
-# directamente por la raiz) se rechaza. Este script anade la intermedia y su
-# CRL como ficheros propios, SIN TOCAR los de la raiz.
+# Sincroniza la CA intermedia (y su CRL) del panel con FreeRADIUS para el
+# virtual server `vpn` (EAP-TLS, modulo eap_vpn, tls-config tls-vpn).
+#
+# IMPORTANTE (correccion del prompt 12.7, item 9): la intermedia NUNCA se
+# copia dentro de ca_path. FreeRADIUS activa X509_V_FLAG_PARTIAL_CHAIN, asi
+# que cualquier certificado presente directamente en ca_path se trata como
+# ancla de confianza propia: si la intermedia estuviera ahi, la cadena se
+# trunca en ella antes de llegar a la raiz, y check_all_crl no puede
+# comprobar la revocacion de la PROPIA intermedia (necesita la CRL de la
+# raiz, que ya no forma parte de la cadena construida) -> "unable to get
+# certificate CRL" (error 3). Este script deja en ca_path SOLO la CRL de la
+# intermedia (con su enlace hash .r0 tras `openssl rehash`, nunca un
+# certificado ni un enlace .0); la intermedia se guarda aparte, en
+# INTERMEDIATE_DIR, fuera de cualquier ca_path. El cliente EAP-TLS (Windows/
+# Linux) envia la intermedia en la propia cadena TLS -de ahi que el alta del
+# dispositivo la instale en LocalMachine\CA (prompt 12.7, item 10)-, asi que
+# FreeRADIUS la recibe en cada conexion como certificado "no confiable" para
+# completar la cadena hasta la raiz, y no necesita tenerla ya en el disco.
+#
+# tls-config tls-vpn necesita ADEMAS "ca_file" apuntando a un fichero con la
+# raiz + su propia CRL (p.ej. root-bundle.pem): ca_path y ca_file son
+# complementarios en OpenSSL, no alternativos. Este script NUNCA toca ese
+# fichero (se prepara a mano, una vez); solo avisa si no lo encuentra.
 #
 # Descarga por loopback (server/src/routes/pkiPublic.ts, sin autenticacion:
 # es informacion publica, como la de cualquier CA) y NUNCA confia en la raiz
@@ -31,6 +47,10 @@ fi
 
 : "${PANEL_PKI_URL:=http://127.0.0.1:1003/pki}"
 : "${CA_PATH:=/etc/freeradius/3.0/certs/vpn/ca}"
+# Donde vive la intermedia (solo referencia/backup: FreeRADIUS no la lee de
+# aqui para la validacion, ver la cabecera de este fichero), SIEMPRE fuera
+# de CA_PATH.
+: "${INTERMEDIATE_DIR:=/etc/freeradius/3.0/certs/vpn}"
 : "${ROOT_CERT_FILE:?Falta ROOT_CERT_FILE en $CONFIG_FILE: ruta al certificado de la raiz offline ya presente en CA_PATH}"
 : "${ROOT_CERT_SHA256:?Falta ROOT_CERT_SHA256 en $CONFIG_FILE: huella SHA-256 (hex, sin separadores) esperada de ROOT_CERT_FILE}"
 : "${FREERADIUS_SERVICE:=freeradius}"
@@ -38,11 +58,23 @@ fi
 # El EAP-TLS de la VPN no esta en el modulo "eap" comun (el de la WiFi, que
 # no se toca): es su propio modulo eap_vpn con su propio tls-config tls-vpn.
 : "${TLS_CONFIG_FILE:=/etc/freeradius/3.0/mods-enabled/eap_vpn}"
+# Variables de FreeRADIUS que puede usar TLS_CONFIG_FILE en vez de una ruta
+# literal (p.ej. ca_path = "${certdir}/vpn/ca"): se resuelven igual que las
+# resolveria FreeRADIUS antes de comparar con CA_PATH. Los valores por
+# defecto son los mismos que trae FreeRADIUS de fabrica en radiusd.conf.
+: "${CONFDIR:=/etc/freeradius/3.0}"
+: "${CERTDIR:=$CONFDIR/certs}"
 
 if [ ! -d "$CA_PATH" ]; then
   echo "CA_PATH '$CA_PATH' no existe: revisa la configuracion antes de continuar." >&2
   exit 1
 fi
+case "$CA_PATH" in
+  "$INTERMEDIATE_DIR"|"$INTERMEDIATE_DIR"/*)
+    echo "CA_PATH ('$CA_PATH') esta dentro de INTERMEDIATE_DIR ('$INTERMEDIATE_DIR'): tienen que ser distintos, o la intermedia acabaria de todas formas en ca_path." >&2
+    exit 1
+    ;;
+esac
 if [ ! -f "$ROOT_CERT_FILE" ]; then
   echo "ROOT_CERT_FILE '$ROOT_CERT_FILE' no existe: revisa la configuracion antes de continuar." >&2
   exit 1
@@ -51,14 +83,26 @@ if [ ! -f "$TLS_CONFIG_FILE" ]; then
   echo "TLS_CONFIG_FILE '$TLS_CONFIG_FILE' no existe: revisa la configuracion (deberia ser el modulo eap_vpn, no el eap generico de la WiFi)." >&2
   exit 1
 fi
+
 # Sin esto, un CA_PATH mal configurado en este script (o en FreeRADIUS)
 # pasaria desapercibido: todo lo de abajo verificaria y escribiria ficheros
-# en un directorio que rlm_eap ni siquiera lee. Comprobacion en dos pasos con
-# grep -F (cadena literal, no regex): CA_PATH es una ruta de fichero, no un
-# patron -intentar construir una ERE a partir de ella es fragil de verdad-.
-if ! grep -q 'ca_path' "$TLS_CONFIG_FILE" || ! grep -qF -- "$CA_PATH" "$TLS_CONFIG_FILE"; then
-  echo "TLS_CONFIG_FILE '$TLS_CONFIG_FILE' no tiene 'ca_path = $CA_PATH': revisa que CA_PATH coincide con el ca_path real de tls-config tls-vpn." >&2
+# en un directorio que rlm_eap ni siquiera lee. Se extrae el VALOR real de
+# "ca_path = ..." (con o sin comillas) y se resuelven ${certdir}/${confdir}
+# igual que FreeRADIUS, en vez de buscar CA_PATH como subcadena literal:
+# ese metodo antiguo no reconocia un ca_path escrito con esas variables.
+configured_ca_path_raw="$(grep -E '^[[:space:]]*ca_path[[:space:]]*=' "$TLS_CONFIG_FILE" | head -n1 | sed -E 's/^[[:space:]]*ca_path[[:space:]]*=[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/')"
+if [ -z "$configured_ca_path_raw" ]; then
+  echo "TLS_CONFIG_FILE '$TLS_CONFIG_FILE' no tiene ninguna linea 'ca_path = ...': revisa que es el tls-config tls-vpn correcto." >&2
   exit 1
+fi
+configured_ca_path="${configured_ca_path_raw//\$\{certdir\}/$CERTDIR}"
+configured_ca_path="${configured_ca_path//\$\{confdir\}/$CONFDIR}"
+if [ "$configured_ca_path" != "$CA_PATH" ]; then
+  echo "TLS_CONFIG_FILE '$TLS_CONFIG_FILE' tiene ca_path = '$configured_ca_path_raw' (resuelto: '$configured_ca_path'), que no coincide con CA_PATH ('$CA_PATH')." >&2
+  exit 1
+fi
+if ! grep -qE '^[[:space:]]*ca_file[[:space:]]*=' "$TLS_CONFIG_FILE"; then
+  echo "AVISO: TLS_CONFIG_FILE '$TLS_CONFIG_FILE' no tiene ninguna linea 'ca_file = ...'. Sin ca_file (raiz + CRL de la raiz en un unico fichero) la validacion de la cadena puede fallar con 'unable to get certificate CRL'; ver el README, seccion de sincronizacion con FreeRADIUS. Este script no la crea ni la toca, solo avisa." >&2
 fi
 
 echo "Comprobando que la raiz local (ROOT_CERT_FILE) sigue siendo la esperada..."
@@ -202,7 +246,14 @@ for cert in "${intermediate_files[@]}"; do
 done
 cat "${crl_files[@]}" > "$new_dir/panel-crl.pem"
 
-new_hash="$(cat "$new_dir"/panel-intermediate-*.pem "$new_dir/panel-crl.pem" | openssl dgst -sha256 -r | awk '{print $1}')"
+# "v2" en la huella: fuerza una resincronizacion la primera vez que se
+# ejecuta esta version corregida del script, aunque la intermedia/CRL no
+# hayan cambiado desde la ultima vez que corrio la version anterior (que
+# dejaba la intermedia, mal, dentro de CA_PATH). Sin esto, "sin cambios"
+# haria salir antes de llegar a la limpieza de mas abajo y la instalacion
+# quedaria con el fallo del item 9 sin corregir hasta el siguiente cambio
+# real de CA.
+new_hash="$( { printf 'v2\n'; cat "$new_dir"/panel-intermediate-*.pem "$new_dir/panel-crl.pem"; } | openssl dgst -sha256 -r | awk '{print $1}')"
 state_file="$STATE_DIR/last-applied.sha256"
 previous_hash=""
 [ -f "$state_file" ] && previous_hash="$(cat "$state_file")"
@@ -212,16 +263,26 @@ if [ "$new_hash" = "$previous_hash" ]; then
   exit 0
 fi
 
-echo "Hay cambios (huella anterior: ${previous_hash:-ninguna}, nueva: $new_hash). Aplicando en $CA_PATH..."
-# Limpia solo LOS FICHEROS PROPIOS de sincronizaciones anteriores (nunca los
-# de la raiz, que no llevan el prefijo "panel-"), para no acumular
-# intermedias retiradas que ya no vienen en la respuesta del panel.
-find "$CA_PATH" -maxdepth 1 -name 'panel-intermediate-*.pem' -delete
-cp "$new_dir"/panel-intermediate-*.pem "$CA_PATH/"
-cp "$new_dir/panel-crl.pem" "$CA_PATH/panel-crl.pem"
-chmod 644 "$CA_PATH"/panel-intermediate-*.pem "$CA_PATH/panel-crl.pem"
+echo "Hay cambios (huella anterior: ${previous_hash:-ninguna}, nueva: $new_hash). Aplicando..."
 
-echo "Reindexando $CA_PATH (openssl rehash)..."
+echo "Guardando la intermedia en $INTERMEDIATE_DIR (fuera de ca_path)..."
+mkdir -p "$INTERMEDIATE_DIR"
+chmod 755 "$INTERMEDIATE_DIR"
+find "$INTERMEDIATE_DIR" -maxdepth 1 -name 'panel-intermediate-*.pem' -delete
+cp "$new_dir"/panel-intermediate-*.pem "$INTERMEDIATE_DIR/"
+chmod 644 "$INTERMEDIATE_DIR"/panel-intermediate-*.pem
+
+echo "Actualizando la CRL de la intermedia en $CA_PATH (sin el certificado de la intermedia)..."
+# Limpia tambien cualquier panel-intermediate-*.pem que hubiera quedado en
+# CA_PATH de una instalacion con la version anterior de este script (el
+# propio bug que corrige el item 9): nunca los de la raiz, que no llevan el
+# prefijo "panel-".
+find "$CA_PATH" -maxdepth 1 -name 'panel-intermediate-*.pem' -delete
+find "$CA_PATH" -maxdepth 1 -name 'panel-crl.pem' -delete
+cp "$new_dir/panel-crl.pem" "$CA_PATH/panel-crl.pem"
+chmod 644 "$CA_PATH/panel-crl.pem"
+
+echo "Reindexando $CA_PATH (openssl rehash: solo genera enlaces .r0 para la CRL, sin certificados que enlazar con .0)..."
 openssl rehash "$CA_PATH" >/dev/null
 
 echo "$new_hash" > "$state_file"

@@ -61,6 +61,44 @@ Este proyecto usa versionado semantico.
     firmar + `SHA256SUMS.txt`. Ejecutado de verdad (no solo compilado):
     arranca, tray+ventana aparecen, sin excepciones en el log tras varios
     segundos.
+  - `deploy/vpn-gateway-agent.sh`, `deploy/freeradius-vpn-ca-sync.sh` y
+    `deploy/deploy.sh` marcados en git con modo 100755 (`git update-index
+    --chmod=+x`): se habian subido como 644 desde Windows y systemd no podia
+    ejecutarlos.
+  - `deploy/freeradius-vpn-ca-sync.sh` (prompt 12.7, sobre lo entregado en
+    los prompts 14/14.5): con `X509_V_FLAG_PARTIAL_CHAIN` activo en
+    FreeRADIUS, tener el certificado de la CA intermedia dentro de `ca_path`
+    hacia que la cadena terminara ahi -la raiz nunca entraba en la
+    validacion- y la comprobacion de revocacion de la PROPIA intermedia
+    fallaba con `unable to get certificate CRL` (bug real, reproducido con
+    `openssl verify`). Arreglado: la intermedia se guarda ahora en
+    `INTERMEDIATE_DIR`, siempre fuera de `ca_path` (`ca_path` solo lleva la
+    CRL de la intermedia, nunca su certificado ni un enlace `.0`); el
+    script limpia cualquier `panel-intermediate-*.pem` que hubiera quedado
+    dentro de `ca_path` por el esquema anterior. La comprobacion de
+    `TLS_CONFIG_FILE` ahora resuelve `${certdir}`/`${confdir}` si `ca_path`
+    los usa (antes exigia coincidencia literal) y avisa (sin fallar) si no
+    encuentra una linea `ca_file` (raiz + su propia CRL, requerida ademas de
+    `ca_path` para poder validar la revocacion de la intermedia). El hash de
+    cambios se versiono (`"v2\n"` de prefijo) para forzar exactamente una
+    resincronizacion en el primer arranque del script corregido, aunque el
+    contenido de la CA/CRL no haya cambiado -si no, un host ya sincronizado
+    con el bug se quedaria con el esquema viejo hasta la siguiente rotacion
+    real-. Documentado en el propio script y en el `.example` que
+    `tls-config tls-vpn` necesita ademas `ecdh_curve =
+    "secp384r1:prime256v1"` (las claves TPM/cliente son P-256; con solo
+    `secp384r1` FreeRADIUS corta con "wrong curve").
+  - Tests nuevos en `server/src/lib/deployScripts.test.ts`: el camino feliz
+    ahora comprueba que la intermedia queda fuera de `ca_path` (antes
+    comprobaba lo contrario) y que `openssl rehash` solo genera un enlace
+    `.r0` (CRL), nunca `.0`; nuevo test que reproduce el bug con `openssl
+    verify -partial_chain -untrusted <intermedia> -crl_check_all` (falla con
+    el esquema antiguo, pasa con el nuevo con `-CAfile` para la raiz+su
+    CRL); los tres tests de rechazo tambien comprueban que `INTERMEDIATE_DIR`
+    queda vacio.
+  - README actualizado (seccion "Sincronizacion de la CA intermedia con
+    FreeRADIUS"): nuevo esquema `ca_path`/`INTERMEDIATE_DIR`/`ca_file`,
+    ejemplo de `openssl verify` y pasos de "volver atras" al dia.
   - Rama `feat/vpn-12.7-windows-rendimiento`, pendiente de revision.
 
 - **Prompt 12.6 (Windows: asociar la clave CNG sin exportarla)**: el alta
