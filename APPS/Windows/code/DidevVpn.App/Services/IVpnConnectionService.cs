@@ -5,6 +5,7 @@ internal sealed record VpnConnectionSpec(
     string ServerAddress,
     string EapServerName,
     string RootCertificateThumbprintSha1,
+    string ClientCertificateIssuerThumbprintSha1,
     bool SplitTunneling,
     IReadOnlyList<string> SplitRoutes,
     string IkeEncryption,

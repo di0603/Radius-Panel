@@ -49,7 +49,7 @@ internal sealed class VpnConnectionService : IVpnConnectionService
 
     public void CreateOrUpdateConnection(VpnConnectionSpec spec)
     {
-        var eapXml = BuildEapConfigXml(spec.EapServerName, spec.RootCertificateThumbprintSha1);
+        var eapXml = BuildEapConfigXml(spec.EapServerName, spec.RootCertificateThumbprintSha1, spec.ClientCertificateIssuerThumbprintSha1);
         var eapXmlPath = Path.Combine(Path.GetTempPath(), $"didev-vpn-eap-{Guid.NewGuid():N}.xml");
         File.WriteAllText(eapXmlPath, eapXml, Encoding.UTF8);
 
@@ -169,7 +169,27 @@ internal sealed class VpnConnectionService : IVpnConnectionService
         _logger?.Warn($"RAS nativo (P/Invoke) ha fallado, usando PowerShell como respaldo para el resto de esta sesion: {ex.Message}");
     }
 
-    public void Connect(string connectionName) => RunRasDialExe(connectionName, disconnect: false);
+    // ERROR_REMOTE_ACCESS_NO_UI_INTERACTION_ALLOWED (703): "la conexion
+    // necesita informacion de su parte, pero la aplicacion no permite
+    // interaccion del usuario". rasdial.exe no tiene consola con la que
+    // preguntar (CreateNoWindow=true): en vez de fallar sin mas, se cae al
+    // dialogo nativo como ultimo recurso (ver Connect).
+    private const int ErrorNoUiInteractionAllowed = 703;
+
+    public void Connect(string connectionName)
+    {
+        try
+        {
+            RunRasDialExe(connectionName, disconnect: false);
+        }
+        catch (RasDialException ex) when (ex.ExitCode == ErrorNoUiInteractionAllowed)
+        {
+            _logger?.Warn(
+                $"rasdial.exe necesita interaccion del usuario para \"{connectionName}\" (703): " +
+                "abriendo el dialogo nativo (rasphone.exe -d) como ultimo recurso.");
+            RunRasPhoneDialog(connectionName);
+        }
+    }
 
     public void Disconnect(string connectionName) => RunRasDialExe(connectionName, disconnect: true);
 
@@ -199,9 +219,23 @@ internal sealed class VpnConnectionService : IVpnConnectionService
         if (process.ExitCode != 0)
         {
             var message = !string.IsNullOrWhiteSpace(stdout) ? stdout.Trim() : stderr.Trim();
-            throw new InvalidOperationException(
+            throw new RasDialException(
+                process.ExitCode,
                 string.IsNullOrEmpty(message) ? $"rasdial.exe termino con codigo {process.ExitCode}." : message);
         }
+    }
+
+    /// <summary>Ultimo recurso (item 7c del prompt 12.7): el dialogo nativo de marcado, VISIBLE, para que la persona delante del equipo elija el certificado a mano si ni SimpleCertSelection ni el filtro por emisor bastaron. No se espera a que termine: es interactivo, la persona lo cierra.</summary>
+    private static void RunRasPhoneDialog(string connectionName)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "rasphone.exe",
+            UseShellExecute = false,
+        };
+        startInfo.ArgumentList.Add("-d");
+        startInfo.ArgumentList.Add(connectionName);
+        Process.Start(startInfo);
     }
 
     private static bool ConnectionExistsViaPowerShell(string connectionName)
@@ -234,7 +268,18 @@ internal sealed class VpnConnectionService : IVpnConnectionService
         }
     }
 
-    private static string BuildEapConfigXml(string serverName, string rootThumbprintSha1) =>
+    /// <summary>
+    /// FilteringInfo/CAHashList (item 7 del prompt 12.7): sin esto, si
+    /// CurrentUser\My tiene mas de un certificado con EKU clientAuth (p.ej.
+    /// uno de otra VPN, o uno viejo tras una renovacion que no se borro),
+    /// Windows no puede decidir cual usar el solo y rasdial.exe falla con
+    /// "Error de Acceso remoto 703: la conexion necesita informacion de su
+    /// parte, pero la aplicacion no permite interaccion del usuario" -no hay
+    /// consola para responder ese dialogo-. Con el emisor fijado aqui, solo
+    /// el certificado de ESTE dispositivo encaja, y SimpleCertSelection ya
+    /// no tiene que elegir entre varios.
+    /// </summary>
+    internal static string BuildEapConfigXml(string serverName, string rootThumbprintSha1, string clientCertificateIssuerThumbprintSha1) =>
         $"""
         <EapHostConfig xmlns="http://www.microsoft.com/provisioning/EapHostConfig">
           <EapMethod>
@@ -260,6 +305,11 @@ internal sealed class VpnConnectionService : IVpnConnectionService
                 <DifferentUsername>false</DifferentUsername>
                 <PerformServerValidation xmlns="http://www.microsoft.com/provisioning/EapTlsConnectionPropertiesV2">true</PerformServerValidation>
                 <AcceptServerName xmlns="http://www.microsoft.com/provisioning/EapTlsConnectionPropertiesV2">true</AcceptServerName>
+                <FilteringInfo xmlns="http://www.microsoft.com/provisioning/EapTlsConnectionPropertiesV2">
+                  <CAHashList Enabled="true">
+                    <IssuerHash>{clientCertificateIssuerThumbprintSha1}</IssuerHash>
+                  </CAHashList>
+                </FilteringInfo>
               </EapType>
             </Eap>
           </Config>
@@ -268,4 +318,15 @@ internal sealed class VpnConnectionService : IVpnConnectionService
 
     /// <summary>Cadena literal de PowerShell entre comillas simples, con las comillas simples internas dobladas (escape estandar de PS).</summary>
     private static string PsString(string value) => "'" + value.Replace("'", "''") + "'";
+}
+
+/// <summary>rasdial.exe termino con un codigo de error (el mismo que devolveria la API RAS nativa, p.ej. 703).</summary>
+internal sealed class RasDialException : Exception
+{
+    public int ExitCode { get; }
+
+    public RasDialException(int exitCode, string message) : base(message)
+    {
+        ExitCode = exitCode;
+    }
 }

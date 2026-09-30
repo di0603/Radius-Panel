@@ -447,10 +447,16 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
   `CertificateEnrollmentService` genera la clave (TPM primero, con
   confirmacion para caer a software) y el CSR con CertEnroll (COM) e
   instala la respuesta de EST con `CX509Enrollment.InstallResponse`, todo
-  en un hilo STA dedicado. Rama `feat/vpn-12.7-windows-rendimiento`,
-  pendiente de revision. Faltan items 7 (filtrado EAP + RasDial no
-  interactivo) y 11 (compilar 0.1.6 final). Detalle completo en el
-  CHANGELOG.
+  en un hilo STA dedicado. Item 7 (error 703 al conectar, "la aplicacion no
+  permite interaccion del usuario"): el XML EAP ahora filtra el certificado
+  del cliente por emisor (`FilteringInfo/CAHashList`) para que solo haya un
+  candidato, y si aun asi rasdial.exe devuelve 703 se abre el dialogo nativo
+  `rasphone.exe -d` como ultimo recurso; NO se ha implementado RasDial por
+  P/Invoke con identidad EAP no interactiva (decision consciente, pendiente
+  de ver si hace falta tras probar en el equipo real -ver el CHANGELOG-).
+  Rama `feat/vpn-12.7-windows-rendimiento`, pendiente de revision. Falta el
+  item 11 (compilar 0.1.6 final) y la prueba real de conectar/desconectar
+  sin dialogos. Detalle completo en el CHANGELOG.
 - [x] **Prompt 12.6 (Windows: asociar la clave CNG sin exportarla)**: el
   alta con una clave de TPM fallaba siempre ("Clave no valida para utilizar
   en el estado especificado") porque `CopyWithPrivateKey` fuerza una

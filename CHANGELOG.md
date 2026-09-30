@@ -7,6 +7,39 @@ Este proyecto usa versionado semantico.
 
 ### Anadido
 
+- **Prompt 12.7 (Windows: item 7, filtrado del certificado EAP)**: conectar
+  fallaba con "Error de Acceso remoto 703: la conexion necesita informacion
+  de su parte, pero la aplicacion no permite interaccion del usuario" -
+  rasdial.exe no tiene consola con la que Windows pueda preguntar cual
+  certificado usar cuando hay mas de un candidato con EKU clientAuth en
+  CurrentUser\My-.
+  - (a) El XML EAP de la conexion (`VpnConnectionService.BuildEapConfigXml`)
+    anade `FilteringInfo/CAHashList` con la huella SHA-1 de quien firmo
+    DIRECTAMENTE el certificado del dispositivo (la intermedia del panel, o
+    la raiz si todavia no hay intermedia): con `SimpleCertSelection` (ya
+    presente) y el emisor fijado, solo hay UN certificado candidato y
+    Windows no necesita preguntar nada. `EnrollmentOrchestrator` calcula esa
+    huella (`FindIssuerThumbprint`) comparando el emisor del certificado
+    recien instalado contra la cadena del propio perfil.
+  - (c) Ultimo recurso: si rasdial.exe termina con el codigo 703, se abre el
+    dialogo nativo `rasphone.exe -d "<conexion>"` (visible, para que la
+    persona delante del equipo elija a mano) en vez de fallar sin mas.
+  - **Decision consciente, pendiente de confirmar con prueba real**: NO se
+    ha implementado (b) del prompt (RasDial por P/Invoke con
+    RasGetEapUserIdentity/RasSetEapUserData para elegir el certificado de
+    forma no interactiva desde dentro del proceso). (a)+(c) ya cubren el
+    sintoma reportado (703 por ambiguedad de certificado) con mucho menos
+    riesgo -la API RAS de identidades EAP esta pobremente documentada y sus
+    structs, como ya paso con RasStateReader en este mismo prompt, exigen
+    probar tamanos contra una conexion REAL antes de confiar en ellos; no
+    hay una VPN real conectada en este entorno de desarrollo para hacerlo
+    con seguridad-. Si la prueba en el equipo real (conectar/desconectar sin
+    ningun dialogo) no basta con (a)+(c), se anadira (b) en un prompt
+    siguiente.
+  - Tests: `VpnConnectionServiceTests` (nuevo) comprueba que
+    `TrustedRootCA` (validacion del SERVIDOR) e `IssuerHash` (filtrado del
+    certificado del CLIENTE) son huellas independientes en el XML generado.
+
 - **Prompt 12.7 (Windows: item 10, clave del dispositivo por CertEnroll)**:
   Schannel rechazaba en EAP-TLS el certificado instalado por el alta con
   0x8009030D SEC_E_UNKNOWN_CREDENTIALS, aunque la clave CNG asociada a mano

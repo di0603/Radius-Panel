@@ -157,7 +157,7 @@ internal sealed class EnrollmentOrchestrator
             throw;
         }
 
-        ConfigureVpnConnection(profile, root);
+        ConfigureVpnConnection(profile, root, chain, installedCertificate);
 
         var record = new ConnectionRecord
         {
@@ -280,7 +280,8 @@ internal sealed class EnrollmentOrchestrator
         _logger.Info("Alta: raiz instalada en LocalMachine\\Root.");
     }
 
-    private void ConfigureVpnConnection(ProvisioningProfile profile, X509Certificate2 root)
+    private void ConfigureVpnConnection(
+        ProvisioningProfile profile, X509Certificate2 root, X509Certificate2Collection chain, X509Certificate2 installedCertificate)
     {
         var eapServerName = profile.AaaId.StartsWith("CN=", StringComparison.OrdinalIgnoreCase)
             ? profile.AaaId[3..]
@@ -294,6 +295,7 @@ internal sealed class EnrollmentOrchestrator
             ServerAddress: profile.Server,
             EapServerName: eapServerName,
             RootCertificateThumbprintSha1: root.Thumbprint,
+            ClientCertificateIssuerThumbprintSha1: FindIssuerThumbprint(installedCertificate, chain, root),
             SplitTunneling: profile.TunnelMode == Core.Profile.TunnelMode.Split,
             SplitRoutes: profile.SplitRoutes,
             IkeEncryption: WindowsIpsecProposalMapper.MapEncryption(profile.Ike.Encryption),
@@ -304,5 +306,28 @@ internal sealed class EnrollmentOrchestrator
 
         _vpnConnectionService.CreateOrUpdateConnection(spec);
         _logger.Info($"Alta: conexion \"{profile.Cn}\" configurada (servidor {profile.Server}).");
+    }
+
+    /// <summary>
+    /// Huella SHA-1 de quien firmo DIRECTAMENTE el certificado del
+    /// dispositivo (la intermedia del panel, o la raiz si todavia no hay
+    /// intermedia -dispositivo "vps" de prueba, CLAUDE.md-): con ella el
+    /// perfil EAP filtra por emisor (FilteringInfo/CAHashList, item 7 del
+    /// prompt 12.7) para que solo haya UN certificado candidato en
+    /// CurrentUser\My y Windows no necesite preguntar cual usar. Si por lo
+    /// que sea no aparece en la cadena del perfil (no deberia pasar: el
+    /// perfil ya se valido contra ella), se usa la raiz -mejor un filtro mas
+    /// amplio que ninguno-.
+    /// </summary>
+    private static string FindIssuerThumbprint(X509Certificate2 installedCertificate, X509Certificate2Collection chain, X509Certificate2 root)
+    {
+        foreach (var candidate in chain)
+        {
+            if (candidate.SubjectName.RawData.AsSpan().SequenceEqual(installedCertificate.IssuerName.RawData))
+            {
+                return candidate.Thumbprint;
+            }
+        }
+        return root.Thumbprint;
     }
 }
