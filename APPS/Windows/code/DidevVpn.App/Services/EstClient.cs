@@ -74,9 +74,30 @@ internal sealed class EstClient : IEstClient
         var root = doc.RootElement;
         return new EstStatus(
             Username: root.GetProperty("username").GetString() ?? string.Empty,
-            NotAfter: root.GetProperty("notAfter").GetDateTimeOffset(),
+            NotAfter: ParseNotAfter(root.GetProperty("notAfter").GetString()),
             RenewDue: root.GetProperty("renewDue").GetBoolean(),
             MinAppVersion: root.TryGetProperty("minAppVersion", out var minVersion) ? minVersion.GetString() ?? "0.0.0" : "0.0.0");
+    }
+
+    /// <summary>
+    /// /status devuelve notAfter en ISO 8601 UTC. Los paneles anteriores
+    /// devolvian el DATETIME de MariaDB tal cual ("2026-10-31 10:03:43", UTC sin
+    /// zona), que GetDateTimeOffset() rechazaba con FormatException ("One of
+    /// the identified items was in an invalid format"): se acepta tambien ese
+    /// formato, siempre como UTC. Si no se entiende, el error dice QUE llego.
+    /// </summary>
+    internal static DateTimeOffset ParseNotAfter(string? value)
+    {
+        if (!string.IsNullOrWhiteSpace(value) &&
+            DateTimeOffset.TryParse(
+                value,
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal,
+                out var parsed))
+        {
+            return parsed;
+        }
+        throw new FormatException($"/status devolvio una fecha de caducidad (notAfter) que no se entiende: \"{value}\".");
     }
 
     private static async Task<EstEnrollResult> ReadPkcs7CertificateAsync(HttpResponseMessage response, CancellationToken ct)

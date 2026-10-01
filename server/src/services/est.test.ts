@@ -17,6 +17,7 @@ import {
   enrollDevice,
   type EstRejection,
   getStatus,
+  toIsoUtc,
   renewDevice,
 } from './est.js';
 
@@ -782,6 +783,9 @@ test('getStatus: informa de la caducidad y si toca renovar', async () => {
     const status = await getStatus(c.cert.rawData);
     assert.equal(status.username, db.device!.username);
     assert.equal(status.renewDue, true); // renew_after_days=20 y ya han pasado 25
+    // ISO 8601 UTC, no el "YYYY-MM-DD HH:MM:SS" de MariaDB (rompia el parseo en .NET)
+    assert.match(status.notAfter, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    assert.equal(status.notAfter, c.cert.notAfter.toISOString().replace(/\.\d{3}Z$/, '.000Z'));
     assert.equal(status.minAppVersion, '1.4.0'); // para que la app bloquee alta/renovacion si va por debajo
   } finally {
     mock.restoreAll();
@@ -810,4 +814,11 @@ test('getStatus: rechaza un certificado autofirmado con el serial de uno valido'
   } finally {
     mock.restoreAll();
   }
+});
+
+test('toIsoUtc: convierte el DATETIME de MariaDB (UTC, sin zona) a ISO 8601', () => {
+  assert.equal(toIsoUtc('2026-10-31 10:03:43'), '2026-10-31T10:03:43.000Z');
+  assert.equal(toIsoUtc('2026-10-31T10:03:43Z'), '2026-10-31T10:03:43.000Z');
+  assert.equal(toIsoUtc(new Date('2026-10-31T10:03:43Z')), '2026-10-31T10:03:43.000Z');
+  assert.throws(() => toIsoUtc('no es una fecha'));
 });

@@ -549,6 +549,20 @@ export interface EstStatus {
   minAppVersion: string;
 }
 
+/**
+ * `vpn_certificates.not_after` es un DATETIME en UTC que MariaDB entrega como
+ * "YYYY-MM-DD HH:MM:SS" (sin zona): no es ISO 8601 y los clientes que lo
+ * parsean como fecha (.NET: GetDateTimeOffset) fallaban con FormatException.
+ * La API de /status devuelve siempre ISO 8601 UTC ("...Z").
+ */
+export function toIsoUtc(value: unknown): string {
+  if (value instanceof Date) return value.toISOString();
+  const text = String(value);
+  const parsed = new Date(/[zZ]|[+-]\d{2}:?\d{2}$/.test(text) ? text : `${text.replace(' ', 'T')}Z`);
+  if (Number.isNaN(parsed.getTime())) throw new Error('fecha invalida en vpn_certificates.not_after');
+  return parsed.toISOString();
+}
+
 /** GET /.well-known/est/status (opcional, con certificado de cliente): misma validacion que simplereenroll (ver `verifyPresentedCertificate`). */
 export async function getStatus(clientCertDer: Buffer | ArrayBuffer): Promise<EstStatus> {
   const { row } = await verifyPresentedCertificate(clientCertDer);
@@ -561,7 +575,7 @@ export async function getStatus(clientCertDer: Buffer | ArrayBuffer): Promise<Es
 
   return {
     username: row.username,
-    notAfter: row.not_after,
+    notAfter: toIsoUtc(row.not_after),
     renewDue,
     minAppVersion: settings.minAppVersion,
   };
