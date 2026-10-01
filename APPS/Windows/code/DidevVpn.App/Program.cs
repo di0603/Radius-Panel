@@ -67,7 +67,8 @@ internal static class Program
                     new VpnConnectionService(logger),
                     new MessageBoxUserConfirmations(),
                     logger,
-                    AppVersionHelper.GetAppVersion());
+                    AppVersionHelper.GetAppVersion(),
+                    new CertificateLifecycle(logger));
                 var result = orchestrator.RenewIfDueAsync(connection, CancellationToken.None).GetAwaiter().GetResult();
                 logger.Info($"--renew-silent: \"{connection.Cn}\" -> {result.Outcome}.");
                 if (result.Outcome == RenewalOutcome.BlockedByMinAppVersion)

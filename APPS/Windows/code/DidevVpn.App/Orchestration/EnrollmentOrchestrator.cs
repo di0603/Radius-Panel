@@ -90,6 +90,7 @@ internal sealed class EnrollmentOrchestrator
     private readonly IUserConfirmations _confirmations;
     private readonly FileLogger _logger;
     private readonly AppVersion _currentAppVersion;
+    private readonly ICertificateLifecycle _lifecycle;
 
     public EnrollmentOrchestrator(
         ICertificateEnrollmentService certificateService,
@@ -98,8 +99,10 @@ internal sealed class EnrollmentOrchestrator
         IRootCertificateStoreService rootCertificateStore,
         IUserConfirmations confirmations,
         FileLogger logger,
-        AppVersion currentAppVersion)
+        AppVersion currentAppVersion,
+        ICertificateLifecycle lifecycle)
     {
+        _lifecycle = lifecycle;
         _certificateService = certificateService;
         _estClient = estClient;
         _vpnConnectionService = vpnConnectionService;
@@ -203,6 +206,7 @@ internal sealed class EnrollmentOrchestrator
             LastEnrolledAtUtc = DateTimeOffset.UtcNow,
         };
         ConnectionStore.Save(record);
+        RegisterAndCleanUp(profile, installedCertificate);
         _logger.Info($"Alta: completada para \"{profile.Cn}\".");
         return record;
     }
@@ -267,6 +271,29 @@ internal sealed class EnrollmentOrchestrator
         catch
         {
             return false;
+        }
+    }
+
+    /// <summary>
+    /// Anota el certificado en el registro propio y borra los ANTERIORES de
+    /// este dispositivo (y los que ya no pertenecen a ninguna conexion): solo
+    /// los que la app instalo y del mismo emisor. Nunca hace fallar el alta.
+    /// </summary>
+    private void RegisterAndCleanUp(ProvisioningProfile profile, X509Certificate2 installedCertificate)
+    {
+        try
+        {
+            _lifecycle.Register(installedCertificate, profile.Cn, profile.Server, profile.Cn);
+            var existing = ConnectionStore.List().Select(c => c.Cn).ToList();
+            var removed = _lifecycle.CleanupStale(profile.Cn, installedCertificate, existing);
+            if (removed.Count > 0)
+            {
+                _logger.Info($"Alta: {removed.Count} certificado(s) antiguo(s) de la app borrado(s).");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Warn($"Alta: no se ha podido registrar/limpiar certificados antiguos (no es grave): {ex.Message}");
         }
     }
 

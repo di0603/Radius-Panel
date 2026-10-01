@@ -339,8 +339,8 @@ internal sealed class CertificateEnrollmentService : ICertificateEnrollmentServi
 
     public void RemoveCertificate(X509Certificate2 certificate)
     {
-        using var store = new X509Store(StoreName.My, StoreLocation.CurrentUser);
-        store.Open(OpenFlags.ReadWrite);
-        store.Remove(certificate);
+        // Certificado Y clave (TPM o software): quitar solo el certificado del
+        // almacen dejaba la clave huerfana en el proveedor.
+        new CertificateLifecycle().RemoveWithKey(certificate.Thumbprint);
     }
 }

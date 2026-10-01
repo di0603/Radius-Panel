@@ -57,6 +57,8 @@ internal sealed class ConnectionManagerForm : Form
 
     // Panel de detalles (prompt 12.8, punto 3).
     private readonly IConnectionDetailsCollector? _detailsCollector;
+    private readonly Func<ConnectionRecord, CertificateCandidateReport?>? _checkCertificates;
+    private Label _certificateWarning = null!;
     private readonly System.Windows.Forms.Timer _detailsTimer = new() { Interval = 1500 };
     private readonly ToolTip _toolTip = new() { AutoPopDelay = 12000, InitialDelay = 300 };
     private readonly List<Control> _detailControls = new();
@@ -73,9 +75,11 @@ internal sealed class ConnectionManagerForm : Form
         Action<string> showStatus,
         Action<string> removeConnection,
         Func<string, bool> isBusy,
-        IConnectionDetailsCollector? detailsCollector = null)
+        IConnectionDetailsCollector? detailsCollector = null,
+        Func<ConnectionRecord, CertificateCandidateReport?>? checkCertificates = null)
     {
         _detailsCollector = detailsCollector;
+        _checkCertificates = checkCertificates;
         _loadConnections = loadConnections;
         _getState = getState;
         _import = import;
@@ -299,6 +303,23 @@ internal sealed class ConnectionManagerForm : Form
         infoLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190));
         infoLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         infoPanel.Controls.Add(infoLayout);
+        // Aviso (punto 5c del 12.9): mas de un certificado candidato del mismo
+        // emisor -> Windows puede abrir su selector sin explicacion.
+        _certificateWarning = new Label
+        {
+            AutoSize = true,
+            MaximumSize = new Size(600, 0),
+            BackColor = Color.FromArgb(255, 243, 214),
+            ForeColor = Color.FromArgb(110, 74, 0),
+            Padding = new Padding(10, 8, 10, 8),
+            Margin = new Padding(0, 0, 0, 10),
+            Visible = false,
+        };
+        infoLayout.RowCount++;
+        infoLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        infoLayout.Controls.Add(_certificateWarning, 0, 0);
+        infoLayout.SetColumnSpan(_certificateWarning, 2);
+
         AddInfoRow(infoLayout, "Servidor", out _serverValue);
         AddInfoRow(infoLayout, "Modo de túnel", out _tunnelValue);
         AddInfoRow(infoLayout, "Protección de clave", out _keyValue);
@@ -414,6 +435,32 @@ internal sealed class ConnectionManagerForm : Form
         _tunnelValue.Text = connection.TunnelMode.Equals("split", StringComparison.OrdinalIgnoreCase) ? "Túnel dividido" : "Túnel completo";
         _keyValue.Text = connection.IsTpmBacked ? "Protegida por TPM" : "Almacenamiento seguro del sistema";
         _lastIssuedValue.Text = connection.LastEnrolledAtUtc.ToLocalTime().ToString("dd/MM/yyyy HH:mm");
+        UpdateCertificateWarning(connection);
+    }
+
+    private void UpdateCertificateWarning(ConnectionRecord connection)
+    {
+        string? warning = null;
+        try
+        {
+            var report = _checkCertificates?.Invoke(connection);
+            if (report is { IsAmbiguous: true })
+            {
+                warning = report.BuildWarning(connection.Cn);
+            }
+        }
+        catch (Exception)
+        {
+            // la comprobacion es informativa: si falla, simplemente no se avisa
+        }
+
+        if (warning is null)
+        {
+            if (_certificateWarning.Visible) _certificateWarning.Visible = false;
+            return;
+        }
+        SetText(_certificateWarning, warning);
+        if (!_certificateWarning.Visible) _certificateWarning.Visible = true;
     }
 
     private void ToggleSelectedConnection()

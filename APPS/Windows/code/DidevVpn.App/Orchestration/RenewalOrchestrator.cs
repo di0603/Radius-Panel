@@ -30,6 +30,7 @@ internal sealed class RenewalOrchestrator
     private readonly IUserConfirmations _confirmations;
     private readonly FileLogger _logger;
     private readonly AppVersion _currentAppVersion;
+    private readonly ICertificateLifecycle _lifecycle;
 
     public RenewalOrchestrator(
         ICertificateEnrollmentService certificateService,
@@ -37,8 +38,10 @@ internal sealed class RenewalOrchestrator
         IVpnConnectionService vpnConnectionService,
         IUserConfirmations confirmations,
         FileLogger logger,
-        AppVersion currentAppVersion)
+        AppVersion currentAppVersion,
+        ICertificateLifecycle lifecycle)
     {
+        _lifecycle = lifecycle;
         _certificateService = certificateService;
         _estClient = estClient;
         _vpnConnectionService = vpnConnectionService;
@@ -98,12 +101,22 @@ internal sealed class RenewalOrchestrator
         // credenciales EAP guardadas, o la conexion seguiria pidiendo/usando el viejo.
         _vpnConnectionService.SaveEapCredentials(state.Cn, installedCertificate);
 
-        _certificateService.RemoveCertificate(currentCertificate);
+        _lifecycle.Register(installedCertificate, state.Cn, state.Server, state.Cn);
+        _lifecycle.RemoveWithKey(currentCertificate.Thumbprint);
 
         state.CertificateThumbprint = installedCertificate.Thumbprint;
         state.IsTpmBacked = enrolled.IsTpmBacked;
         state.LastEnrolledAtUtc = DateTimeOffset.UtcNow;
         ConnectionStore.Save(state);
+
+        try
+        {
+            _lifecycle.CleanupStale(state.Cn, installedCertificate, ConnectionStore.List().Select(c => c.Cn).ToList());
+        }
+        catch (Exception ex)
+        {
+            _logger.Warn($"Renovacion: no se ha podido limpiar certificados antiguos (no es grave): {ex.Message}");
+        }
 
         _logger.Info($"Renovacion: completada para \"{state.Cn}\".");
         return new RenewalResult(RenewalOutcome.Renewed);

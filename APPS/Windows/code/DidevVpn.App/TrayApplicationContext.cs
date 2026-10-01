@@ -25,6 +25,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly ICertificateEnrollmentService _certificateService = new CertificateEnrollmentService();
     private readonly IEstClient _estClient = new EstClient();
     private readonly IVpnConnectionService _vpnService;
+    private readonly ICertificateLifecycle _lifecycle;
     private readonly IRootCertificateStoreService _rootStore = new RootCertificateStoreService();
     private readonly ITaskSchedulerService _taskScheduler = new TaskSchedulerService();
     private readonly IUserConfirmations _confirmations = new MessageBoxUserConfirmations();
@@ -42,6 +43,16 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         AppPaths.EnsureDataDirectoryExists();
         _vpnService = new VpnConnectionService(_logger);
+        _lifecycle = new CertificateLifecycle(_logger);
+        try
+        {
+            // Conexiones dadas de alta antes de que existiera el registro: su certificado lo instalo la app.
+            _lifecycle.AdoptConnectionCertificates(ConnectionStore.List());
+        }
+        catch (Exception ex)
+        {
+            _logger.Warn($"No se ha podido actualizar el registro de certificados: {ex.Message}");
+        }
 
         _notifyIcon = new NotifyIcon
         {
@@ -62,7 +73,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
             ShowConnectionStatus,
             RemoveConnection,
             IsBusy,
-            new ConnectionDetailsCollector());
+            new ConnectionDetailsCollector(),
+            CertificateCandidates.Check);
         _notifyIcon.DoubleClick += (_, _) => ShowManager();
 
         BuildMenu();
@@ -234,6 +246,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 else
                 {
                     EnsureEapCredentials(cn);
+                    WarnIfAmbiguousCertificates(cn);
                     _vpnService.Connect(cn);
                 }
             }).ConfigureAwait(true); // true: seguir en el hilo de interfaz al continuar (BuildMenu/RefreshStatus tocan controles)
@@ -288,6 +301,24 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
+    /// <summary>Si hay mas de un candidato, queda en el log (la ventana ya lo muestra) por si Windows abre su selector.</summary>
+    private void WarnIfAmbiguousCertificates(string cn)
+    {
+        try
+        {
+            var record = ConnectionStore.Load(cn);
+            var report = record is null ? null : CertificateCandidates.Check(record);
+            if (report is { IsAmbiguous: true })
+            {
+                _logger.Warn($"\"{cn}\": {report.Candidates.Count} certificados de cliente del mismo emisor ({report.IssuerName}); Windows puede abrir su selector de certificado.");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Warn($"No se han podido comprobar los certificados candidatos de \"{cn}\": {ex.Message}");
+        }
+    }
+
     private async void ImportProfile()
     {
         if (_importing)
@@ -316,7 +347,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             }
 
             var orchestrator = new EnrollmentOrchestrator(
-                _certificateService, _estClient, _vpnService, _rootStore, _confirmations, _logger, AppVersionHelper.GetAppVersion());
+                _certificateService, _estClient, _vpnService, _rootStore, _confirmations, _logger, AppVersionHelper.GetAppVersion(), _lifecycle);
             var connection = await Task.Run(() => orchestrator.EnrollAsync(result.Profile!, CancellationToken.None)).ConfigureAwait(true);
             _lastErrorMessage = null;
             _managerForm.RefreshConnections();
@@ -381,7 +412,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         SetBusy(cn, true);
         try
         {
-            var orchestrator = new RenewalOrchestrator(_certificateService, _estClient, _vpnService, _confirmations, _logger, AppVersionHelper.GetAppVersion());
+            var orchestrator = new RenewalOrchestrator(_certificateService, _estClient, _vpnService, _confirmations, _logger, AppVersionHelper.GetAppVersion(), _lifecycle);
             var result = await Task.Run(() => orchestrator.RenewIfDueAsync(connection, CancellationToken.None)).ConfigureAwait(true);
             switch (result.Outcome)
             {
@@ -439,11 +470,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
 
         var confirm = MessageBox.Show(
-            $"Se borrara la conexion \"{cn}\" y la configuracion guardada.\n\n?Borrar tambien el certificado del dispositivo de este equipo?",
+            $"Se borrara la conexion \"{cn}\", su certificado y su clave (TPM o software) de este equipo.\n\n" +
+            "Para volver a usarla tendras que generar un perfil nuevo en el panel.",
             $"Quitar \"{cn}\" de este equipo",
-            MessageBoxButtons.YesNoCancel,
+            MessageBoxButtons.OKCancel,
             MessageBoxIcon.Warning);
-        if (confirm == DialogResult.Cancel)
+        if (confirm != DialogResult.OK)
         {
             return;
         }
@@ -452,20 +484,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             _vpnService.RemoveConnection(cn);
 
-            if (confirm == DialogResult.Yes)
-            {
-                using var store = new System.Security.Cryptography.X509Certificates.X509Store(
-                    System.Security.Cryptography.X509Certificates.StoreName.My,
-                    System.Security.Cryptography.X509Certificates.StoreLocation.CurrentUser);
-                store.Open(System.Security.Cryptography.X509Certificates.OpenFlags.ReadWrite);
-                var matches = store.Certificates.Find(
-                    System.Security.Cryptography.X509Certificates.X509FindType.FindByThumbprint,
-                    connection.CertificateThumbprint, validOnly: false);
-                foreach (var cert in matches)
-                {
-                    store.Remove(cert);
-                }
-            }
+            // Certificado Y clave: dejar la clave huerfana en el TPM/proveedor, o
+            // un certificado viejo del mismo emisor, es justo lo que luego hace
+            // que Windows abra su selector de certificado al conectar.
+            _lifecycle.RemoveWithKey(connection.CertificateThumbprint);
 
             ConnectionStore.Delete(cn);
 
