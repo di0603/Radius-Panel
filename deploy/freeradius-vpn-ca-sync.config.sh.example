@@ -26,6 +26,9 @@ CA_PATH='/etc/freeradius/3.0/certs/vpn/ca'
 # get certificate CRL"). FreeRADIUS no lee la intermedia de aqui para
 # validar -la recibe del propio cliente EAP-TLS en cada conexion-: este
 # directorio es solo para referencia/backup en el propio host.
+# Puede ser el directorio PADRE de CA_PATH (el valor de abajo: .../certs/vpn
+# contiene a .../certs/vpn/ca, y es lo que se espera); el script aborta si es
+# el propio CA_PATH o queda DENTRO de el.
 INTERMEDIATE_DIR='/etc/freeradius/3.0/certs/vpn'
 
 # Solo hacen falta si TLS_CONFIG_FILE escribe ca_path con variables de

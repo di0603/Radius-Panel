@@ -69,9 +69,17 @@ if [ ! -d "$CA_PATH" ]; then
   echo "CA_PATH '$CA_PATH' no existe: revisa la configuracion antes de continuar." >&2
   exit 1
 fi
-case "$CA_PATH" in
-  "$INTERMEDIATE_DIR"|"$INTERMEDIATE_DIR"/*)
-    echo "CA_PATH ('$CA_PATH') esta dentro de INTERMEDIATE_DIR ('$INTERMEDIATE_DIR'): tienen que ser distintos, o la intermedia acabaria de todas formas en ca_path." >&2
+# Lo que hay que impedir: que la intermedia acabe DENTRO de ca_path (ahi
+# X509_V_FLAG_PARTIAL_CHAIN la tomaria como ancla y rompe la validacion de su
+# propia revocacion, ver la cabecera). INTERMEDIATE_DIR puede estar en un
+# directorio PADRE de CA_PATH (el valor por defecto: .../certs/vpn contiene a
+# .../certs/vpn/ca); lo que no puede ser es CA_PATH ni quedar dentro de el.
+# Se normalizan las barras finales para que "ca/" y "ca" cuenten como lo mismo.
+ca_path_normalized="${CA_PATH%/}"
+intermediate_dir_normalized="${INTERMEDIATE_DIR%/}"
+case "$intermediate_dir_normalized" in
+  "$ca_path_normalized"|"$ca_path_normalized"/*)
+    echo "INTERMEDIATE_DIR ('$INTERMEDIATE_DIR') es CA_PATH ('$CA_PATH') o esta dentro de el: la intermedia acabaria en ca_path y FreeRADIUS la tomaria como ancla de confianza (X509_V_FLAG_PARTIAL_CHAIN). Ponla fuera de CA_PATH (por defecto, su directorio padre)." >&2
     exit 1
     ;;
 esac
