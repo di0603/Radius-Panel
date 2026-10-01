@@ -14,10 +14,34 @@ internal interface IEapUserCredentialStore
 }
 
 /// <summary>
-/// Credenciales EAP de usuario de una entrada RAS (prompt 12.8): sin ellas,
-/// EAP-TLS por IKEv2 siempre abre el selector de certificado al conectar,
-/// aunque solo haya un candidato (SimpleCertSelection + filtro por emisor
-/// no bastan -verificado en un equipo real-). Camino documentado:
+/// Credenciales EAP de usuario de una entrada RAS (prompt 12.8): guardan que
+/// la entrada use un certificado concreto de CurrentUser\My al conectar.
+///
+/// QUE ESTA MEDIDO Y QUE NO (corregido en el prompt 12.10: este comentario
+/// afirmaba antes que sin credenciales EAP-TLS "siempre abre el selector aunque
+/// solo haya un candidato", y eso NO estaba medido):
+///   - UN candidato (el unico certificado del emisor del filtro) y SIN
+///     credenciales guardadas: rasdial conecta sin ningun dialogo (medido el
+///     2026-10-01 en el equipo de desarrollo, con una entrada de prueba clonada
+///     de la real: mismo XML EAP, mismos parametros IPsec, sin
+///     RasSetEapUserData).
+///   - DOS candidatos del mismo emisor y credenciales YA guardadas: rasdial
+///     seguia dando el error 703 (selector de Windows); al borrar el segundo
+///     certificado conecto. Es decir, guardarlas NO evito el selector con dos
+///     candidatos (el filtro CAHashList es por emisor).
+///   - NO medido: dos candidatos SIN credenciales (se espera el mismo 703) y,
+///     en general, si guardarlas aporta algo que el XML EAP no de ya. El test
+///     SameIssuerTwoConnectionsTests lo mide con dos entradas, pero exige
+///     administrador (necesita una raiz de confianza de prueba).
+/// Por eso este almacen NO se ha demostrado necesario; se mantiene porque
+/// funciona y es inocuo (la conexion usa el certificado que la app guardo, no
+/// "el que Windows elija"), pero la limpieza de certificados sobrantes y el
+/// aviso de candidatos son lo que de verdad evita el selector.
+///
+/// EXPERIMENTO REPETIBLE para decidir si hace falta:
+/// APPS/Windows/code/experimentos/exp-sin-credenciales.ps1 (clona una conexion
+/// existente SIN credenciales EAP guardadas y lanza rasdial; exit 0 = no hace
+/// falta guardarlas para ese caso). Camino de guardado:
 ///   1. EapHostPeerConfigXml2Blob (eappcfg.dll): XML de configuracion EAP-TLS
 ///      de la conexion -> blob de configuracion.
 ///   2. EapHostPeerCredentialsXml2Blob: XML EapHostUserCredentials con el
