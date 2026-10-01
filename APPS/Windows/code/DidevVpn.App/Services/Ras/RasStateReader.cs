@@ -39,6 +39,72 @@ internal interface IRasStateReader
 /// </summary>
 internal sealed class RasStateReader : IRasStateReader
 {
+    private static readonly TimeSpan NotFoundLogInterval = TimeSpan.FromSeconds(20);
+
+    private readonly FileLogger? _logger;
+    private readonly Dictionary<string, DateTime> _lastNotFoundLog = new(StringComparer.OrdinalIgnoreCase);
+
+    public RasStateReader(FileLogger? logger = null)
+    {
+        _logger = logger;
+    }
+
+    /// <summary>
+    /// Respaldo (prompt 12.9): adaptador PPP operativo con IPv4 y el mismo
+    /// nombre que la entrada. Verificado: una conexion IKEv2 activa aparece
+    /// como NetworkInterface tipo Ppp, Up, con el nombre de la entrada.
+    /// </summary>
+    internal static string? FindActiveAdapterIpv4(string connectionName)
+    {
+        try
+        {
+            foreach (var nic in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (nic.NetworkInterfaceType != System.Net.NetworkInformation.NetworkInterfaceType.Ppp ||
+                    nic.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up ||
+                    !string.Equals(nic.Name, connectionName, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                var address = nic.GetIPProperties().UnicastAddresses
+                    .FirstOrDefault(a => a.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork);
+                if (address is not null)
+                {
+                    return address.Address.ToString();
+                }
+            }
+        }
+        catch (System.Net.NetworkInformation.NetworkInformationException)
+        {
+            // sin respaldo disponible
+        }
+        return null;
+    }
+
+    private void LogNotFound(string connectionName, IReadOnlyList<RasInterop.RasConn> seen)
+    {
+        if (_logger is null)
+        {
+            return;
+        }
+        var now = DateTime.UtcNow;
+        lock (_lastNotFoundLog)
+        {
+            if (_lastNotFoundLog.TryGetValue(connectionName, out var last) && now - last < NotFoundLogInterval)
+            {
+                return;
+            }
+            _lastNotFoundLog[connectionName] = now;
+        }
+        var names = seen.Count == 0 ? "(ninguna)" : string.Join(", ", seen.Select(c => $"\"{c.szEntryName}\""));
+        _logger.Info($"RasEnumConnections no ve \"{connectionName}\" entre las conexiones activas: {names}.");
+    }
+
+    private void LogStatusFailure(string connectionName, int code)
+    {
+        _logger?.Warn($"RasGetConnectStatus para \"{connectionName}\" devolvio el codigo {code} (632 = tamano de RASCONNSTATUSW invalido, 6 = handle invalido).");
+    }
+
     public bool EntryExists(string connectionName)
     {
         foreach (var entry in EnumEntries())
@@ -53,33 +119,29 @@ internal sealed class RasStateReader : IRasStateReader
 
     public RasConnectionState GetState(string connectionName)
     {
+        var phase = GetPhase(connectionName);
+        if (phase.Phase != RasPhase.Connected)
+        {
+            return new RasConnectionState(false, null);
+        }
+        return new RasConnectionState(true, GetIpv4(connectionName));
+    }
+
+    private string? GetIpv4(string connectionName)
+    {
         foreach (var conn in EnumConnections())
         {
-            if (!string.Equals(conn.szEntryName, connectionName, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(conn.szEntryName, connectionName, StringComparison.OrdinalIgnoreCase))
             {
-                continue;
+                var ip = TryGetIpv4(conn.hrasconn);
+                if (ip is not null)
+                {
+                    return ip;
+                }
             }
-
-            var status = new RasInterop.RasConnStatus { dwSize = RasInterop.RasConnStatus.Size };
-            var statusResult = RasInterop.RasGetConnectStatusW(conn.hrasconn, ref status);
-            if (statusResult != RasInterop.ErrorSuccess)
-            {
-                // La conexion desaparecio entre RasEnumConnections y aqui
-                // (se desconecto justo ahora): tratar como desconectada, no
-                // como un fallo del P/Invoke.
-                return new RasConnectionState(false, null);
-            }
-
-            if (status.rasconnstate != RasInterop.RasConnState.Connected)
-            {
-                return new RasConnectionState(false, null);
-            }
-
-            var ip = TryGetIpv4(conn.hrasconn);
-            return new RasConnectionState(true, ip);
         }
-
-        return new RasConnectionState(false, null);
+        // IKEv2 no tiene proyeccion PPP (RasGetProjectionInfo da 87): se lee del adaptador.
+        return FindActiveAdapterIpv4(connectionName);
     }
 
     public TimeSpan? GetConnectedDuration(string connectionName)
@@ -100,7 +162,8 @@ internal sealed class RasStateReader : IRasStateReader
 
     public RasPhaseInfo GetPhase(string connectionName)
     {
-        foreach (var conn in EnumConnections())
+        var connections = EnumConnections().ToList();
+        foreach (var conn in connections)
         {
             if (!string.Equals(conn.szEntryName, connectionName, StringComparison.OrdinalIgnoreCase))
             {
@@ -108,12 +171,25 @@ internal sealed class RasStateReader : IRasStateReader
             }
 
             var status = new RasInterop.RasConnStatus { dwSize = RasInterop.RasConnStatus.Size };
-            if (RasInterop.RasGetConnectStatusW(conn.hrasconn, ref status) != RasInterop.ErrorSuccess)
+            var code = RasInterop.RasGetConnectStatusW(conn.hrasconn, ref status);
+            if (code != RasInterop.ErrorSuccess)
             {
-                return new RasPhaseInfo(RasPhase.Disconnected);
+                LogStatusFailure(connectionName, code);
+                // La API no da respuesta fiable: se mira el adaptador antes de dar nada por desconectado.
+                return FindActiveAdapterIpv4(connectionName) is not null
+                    ? new RasPhaseInfo(RasPhase.Connected)
+                    : new RasPhaseInfo(RasPhase.Disconnected);
             }
             return ClassifyStatus(status.rasconnstate, status.dwError);
         }
+
+        // No esta entre las activas de RAS: si hay un adaptador PPP operativo con ese nombre y IPv4, esta conectada.
+        if (FindActiveAdapterIpv4(connectionName) is not null)
+        {
+            _logger?.Warn($"RAS no lista \"{connectionName}\" pero hay un adaptador PPP activo con ese nombre: se da por conectada.");
+            return new RasPhaseInfo(RasPhase.Connected);
+        }
+        LogNotFound(connectionName, connections);
         return new RasPhaseInfo(RasPhase.Disconnected);
     }
 

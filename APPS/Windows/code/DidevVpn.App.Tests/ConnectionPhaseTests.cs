@@ -72,6 +72,41 @@ public class ConnectionPhaseTests
                 () => new RasPhaseInfo(RasPhase.Connecting), TimeSpan.FromSeconds(5), Poll, cts.Token));
     }
 
+    [Fact]
+    public async Task Waiter_DialogOpen_DoesNotCountTowardsTheLimit_UntilItCloses()
+    {
+        var started = DateTime.UtcNow;
+        var dialogOpenFor = TimeSpan.FromMilliseconds(250);
+        var connectedAfter = TimeSpan.FromMilliseconds(300);
+
+        var result = await ConnectionWaiter.WaitUntilSettledAsync(
+            () => DateTime.UtcNow - started >= connectedAfter
+                ? new RasPhaseInfo(RasPhase.Connected)
+                : new RasPhaseInfo(RasPhase.Disconnected),
+            timeout: TimeSpan.FromMilliseconds(80),
+            pollInterval: Poll,
+            interactiveDialogOpen: () => DateTime.UtcNow - started < dialogOpenFor,
+            maxDialogWait: TimeSpan.FromSeconds(5));
+
+        Assert.Equal(WaitOutcome.Connected, result.Outcome);
+    }
+
+    [Fact]
+    public async Task Waiter_DialogNeverCloses_StopsAtTheAbsoluteCap()
+    {
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+
+        var result = await ConnectionWaiter.WaitUntilSettledAsync(
+            () => new RasPhaseInfo(RasPhase.Disconnected),
+            timeout: TimeSpan.FromMilliseconds(60),
+            pollInterval: Poll,
+            interactiveDialogOpen: () => true,
+            maxDialogWait: TimeSpan.FromMilliseconds(200));
+
+        Assert.Equal(WaitOutcome.TimedOut, result.Outcome);
+        Assert.InRange(watch.ElapsedMilliseconds, 200, 2000);
+    }
+
     [Theory]
     [InlineData((int)RasInterop.RasConnState.Connected, 0, (int)RasPhase.Connected, 0)]
     [InlineData((int)RasInterop.RasConnState.Disconnected, 0, (int)RasPhase.Disconnected, 0)]

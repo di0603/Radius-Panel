@@ -38,7 +38,7 @@ internal sealed class VpnConnectionService : IVpnConnectionService
     private readonly FileLogger? _logger;
     private volatile bool _nativeReaderFailed;
 
-    public VpnConnectionService(FileLogger? logger = null) : this(new RasStateReader(), new EapUserCredentialStore(), logger)
+    public VpnConnectionService(FileLogger? logger = null) : this(new RasStateReader(logger), new EapUserCredentialStore(), logger)
     {
     }
 
@@ -186,6 +186,7 @@ internal sealed class VpnConnectionService : IVpnConnectionService
 
     public void Connect(string connectionName)
     {
+        Process? dialog = null;
         try
         {
             RunRasDialExe(connectionName, disconnect: false);
@@ -195,13 +196,21 @@ internal sealed class VpnConnectionService : IVpnConnectionService
             _logger?.Warn(
                 $"rasdial.exe necesita interaccion del usuario para \"{connectionName}\" (703): " +
                 "abriendo el dialogo nativo (rasphone.exe -d) como ultimo recurso.");
-            RunRasPhoneDialog(connectionName);
+            dialog = RunRasPhoneDialog(connectionName);
         }
 
         // El resultado NO se deduce del codigo de salida (rasphone sale al
         // instante; rasdial puede salir antes de que el tunel este arriba):
-        // se sigue la fase real de RAS hasta Connected, error o 60 s.
-        WaitForConnected(connectionName);
+        // se sigue la fase real de RAS hasta Connected, error o 60 s (que, con
+        // el dialogo de Windows abierto, empiezan al cerrarse, con tope de 120 s).
+        try
+        {
+            WaitForConnected(connectionName, dialog);
+        }
+        finally
+        {
+            dialog?.Dispose();
+        }
     }
 
     public RasPhaseInfo GetConnectionPhase(string connectionName)
@@ -220,14 +229,31 @@ internal sealed class VpnConnectionService : IVpnConnectionService
         return new RasPhaseInfo(IsConnectedViaPowerShell(connectionName) ? RasPhase.Connected : RasPhase.Disconnected);
     }
 
-    private void WaitForConnected(string connectionName)
+    private void WaitForConnected(string connectionName, Process? dialog)
     {
         var result = ConnectionWaiter
             .WaitUntilSettledAsync(
                 () => GetConnectionPhase(connectionName),
                 ConnectionWaiter.DefaultTimeout,
-                ConnectionWaiter.DefaultPollInterval)
+                ConnectionWaiter.DefaultPollInterval,
+                interactiveDialogOpen: dialog is null ? null : () => !SafeHasExited(dialog))
             .GetAwaiter().GetResult();
+
+        if (result.Outcome == WaitOutcome.TimedOut)
+        {
+            // Ultima palabra: se relee el estado REAL justo al agotar el limite.
+            // Puede haberse establecido entre el ultimo sondeo y ahora.
+            var last = GetConnectionPhase(connectionName);
+            _logger?.Warn($"Limite agotado para \"{connectionName}\": estado real al releer = {last.Phase} (error {last.Error}).");
+            if (last.Phase == RasPhase.Connected)
+            {
+                result = new WaitResult(WaitOutcome.Connected);
+            }
+            else if (last.Phase == RasPhase.Failed)
+            {
+                result = new WaitResult(WaitOutcome.Failed, last.Error);
+            }
+        }
 
         switch (result.Outcome)
         {
@@ -288,7 +314,19 @@ internal sealed class VpnConnectionService : IVpnConnectionService
     }
 
     /// <summary>Ultimo recurso (item 7c del prompt 12.7): el dialogo nativo de marcado, VISIBLE, para que la persona delante del equipo elija el certificado a mano si ni SimpleCertSelection ni el filtro por emisor bastaron. No se espera a que termine: es interactivo, la persona lo cierra.</summary>
-    private static void RunRasPhoneDialog(string connectionName)
+    private static bool SafeHasExited(Process process)
+    {
+        try
+        {
+            return process.HasExited;
+        }
+        catch (InvalidOperationException)
+        {
+            return true;
+        }
+    }
+
+    private static Process? RunRasPhoneDialog(string connectionName)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -297,7 +335,7 @@ internal sealed class VpnConnectionService : IVpnConnectionService
         };
         startInfo.ArgumentList.Add("-d");
         startInfo.ArgumentList.Add(connectionName);
-        Process.Start(startInfo);
+        return Process.Start(startInfo);
     }
 
     private static bool ConnectionExistsViaPowerShell(string connectionName)

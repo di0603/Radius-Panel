@@ -97,7 +97,13 @@ internal static class RasInterop
         Disconnected,
     }
 
-    /// <summary>Layout verificado: RasGetConnectStatusW no rechazo este tamano (Pack=1, sin campos de tunel/subestado posteriores a Vista, que no se necesitan).</summary>
+    /// <summary>
+    /// Layout verificado CONTRA UNA CONEXION ACTIVA (prompt 12.9): Windows
+    /// solo acepta dwSize = 564 (sizeof nativo de RASCONNSTATUSW: 562 bytes de
+    /// campos + 2 de alineacion a 4). Con 562 -el valor anterior, que solo se
+    /// habia probado con un handle invalido- devuelve 632 (ERROR_INVALID_SIZE)
+    /// y la app tomaba eso por "desconectada" aunque el tunel estuviera arriba.
+    /// </summary>
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode, Pack = 1)]
     public struct RasConnStatus
     {
@@ -110,6 +116,7 @@ internal static class RasInterop
         public string szDeviceName;
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 129)] // RAS_MaxPhoneNumber+1
         public string szPhoneNumber;
+        private readonly short _paddingToVerifiedSize;
 
         public static int Size => Marshal.SizeOf<RasConnStatus>();
     }

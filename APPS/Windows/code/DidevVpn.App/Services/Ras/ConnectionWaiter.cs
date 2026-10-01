@@ -23,13 +23,20 @@ internal static class ConnectionWaiter
     public static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(60);
     public static readonly TimeSpan DefaultPollInterval = TimeSpan.FromMilliseconds(500);
 
+    /// <summary>Tope absoluto con un dialogo de Windows abierto (rasphone): la persona puede tardar en elegir.</summary>
+    public static readonly TimeSpan DefaultMaxDialogWait = TimeSpan.FromSeconds(120);
+
     public static async Task<WaitResult> WaitUntilSettledAsync(
         Func<RasPhaseInfo> readPhase,
         TimeSpan timeout,
         TimeSpan pollInterval,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        Func<bool>? interactiveDialogOpen = null,
+        TimeSpan? maxDialogWait = null)
     {
-        var started = DateTime.UtcNow;
+        var overall = DateTime.UtcNow;
+        var started = overall;
+        var dialogLimit = maxDialogWait ?? DefaultMaxDialogWait;
         var sawConnecting = false;
 
         while (true)
@@ -54,6 +61,14 @@ internal static class ConnectionWaiter
                         return new WaitResult(WaitOutcome.Failed);
                     }
                     break;
+            }
+
+            // Con un dialogo de Windows abierto el limite no corre (el reloj se
+            // reinicia mientras siga abierto) hasta un tope de dialogLimit; el
+            // limite normal empieza cuando el dialogo se cierra.
+            if (interactiveDialogOpen is not null && interactiveDialogOpen() && DateTime.UtcNow - overall < dialogLimit)
+            {
+                started = DateTime.UtcNow;
             }
 
             if (DateTime.UtcNow - started >= timeout)

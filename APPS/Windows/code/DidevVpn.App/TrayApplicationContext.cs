@@ -146,8 +146,30 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         if (variant == AppVariant.Portable && connections.Count > 0)
         {
-            var taskRegistered = _taskScheduler.PerUserRenewalTaskExists(RenewalTaskName);
-            var toggleTask = new ToolStripMenuItem("Renovar aunque la app este cerrada") { Checked = taskRegistered, CheckOnClick = true };
+            // Una excepcion aqui subiria hasta el WndProc del icono de bandeja
+            // y tumbaria la app entera (volcado real: FileNotFoundException al
+            // cargar el Programador de tareas): es un extra del menu, no puede
+            // ser fatal. Si falla, el elemento sale desactivado y se registra.
+            bool taskRegistered;
+            string? taskError = null;
+            try
+            {
+                taskRegistered = _taskScheduler.PerUserRenewalTaskExists(RenewalTaskName);
+            }
+            catch (Exception ex)
+            {
+                taskRegistered = false;
+                taskError = ex.Message;
+                _logger.Warn($"No se ha podido consultar la tarea de renovacion en segundo plano: {ex}");
+            }
+
+            var toggleTask = new ToolStripMenuItem("Renovar aunque la app este cerrada")
+            {
+                Checked = taskRegistered,
+                CheckOnClick = true,
+                Enabled = taskError is null,
+                ToolTipText = taskError is null ? null : "No se puede consultar el Programador de tareas de Windows (ver el registro).",
+            };
             toggleTask.Click += (_, _) => ToggleBackgroundRenewalTask(!taskRegistered);
             menu.Items.Add(toggleTask);
         }
@@ -221,7 +243,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             HandleError($"No se ha podido cambiar el estado de la conexion \"{cn}\"", ex);
         }
-        SetBusy(cn, false);
+        finally
+        {
+            // La UI nunca se queda en "Trabajando...": pase lo que pase se
+            // libera y se relee el estado real (Conectado/Desconectado).
+            SetBusy(cn, false);
+        }
         await _stateService.RefreshAsync();
     }
 
