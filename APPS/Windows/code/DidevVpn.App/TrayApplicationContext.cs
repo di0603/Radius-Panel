@@ -44,15 +44,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         AppPaths.EnsureDataDirectoryExists();
         _vpnService = new VpnConnectionService(_logger);
         _lifecycle = new CertificateLifecycle(_logger);
-        try
-        {
-            // Conexiones dadas de alta antes de que existiera el registro: su certificado lo instalo la app.
-            _lifecycle.AdoptConnectionCertificates(ConnectionStore.List());
-        }
-        catch (Exception ex)
-        {
-            _logger.Warn($"No se ha podido actualizar el registro de certificados: {ex.Message}");
-        }
+        // Conexiones dadas de alta antes de que existiera el registro: su certificado lo instalo la app.
+        // Protegido (nunca impide arrancar) y probado: ver CertificateRegistryStartupTests.
+        CertificateRegistryStartup.AdoptExistingConnections(_lifecycle, ConnectionStore.List, _logger);
 
         _notifyIcon = new NotifyIcon
         {
