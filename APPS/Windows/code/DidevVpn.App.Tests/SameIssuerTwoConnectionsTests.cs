@@ -25,6 +25,7 @@ namespace DidevVpn.App.Tests;
 /// desde una consola de administrador:
 ///   dotnet test DidevVpn.App.Tests --filter SameIssuerTwoConnectionsTests
 /// </summary>
+[Collection(ConnectionStoreCollection.Name)]
 public sealed class SameIssuerTwoConnectionsTests : IDisposable
 {
     private readonly ITestOutputHelper _output;

@@ -6,6 +6,7 @@ using DidevVpn.App.Services.Ras;
 
 namespace DidevVpn.App.Tests;
 
+[Collection(ConnectionStoreCollection.Name)]
 public class EapUserCredentialStoreTests
 {
     [Fact]
