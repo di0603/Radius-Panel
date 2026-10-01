@@ -182,8 +182,15 @@ internal sealed class EnrollmentOrchestrator
 
         using var certificateToRelease = installedCertificate;
 
+        // ORDEN ESTRICTO (los certificados anteriores se borran al FINAL y solo si todo lo anterior salio bien):
+        //  1. crear/actualizar la conexion con el certificado nuevo y guardar sus credenciales EAP;
+        //  2. comprobar que la entrada existe y esas credenciales quedaron guardadas;
+        //  3. guardar el estado de la conexion (ConnectionStore.Save);
+        //  4. SOLO ENTONCES registrar y limpiar los anteriores (RegisterAndCleanUp).
+        // Si 1, 2 o 3 fallan, se lanza y los certificados anteriores se conservan.
         ConfigureVpnConnection(profile, root, chain, installedCertificate);
         _vpnConnectionService.SaveEapCredentials(profile.Cn, installedCertificate);
+        ConnectionConfigurationCheck.EnsureConfigured(_vpnConnectionService, profile.Cn);
 
         var record = new ConnectionRecord
         {

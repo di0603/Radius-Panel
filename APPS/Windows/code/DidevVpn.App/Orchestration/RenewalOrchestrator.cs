@@ -99,19 +99,33 @@ internal sealed class RenewalOrchestrator
         }
 
         using var installedCertificate = enrolled.Certificate;
-        _logger.Info($"Renovacion: certificado nuevo instalado (huella {installedCertificate.Thumbprint}). Borrando el anterior.");
+        _logger.Info($"Renovacion: certificado nuevo instalado (huella {installedCertificate.Thumbprint}).");
 
-        // El certificado nuevo es OTRO (otra huella): hay que apuntar a el las
-        // credenciales EAP guardadas, o la conexion seguiria pidiendo/usando el viejo.
+        // ORDEN ESTRICTO (el certificado viejo se borra el ULTIMO y solo si todo lo anterior salio bien):
+        //  1. credenciales EAP de la entrada apuntando al certificado NUEVO (otra huella: si no, la
+        //     conexion seguiria usando el viejo);
+        //  2. comprobar que la entrada existe y esas credenciales quedaron guardadas;
+        //  3. registrar el nuevo y guardar el estado de la conexion con la huella nueva;
+        //  4. SOLO ENTONCES borrar el viejo y limpiar.
+        // Si 1, 2 o 3 fallan, se lanza y el certificado anterior se conserva.
         _vpnConnectionService.SaveEapCredentials(state.Cn, installedCertificate);
+        ConnectionConfigurationCheck.EnsureConfigured(_vpnConnectionService, state.Cn);
 
+        var previousThumbprint = currentCertificate.Thumbprint;
         _lifecycle.Register(installedCertificate, state.Cn, state.Server, state.Cn);
-        _lifecycle.RemoveWithKey(currentCertificate.Thumbprint);
-
         state.CertificateThumbprint = installedCertificate.Thumbprint;
         state.IsTpmBacked = enrolled.IsTpmBacked;
         state.LastEnrolledAtUtc = DateTimeOffset.UtcNow;
         ConnectionStore.Save(state);
+
+        try
+        {
+            _lifecycle.RemoveWithKey(previousThumbprint);
+        }
+        catch (Exception ex)
+        {
+            _logger.Warn($"Renovacion: no se ha podido borrar el certificado anterior (no es grave, la proxima limpieza lo intentara): {ex.Message}");
+        }
 
         try
         {

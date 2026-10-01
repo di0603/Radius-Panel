@@ -139,6 +139,7 @@ public class ConnectionPhaseTests
         public bool ConnectionExists(string connectionName) => true;
         public bool IsConnected(string connectionName) => Phase == RasPhase.Connected;
         public void SaveEapCredentials(string connectionName, System.Security.Cryptography.X509Certificates.X509Certificate2 certificate) => throw new NotSupportedException();
+        public bool HasEapCredentials(string connectionName) => throw new NotSupportedException();
         public void Connect(string connectionName) => throw new NotSupportedException();
         public void Disconnect(string connectionName) => throw new NotSupportedException();
         public RasPhaseInfo GetConnectionPhase(string connectionName) => new(Phase);
