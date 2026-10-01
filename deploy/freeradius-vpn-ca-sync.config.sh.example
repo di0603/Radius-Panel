@@ -11,9 +11,34 @@ PANEL_PKI_URL='http://127.0.0.1:1003/pki'
 # Directorio ca_path de FreeRADIUS para el virtual server "vpn" -el modulo
 # eap_vpn, tls-config tls-vpn, NO el modulo eap generico de la WiFi-: donde
 # ya estan la raiz y su CRL, puestas a mano. Este script SOLO anade/actualiza
-# sus propios ficheros ahi (panel-intermediate-N.pem, panel-crl.pem), nunca
-# toca los de la raiz.
+# su propia CRL de la intermedia ahi (panel-crl.pem), nunca la intermedia en
+# si ni los ficheros de la raiz. Puede ser una ruta literal o, si tu
+# TLS_CONFIG_FILE usa variables de FreeRADIUS (p.ej.
+# ca_path = "${certdir}/vpn/ca"), la MISMA ruta resuelta -el script las
+# resuelve el solo con CONFDIR/CERTDIR (ver mas abajo), no hace falta
+# repetir la variable aqui-.
 CA_PATH='/etc/freeradius/3.0/certs/vpn/ca'
+
+# Directorio donde este script guarda la intermedia descargada, SIEMPRE
+# fuera de CA_PATH (ver la cabecera de freeradius-vpn-ca-sync.sh: si la
+# intermedia estuviera dentro de ca_path, X509_V_FLAG_PARTIAL_CHAIN trunca
+# ahi la cadena y la validacion de su propia revocacion falla con "unable to
+# get certificate CRL"). FreeRADIUS no lee la intermedia de aqui para
+# validar -la recibe del propio cliente EAP-TLS en cada conexion-: este
+# directorio es solo para referencia/backup en el propio host.
+# Puede ser el directorio PADRE de CA_PATH (el valor de abajo: .../certs/vpn
+# contiene a .../certs/vpn/ca, y es lo que se espera); el script aborta si es
+# el propio CA_PATH o queda DENTRO de el.
+INTERMEDIATE_DIR='/etc/freeradius/3.0/certs/vpn'
+
+# Solo hacen falta si TLS_CONFIG_FILE escribe ca_path con variables de
+# FreeRADIUS en vez de una ruta literal (ca_path = "${certdir}/vpn/ca" o
+# "${confdir}/certs/vpn/ca"): el script las resuelve con estos valores antes
+# de comparar con CA_PATH. Los valores por defecto de abajo son los mismos
+# que trae FreeRADIUS de fabrica (radiusd.conf); ajustalos solo si tu
+# instalacion los cambio.
+# CONFDIR='/etc/freeradius/3.0'
+# CERTDIR='/etc/freeradius/3.0/certs'
 
 # Ruta EXACTA al fichero de la raiz offline que YA esta en CA_PATH (ajusta
 # el nombre al que tenga de verdad en esta instalacion: no lo adivina el
@@ -40,15 +65,28 @@ FREERADIUS_BINARY='freeradius'
 
 # Fichero de tls-config del modulo eap_vpn (el EAP-TLS de la VPN, DISTINTO
 # del modulo eap generico que usa la WiFi con PEAP-MSCHAPv2: nunca toques
-# ese otro fichero). El script comprueba que CA_PATH aparece ahi dentro
-# (si no, algo esta mal configurado) y si ya tiene "ca_path_reload_interval"
-# (FreeRADIUS 3.2+): si esta puesto, FreeRADIUS relee ca_path el solo, sin
-# restart, y este script no reinicia nada. Si no, hace "freeradius -XC"
-# (para no reiniciar con una configuracion rota) y solo entonces
-# "systemctl restart" -NUNCA reload: en FreeRADIUS 3 un HUP no vuelve a
-# cargar los contextos TLS de rlm_eap, una CRL nueva no se aplicaria-.
-# Ver el README, "Sincronizacion de la CA intermedia con FreeRADIUS", para
-# el texto exacto que anadir a tls-config tls-vpn si quieres activar
-# ca_path_reload_interval (este script NUNCA toca la configuracion de
-# FreeRADIUS, solo comprueba si ya esta puesta).
+# ese otro fichero). El script extrae de ahi el valor real de "ca_path = ..."
+# (resolviendo ${certdir}/${confdir} si los usa) y comprueba que coincide
+# con CA_PATH, y si ya tiene "ca_path_reload_interval" (FreeRADIUS 3.2+): si
+# esta puesto, FreeRADIUS relee ca_path el solo, sin restart, y este script
+# no reinicia nada. Si no, hace "freeradius -XC" (para no reiniciar con una
+# configuracion rota) y solo entonces "systemctl restart" -NUNCA reload: en
+# FreeRADIUS 3 un HUP no vuelve a cargar los contextos TLS de rlm_eap, una
+# CRL nueva no se aplicaria-. Ver el README, "Sincronizacion de la CA
+# intermedia con FreeRADIUS", para el texto exacto que anadir a tls-config
+# tls-vpn si quieres activar ca_path_reload_interval (este script NUNCA toca
+# la configuracion de FreeRADIUS, solo comprueba si ya esta puesta).
+#
+# tls-config tls-vpn TAMBIEN necesita, ademas de ca_path, una linea
+# "ca_file = /etc/freeradius/3.0/certs/vpn/root-bundle.pem" (la raiz offline
+# + su propia CRL en un unico fichero, preparado a mano una vez: ca_path y
+# ca_file son complementarios en OpenSSL, no alternativos). Sin ca_file la
+# validacion de la cadena puede fallar con "unable to get certificate CRL"
+# al comprobar la revocacion de la propia intermedia. Este script NUNCA
+# gestiona ca_file, solo avisa (sin fallar) si no encuentra la linea.
+#
+# tls-config tls-vpn necesita ademas "ecdh_curve = secp384r1:prime256v1":
+# las claves TPM de los dispositivos y las de la mayoria de clientes son
+# ECDSA P-256 (prime256v1); con solo secp384r1 (la curva de la propia CA)
+# FreeRADIUS corta la negociacion con "wrong curve".
 TLS_CONFIG_FILE='/etc/freeradius/3.0/mods-enabled/eap_vpn'

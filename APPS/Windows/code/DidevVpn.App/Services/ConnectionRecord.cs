@@ -119,6 +119,40 @@ internal static class ConnectionStore
         }
     }
 
+    /// <summary>
+    /// Como <see cref="List"/> pero ESTRICTO: null si no se ha podido leer la
+    /// lista completa (el directorio no se puede enumerar, o algun fichero esta
+    /// corrupto/ilegible). Para decisiones destructivas -p.ej. "que certificados
+    /// ya no pertenecen a ninguna conexion"-: una conexion que existe pero no se
+    /// pudo leer NO puede contar como inexistente.
+    /// </summary>
+    public static List<ConnectionRecord>? ListOrNull()
+    {
+        try
+        {
+            if (!Directory.Exists(AppPaths.ConnectionsDirectory))
+            {
+                return new List<ConnectionRecord>();
+            }
+
+            var result = new List<ConnectionRecord>();
+            foreach (var file in Directory.EnumerateFiles(AppPaths.ConnectionsDirectory, "*.json"))
+            {
+                var record = JsonSerializer.Deserialize<ConnectionRecord>(File.ReadAllText(file), JsonOptions);
+                if (record is null)
+                {
+                    return null;
+                }
+                result.Add(record);
+            }
+            return result;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            return null;
+        }
+    }
+
     /// <summary>Todas las conexiones de este usuario, en el orden en que las devuelve el sistema de ficheros (no hay un orden "natural" que preservar).</summary>
     public static List<ConnectionRecord> List()
     {

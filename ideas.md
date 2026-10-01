@@ -422,6 +422,72 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
   lado del panel (rama `feat/vpn-12.5-huellas-panel`); la reescritura de
   `didev-vpn-windows` como cliente generico va en
   `feat/vpn-12-windows-wip`. Detalle completo en el CHANGELOG.
+- [x] **Prompt 12.12 (correcciones tras la revision de 12.10/12.11)**: rollback del
+  certificado nuevo si falla un paso tras instalarlo (alta y renovacion; nunca el
+  reutilizado), comprobacion de que las credenciales EAP guardadas son las del
+  certificado nuevo (huella anotada y validada contra el blob de Windows) y el
+  arranque del registro de certificados protegido y probado. Pendiente de probar en
+  el equipo: el experimento de dos conexiones del mismo emisor (exige
+  administrador) y la renovacion real contra el panel. Rama
+  `feat/vpn-12.7-windows-rendimiento`, pendiente de revision.
+- [x] **Prompt 12.10 (correcciones tras la revision)**: guarda de rutas del
+  sincronizador corregida (abortaba con los valores por defecto) con tests que no
+  dependen de `openssl rehash`; limpieza de certificados mas segura (lista de
+  conexiones leida, mismo servidor y emisor); orden garantizado alta/renovacion
+  (el viejo se borra el ultimo); comentario del almacen de credenciales EAP con lo
+  realmente medido. Pendiente de probar en el equipo: el experimento de dos
+  conexiones del mismo emisor (exige administrador) y la renovacion real contra el
+  panel. Rama `feat/vpn-12.7-windows-rendimiento`, pendiente de revision.
+- [ ] **Prompt 12.9 (arreglos tras la prueba real de la 0.1.8)**: hechos el
+  estado real (causa: tamano de `RASCONNSTATUSW` 564, no 562), la UI que nunca
+  se queda en "Trabajando...", los tests sin tocar el log real, el
+  `FormatException` de `/status` (fecha ISO 8601), el registro y limpieza de
+  certificados con aviso de candidatos, y `DisableUserPromptForServerValidation`.
+  Pendientes de probar en el equipo: el experimento de dos conexiones del mismo
+  emisor (test que exige administrador) y la renovacion real contra el panel
+  (el servidor solo la permite 12 h despues de emitir). Rama
+  `feat/vpn-12.7-windows-rendimiento`, pendiente de revision.
+- [ ] **Prompt 12.8 (conectar sin dialogos, estado real y panel de detalles)**:
+  puntos 1, 2 y 3 hechos (credenciales EAP de usuario guardadas con
+  `RasSetEapUserDataW`; estado real con RasConnectionNotification y espera
+  hasta Connected/error/60 s; panel de detalles nativo con "Copiar
+  detalles"); pendiente la 0.1.8 (punto 5). Rama
+  `feat/vpn-12.7-windows-rendimiento`, pendiente de revision.
+- [x] **Prompt 12.7 (Windows: rendimiento)**: la app se congelaba varios
+  segundos en cada refresco (cada consulta de estado lanzaba un
+  `powershell.exe` nuevo). Nuevo `RasStateReader` con P/Invoke directo a
+  `rasapi32.dll` (milisegundos, sin procesos), con respaldo automatico por
+  PowerShell si fallara; `rasdial.exe` directo para conectar/desconectar;
+  nada bloqueante en el hilo de interfaz (`Task.Run` + boton
+  deshabilitado); `ConnectionStateService` (cache unica, refresco por
+  `NetworkChange` con debounce + respaldo cada 30s) sustituye los
+  temporizadores de sondeo propio; `ConnectionManagerForm` ya no reconstruye
+  toda la lista en cada refresco. `PublishReadyToRun=true`. Medido de
+  verdad: arranque ~360ms->~241ms, un refresco con 3 conexiones
+  ~6,3s->~10ms. Version 0.1.6 compilada y ejecutada de verdad. Ademas
+  (items 8-9 del prompt): scripts de `deploy/` marcados ejecutables en git
+  (se subieron como 644 desde Windows); arreglado un bug real de
+  `freeradius-vpn-ca-sync.sh` (con `X509_V_FLAG_PARTIAL_CHAIN`, tener la
+  intermedia dentro de `ca_path` rompia la validacion de su propia
+  revocacion con "unable to get certificate CRL") separando la intermedia
+  (fuera de `ca_path`) de su CRL (dentro), y documentando que hace falta
+  `ca_file` (raiz+su CRL) y `ecdh_curve = "secp384r1:prime256v1"`. Item 10
+  (clave del dispositivo por CertEnroll en vez de CngKey.Create asociada a
+  mano, porque Schannel rechazaba esa via en EAP-TLS con 0x8009030D pese a
+  firmar/verificar bien -verificado con un handshake TLS mutuo real-):
+  `CertificateEnrollmentService` genera la clave (TPM primero, con
+  confirmacion para caer a software) y el CSR con CertEnroll (COM) e
+  instala la respuesta de EST con `CX509Enrollment.InstallResponse`, todo
+  en un hilo STA dedicado. Item 7 (error 703 al conectar, "la aplicacion no
+  permite interaccion del usuario"): el XML EAP ahora filtra el certificado
+  del cliente por emisor (`FilteringInfo/CAHashList`) para que solo haya un
+  candidato, y si aun asi rasdial.exe devuelve 703 se abre el dialogo nativo
+  `rasphone.exe -d` como ultimo recurso; NO se ha implementado RasDial por
+  P/Invoke con identidad EAP no interactiva (decision consciente, pendiente
+  de ver si hace falta tras probar en el equipo real -ver el CHANGELOG-).
+  Rama `feat/vpn-12.7-windows-rendimiento`, pendiente de revision. Falta el
+  item 11 (compilar 0.1.6 final) y la prueba real de conectar/desconectar
+  sin dialogos. Detalle completo en el CHANGELOG.
 - [x] **Prompt 12.6 (Windows: asociar la clave CNG sin exportarla)**: el
   alta con una clave de TPM fallaba siempre ("Clave no valida para utilizar
   en el estado especificado") porque `CopyWithPrivateKey` fuerza una

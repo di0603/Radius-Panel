@@ -11,7 +11,7 @@ internal sealed class EstClient : IEstClient
     private const string Pkcs7ContentType = "application/pkcs7-mime";
     private const string Pkcs10ContentType = "application/pkcs10";
 
-    public async Task<X509Certificate2> SimpleEnrollAsync(
+    public async Task<EstEnrollResult> SimpleEnrollAsync(
         Uri estBaseUrl, string username, string enrollToken, byte[] csrDer, X509Certificate2Collection trustedChain, CancellationToken ct)
     {
         using var handler = new HttpClientHandler
@@ -32,7 +32,7 @@ internal sealed class EstClient : IEstClient
         return await ReadPkcs7CertificateAsync(response, ct).ConfigureAwait(false);
     }
 
-    public async Task<X509Certificate2> SimpleReenrollAsync(
+    public async Task<EstEnrollResult> SimpleReenrollAsync(
         Uri estBaseUrl, X509Certificate2 clientCertificate, byte[] csrDer, X509Certificate2Collection trustedChain, CancellationToken ct)
     {
         using var handler = new HttpClientHandler
@@ -74,23 +74,44 @@ internal sealed class EstClient : IEstClient
         var root = doc.RootElement;
         return new EstStatus(
             Username: root.GetProperty("username").GetString() ?? string.Empty,
-            NotAfter: root.GetProperty("notAfter").GetDateTimeOffset(),
+            NotAfter: ParseNotAfter(root.GetProperty("notAfter").GetString()),
             RenewDue: root.GetProperty("renewDue").GetBoolean(),
             MinAppVersion: root.TryGetProperty("minAppVersion", out var minVersion) ? minVersion.GetString() ?? "0.0.0" : "0.0.0");
     }
 
-    private static async Task<X509Certificate2> ReadPkcs7CertificateAsync(HttpResponseMessage response, CancellationToken ct)
+    /// <summary>
+    /// /status devuelve notAfter en ISO 8601 UTC. Los paneles anteriores
+    /// devolvian el DATETIME de MariaDB tal cual ("2026-10-31 10:03:43", UTC sin
+    /// zona), que GetDateTimeOffset() rechazaba con FormatException ("One of
+    /// the identified items was in an invalid format"): se acepta tambien ese
+    /// formato, siempre como UTC. Si no se entiende, el error dice QUE llego.
+    /// </summary>
+    internal static DateTimeOffset ParseNotAfter(string? value)
+    {
+        if (!string.IsNullOrWhiteSpace(value) &&
+            DateTimeOffset.TryParse(
+                value,
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal,
+                out var parsed))
+        {
+            return parsed;
+        }
+        throw new FormatException($"/status devolvio una fecha de caducidad (notAfter) que no se entiende: \"{value}\".");
+    }
+
+    private static async Task<EstEnrollResult> ReadPkcs7CertificateAsync(HttpResponseMessage response, CancellationToken ct)
     {
         if (!response.IsSuccessStatusCode)
         {
             throw new EstRequestException(response.StatusCode, await SafeReadBodyAsync(response, ct).ConfigureAwait(false));
         }
 
-        var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        var body = (await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false)).Trim();
         byte[] der;
         try
         {
-            der = Convert.FromBase64String(body.Trim());
+            der = Convert.FromBase64String(body);
         }
         catch (FormatException ex)
         {
@@ -104,8 +125,11 @@ internal sealed class EstClient : IEstClient
             throw new EstRequestException(response.StatusCode, "La respuesta PKCS7 de EST no contiene ningun certificado.");
         }
 
-        // "certs-only": un unico certificado, el recien emitido.
-        return new X509Certificate2(cms.Certificates[0]);
+        // "certs-only": un unico certificado, el recien emitido. Se devuelve
+        // tambien el cuerpo PKCS7 crudo (base64 sin cabecera PEM, tal cual lo
+        // envio EST): CertificateEnrollmentService lo necesita sin tocar para
+        // CX509Enrollment.InstallResponse.
+        return new EstEnrollResult(new X509Certificate2(cms.Certificates[0]), body);
     }
 
     private static async Task<string> SafeReadBodyAsync(HttpResponseMessage response, CancellationToken ct)
