@@ -422,6 +422,14 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
   lado del panel (rama `feat/vpn-12.5-huellas-panel`); la reescritura de
   `didev-vpn-windows` como cliente generico va en
   `feat/vpn-12-windows-wip`. Detalle completo en el CHANGELOG.
+- [x] **Prompt 12.12 (correcciones tras la revision de 12.10/12.11)**: rollback del
+  certificado nuevo si falla un paso tras instalarlo (alta y renovacion; nunca el
+  reutilizado), comprobacion de que las credenciales EAP guardadas son las del
+  certificado nuevo (huella anotada y validada contra el blob de Windows) y el
+  arranque del registro de certificados protegido y probado. Pendiente de probar en
+  el equipo: el experimento de dos conexiones del mismo emisor (exige
+  administrador) y la renovacion real contra el panel. Rama
+  `feat/vpn-12.7-windows-rendimiento`, pendiente de revision.
 - [x] **Prompt 12.10 (correcciones tras la revision)**: guarda de rutas del
   sincronizador corregida (abortaba con los valores por defecto) con tests que no
   dependen de `openssl rehash`; limpieza de certificados mas segura (lista de

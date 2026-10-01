@@ -7,6 +7,34 @@ Este proyecto usa versionado semantico.
 
 ### Anadido
 
+- **Prompt 12.12 (correcciones tras la revision de 12.10/12.11)**:
+  - **Rollback del certificado nuevo (1)**: si falla cualquier paso entre
+    instalar el certificado nuevo y el final de la confirmacion (credenciales
+    EAP, comprobacion de la entrada, registro, estado de la conexion; en el alta
+    tambien crear la conexion) se borra el NUEVO con su clave, se conserva el
+    viejo, se relanza la excepcion original y queda un WARN. Dos certificados del
+    mismo emisor en `CurrentUser\My` provocan el 703 (selector de Windows) aunque
+    haya credenciales guardadas. En la renovacion ademas se devuelven las
+    credenciales EAP al viejo y se restaura el estado en memoria; en el alta solo
+    se deshace un certificado instalado por ESA ejecucion (nunca uno reutilizado).
+    Si el propio rollback falla se registra (con el aviso de que el nuevo puede
+    haber quedado instalado) y no oculta la excepcion original
+    (`NewCertificateRollback`).
+  - **Credenciales EAP = certificado nuevo (2)**: `EnsureConfigured` exige ahora
+    que las credenciales guardadas sean las de la huella del certificado nuevo.
+    Medido: el blob de `RasSetEapUserData` (74 bytes) no contiene la huella ni es
+    determinista, asi que la app anota al guardar la huella y el SHA-256 del blob
+    leido de vuelta (`eap-credentials.json`, sin secretos) y solo la da por buena
+    si el blob actual de Windows sigue coincidiendo (si alguien lo sobrescribe,
+    devuelve null). Sustituye a `HasEapCredentials`.
+  - **Arranque del registro (3)**: `AdoptConnectionCertificates` se llamaba en
+    `TrayApplicationContext` (constructor) sin test; ahora va por
+    `CertificateRegistryStartup.AdoptExistingConnections` (protegido: un fallo no
+    impide arrancar) con tests y una guarda de cableado.
+  - Tests: las clases que usan `ConnectionStore` o crean entradas de la agenda RAS
+    corren serializadas (una carrera entre el test de `ListOrNull` y otros daba un
+    fallo intermitente).
+
 - **Prompt 12.10 (correcciones tras la revision)**:
   - **Sincronizador, BLOQUEANTE (1)**: la guarda de rutas de
     `deploy/freeradius-vpn-ca-sync.sh` estaba al reves: con los valores por
