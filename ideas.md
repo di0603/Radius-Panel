@@ -422,6 +422,15 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
   lado del panel (rama `feat/vpn-12.5-huellas-panel`); la reescritura de
   `didev-vpn-windows` como cliente generico va en
   `feat/vpn-12-windows-wip`. Detalle completo en el CHANGELOG.
+- [ ] **Prompt 12.9 (arreglos tras la prueba real de la 0.1.8)**: hechos el
+  estado real (causa: tamano de `RASCONNSTATUSW` 564, no 562), la UI que nunca
+  se queda en "Trabajando...", los tests sin tocar el log real, el
+  `FormatException` de `/status` (fecha ISO 8601), el registro y limpieza de
+  certificados con aviso de candidatos, y `DisableUserPromptForServerValidation`.
+  Pendientes de probar en el equipo: el experimento de dos conexiones del mismo
+  emisor (test que exige administrador) y la renovacion real contra el panel
+  (el servidor solo la permite 12 h despues de emitir). Rama
+  `feat/vpn-12.7-windows-rendimiento`, pendiente de revision.
 - [ ] **Prompt 12.8 (conectar sin dialogos, estado real y panel de detalles)**:
   puntos 1, 2 y 3 hechos (credenciales EAP de usuario guardadas con
   `RasSetEapUserDataW`; estado real con RasConnectionNotification y espera

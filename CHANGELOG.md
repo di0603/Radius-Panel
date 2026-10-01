@@ -7,6 +7,66 @@ Este proyecto usa versionado semantico.
 
 ### Anadido
 
+- **Prompt 12.9 (arreglos tras la prueba real de la 0.1.8, Windows)**:
+  - **Estado de conexion (1, 2)**: la app esperaba 60 s y se quedaba en
+    "Trabajando..." aunque el tunel estuviera arriba. Causa raiz, medida con la
+    VPN conectada: `RasGetConnectStatusW` devolvia 632 (`ERROR_INVALID_SIZE`)
+    porque `RASCONNSTATUSW` se declaraba con 562 bytes y Windows solo acepta
+    564; la app tomaba ese fallo por "desconectada". `RasEnumConnections` y el
+    nombre de la entrada estaban bien. Ademas `RasGetProjectionInfo` da 87 en
+    IKEv2 (no hay PPP): la IP sale del adaptador (`NetworkInterface` Ppp, Up,
+    mismo nombre), que tambien sirve de respaldo de la fase. Se registra el
+    codigo de retorno y los nombres que lista RAS cuando no encuentra la
+    entrada. Al agotar el limite se relee el estado real; con el dialogo de
+    rasphone abierto el limite empieza al cerrarse (tope 120 s); la bandeja
+    libera "Trabajando..." en un `finally`. Verificado en vivo con `rasdial`:
+    estado, estadisticas y notificaciones RAS de conexion y desconexion.
+    (Con `rasphone` no se pudo verificar sin dialogo: la lectura es la misma.)
+  - **Menu de bandeja**: una excepcion al consultar el Programador de tareas
+    (volcado real: `FileNotFoundException` al cargarlo) ya no sube hasta el
+    `WndProc` y tumba la app; el elemento sale desactivado y se registra. No se
+    pudo reproducir con el codigo actual (probado single-file con y sin tarea).
+  - **Tests y log real (3)**: `DIDEVVPN_DATA_DIR` (solo pruebas) redirige los
+    datos; los tests ya no escriben en `%LOCALAPPDATA%\didev-vpn` (comprobado:
+    el log real no crece al ejecutarlos).
+  - **FormatException en /status (4)**: el servidor devolvia `notAfter` como lo
+    entrega MariaDB (`2026-10-31 10:03:43`, UTC sin zona) y la app lo leia con
+    `GetDateTimeOffset()` (exige ISO 8601). Servidor: ISO 8601 UTC. Cliente:
+    acepta ambos formatos y, si no entiende el valor, dice cual llego. Android
+    lo trata como cadena. Con esto la version minima y la renovacion llegan a
+    comprobarse de verdad.
+  - **Limpieza de certificados (5)**: registro propio
+    (`installed-certificates.json`, sin secretos) de lo que la app instala.
+    Quitar una conexion borra certificado Y clave (TPM o software); al dar de
+    alta, reparar o renovar se borran los anteriores del mismo dispositivo y los
+    que ya no pertenecen a ninguna conexion, solo los del registro y del mismo
+    emisor. La ventana avisa (lista con CN y caducidad, y como quitarlos) si hay
+    mas de un certificado candidato del mismo emisor. Los tests dejaban
+    certificados y claves huerfanos en el almacen del usuario: `RemoveCertificate`
+    ahora borra tambien la clave.
+  - **Dos conexiones del mismo emisor (6)**: test real
+    (`SameIssuerTwoConnectionsTests`) que prueba si las credenciales EAP
+    guardadas evitan el selector. Windows solo ofrece como candidatos los
+    certificados cuya cadena llega a una raiz de confianza (sin ella da 798), por
+    lo que el test instala su CA en `LocalMachine\Root` y SOLO corre desde una
+    consola de administrador. Resultado pendiente de ejecutarlo elevado; si
+    resultara que no bastan, queda el aviso del punto 5 y el punto 7(b) del
+    12.7 (RasDial con RASEAPINFO).
+  - **XML EAP (7)**: `DisableUserPromptForServerValidation = true` (raiz y
+    nombre ya fijados: falla cerrado). Medido con un solo certificado:
+    `rasdial` conecta con las cuatro combinaciones de ese flag y
+    `RememberCredential`; `RememberCredential` no hace falta y no se usa.
+  - **Renovacion (8)**: `DIDEVVPN_RENEW_THRESHOLD_DAYS` (solo pruebas) fuerza
+    el umbral. Contra el panel real: `/status` ya funciona (sin
+    `FormatException`) y el panel rechaza `simplereenroll` con 409 "una
+    renovacion cada 12h" (control de abuso del servidor, no se toca): la
+    renovacion real solo se puede repetir 12 h despues de emitir el certificado.
+    Verificada de extremo a extremo con un EST simulado y todo lo demas real
+    (CertEnroll/TPM, almacen, registro, credenciales EAP de una entrada RAS):
+    el certificado nuevo se instala con el mismo tipo de clave, el viejo se
+    borra con su clave, el blob de credenciales EAP cambia. El XML EAP no lleva
+    huella de certificado (filtra por emisor), asi que no necesita cambios.
+
 - **Prompt 12.8 (punto 3, Windows: panel de detalles)**: debajo de la
   conexion, cuando esta Conectada, la ventana muestra el estado y el tiempo
   conectado (`RasGetConnectionStatistics`), la IP resuelta del servidor, la
