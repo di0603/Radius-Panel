@@ -71,12 +71,16 @@ internal sealed class RenewalOrchestrator
             return new RenewalResult(RenewalOutcome.BlockedByMinAppVersion, message);
         }
 
-        if (!status.RenewDue)
+        if (!IsRenewalDue(status, DateTimeOffset.UtcNow, Environment.GetEnvironmentVariable(RenewThresholdVariable), out var forcedByThreshold))
         {
             _logger.Info($"Renovacion: \"{state.Cn}\" todavia vigente (caduca {status.NotAfter:u}).");
             return new RenewalResult(RenewalOutcome.NotDue);
         }
 
+        if (forcedByThreshold)
+        {
+            _logger.Warn($"Renovacion FORZADA por {RenewThresholdVariable} (solo pruebas): el panel decia que aun no tocaba.");
+        }
         _logger.Info($"Renovacion: toca renovar \"{state.Cn}\" (caduca {status.NotAfter:u}). Generando clave nueva.");
 
         InstalledCertificateResult enrolled;
@@ -120,6 +124,24 @@ internal sealed class RenewalOrchestrator
 
         _logger.Info($"Renovacion: completada para \"{state.Cn}\".");
         return new RenewalResult(RenewalOutcome.Renewed);
+    }
+
+    /// <summary>SOLO PARA PRUEBAS: si el certificado caduca en menos de estos dias, se renueva aunque el panel diga que aun no toca (p.ej. 40 con certificados de 30 dias).</summary>
+    internal const string RenewThresholdVariable = "DIDEVVPN_RENEW_THRESHOLD_DAYS";
+
+    internal static bool IsRenewalDue(EstStatus status, DateTimeOffset now, string? thresholdDays, out bool forcedByThreshold)
+    {
+        forcedByThreshold = false;
+        if (status.RenewDue)
+        {
+            return true;
+        }
+        if (int.TryParse(thresholdDays, out var days) && days > 0 && status.NotAfter - now <= TimeSpan.FromDays(days))
+        {
+            forcedByThreshold = true;
+            return true;
+        }
+        return false;
     }
 
     private static X509Certificate2? FindCurrentCertificate(ConnectionRecord state)
