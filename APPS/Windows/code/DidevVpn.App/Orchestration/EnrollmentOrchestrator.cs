@@ -284,8 +284,9 @@ internal sealed class EnrollmentOrchestrator
         try
         {
             _lifecycle.Register(installedCertificate, profile.Cn, profile.Server, profile.Cn);
-            var existing = ConnectionStore.List().Select(c => c.Cn).ToList();
-            var removed = _lifecycle.CleanupStale(profile.Cn, installedCertificate, existing);
+            // null si no se pudo leer la lista completa: entonces no se borra ningun huerfano.
+            var existing = ConnectionStore.ListOrNull()?.Select(c => c.Cn).ToList();
+            var removed = _lifecycle.CleanupStale(profile.Cn, profile.Server, installedCertificate, existing);
             if (removed.Count > 0)
             {
                 _logger.Info($"Alta: {removed.Count} certificado(s) antiguo(s) de la app borrado(s).");

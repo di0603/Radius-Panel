@@ -148,7 +148,7 @@ public sealed class CertificateLifecycleTests : IDisposable
         lifecycle.Register(otherConnection, "vpn-dev2", "srv", "vpn-dev2");
         lifecycle.Register(otherIssuer, "vpn-dev1", "srv", "vpn-dev1");
 
-        var removed = lifecycle.CleanupStale("vpn-dev1", current, new[] { "vpn-dev1", "vpn-dev2" });
+        var removed = lifecycle.CleanupStale("vpn-dev1", "srv", current, new[] { "vpn-dev1", "vpn-dev2" });
 
         Assert.Equal(new[] { old.Thumbprint, orphan.Thumbprint }.OrderBy(x => x), removed.OrderBy(x => x));
         Assert.False(InStore(old.Thumbprint));

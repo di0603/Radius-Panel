@@ -115,7 +115,7 @@ internal sealed class RenewalOrchestrator
 
         try
         {
-            _lifecycle.CleanupStale(state.Cn, installedCertificate, ConnectionStore.List().Select(c => c.Cn).ToList());
+            _lifecycle.CleanupStale(state.Cn, state.Server, installedCertificate, ConnectionStore.ListOrNull()?.Select(c => c.Cn).ToList());
         }
         catch (Exception ex)
         {
