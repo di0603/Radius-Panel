@@ -180,6 +180,7 @@ internal sealed class EnrollmentOrchestrator
         using var certificateToRelease = installedCertificate;
 
         ConfigureVpnConnection(profile, root, chain, installedCertificate);
+        _vpnConnectionService.SaveEapCredentials(profile.Cn, installedCertificate);
 
         var record = new ConnectionRecord
         {

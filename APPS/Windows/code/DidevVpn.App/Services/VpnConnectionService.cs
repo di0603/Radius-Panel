@@ -34,17 +34,25 @@ namespace DidevVpn.App.Services;
 internal sealed class VpnConnectionService : IVpnConnectionService
 {
     private readonly IRasStateReader _rasReader;
+    private readonly IEapUserCredentialStore _eapCredentials;
     private readonly FileLogger? _logger;
     private volatile bool _nativeReaderFailed;
 
-    public VpnConnectionService(FileLogger? logger = null) : this(new RasStateReader(), logger)
+    public VpnConnectionService(FileLogger? logger = null) : this(new RasStateReader(), new EapUserCredentialStore(), logger)
     {
     }
 
-    internal VpnConnectionService(IRasStateReader rasReader, FileLogger? logger)
+    internal VpnConnectionService(IRasStateReader rasReader, IEapUserCredentialStore eapCredentials, FileLogger? logger)
     {
         _rasReader = rasReader;
+        _eapCredentials = eapCredentials;
         _logger = logger;
+    }
+
+    public void SaveEapCredentials(string connectionName, System.Security.Cryptography.X509Certificates.X509Certificate2 certificate)
+    {
+        _eapCredentials.SaveCertificate(connectionName, certificate);
+        _logger?.Info($"Credenciales EAP guardadas para \"{connectionName}\" (certificado {certificate.Thumbprint}): conectar ya no deberia pedir certificado.");
     }
 
     public void CreateOrUpdateConnection(VpnConnectionSpec spec)

@@ -21,6 +21,9 @@ internal interface IVpnConnectionService
     void RemoveConnection(string connectionName);
     bool ConnectionExists(string connectionName);
     bool IsConnected(string connectionName);
+    /// <summary>Guarda que la entrada use SIEMPRE este certificado de CurrentUser\My al conectar (credenciales EAP de usuario): sin esto Windows abre el selector de certificado. La entrada ya tiene que existir.</summary>
+    void SaveEapCredentials(string connectionName, System.Security.Cryptography.X509Certificates.X509Certificate2 certificate);
+
     void Connect(string connectionName);
     void Disconnect(string connectionName);
 

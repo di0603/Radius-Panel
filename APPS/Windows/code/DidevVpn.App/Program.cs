@@ -64,6 +64,7 @@ internal static class Program
                 var orchestrator = new RenewalOrchestrator(
                     new CertificateEnrollmentService(),
                     new EstClient(),
+                    new VpnConnectionService(logger),
                     new MessageBoxUserConfirmations(),
                     logger,
                     AppVersionHelper.GetAppVersion());

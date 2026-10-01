@@ -7,6 +7,28 @@ Este proyecto usa versionado semantico.
 
 ### Anadido
 
+- **Prompt 12.8 (punto 1, Windows: conectar sin dialogos)**: EAP-TLS por
+  IKEv2 abria siempre el selector de certificado al conectar, aunque solo
+  hubiera un candidato (el filtro por emisor del 12.7 no basto, comprobado en
+  un equipo real). Ahora el alta -y cada conexion, "reparando" las dadas de
+  alta con versiones anteriores- guarda las credenciales EAP de usuario de la
+  entrada de la agenda: `EapUserCredentialStore` (`Services/Ras/`) construye el
+  XML `EapHostUserCredentials` de EAP-TLS (certificado en `UserCert`, segun
+  `C:\Windows\schemas\EAPMethods\eaptlsuserpropertiesv1.xsd`; nunca clave
+  privada), lo convierte con `EapHostPeerConfigXml2Blob` +
+  `EapHostPeerCredentialsXml2Blob` (eappcfg.dll) y lo guarda con
+  `RasSetEapUserDataW`. Tras renovar (simplereenroll) se actualiza al
+  certificado nuevo. `rasphone -d` queda solo como ultimo recurso (WARN).
+  - Las firmas P/Invoke salen de las cabeceras reales del SDK instalado
+    (`eaphostpeerconfigapis.h`, `Ras.h`), no de memoria: una firma supuesta en
+    la primera prueba reventaba con `AccessViolationException` (la funcion no
+    recibe `EAP_METHOD_TYPE` de entrada sino `IXMLDOMNode*` + el blob de
+    configuracion; devuelve el metodo por `out`).
+  - Tests: XML de credenciales validado contra el esquema (EAP-TLS, solo
+    certificado publico) y test de integracion que crea una entrada RAS de
+    prueba, guarda las credenciales con un certificado autofirmado y comprueba
+    con `RasGetEapUserData` que se guardaron, borrandolo todo despues.
+
 - **Prompt 12.8 (Windows 0.1.7: XML de EAP valido y reintento del alta)**: la
   0.1.6 llegaba a EST pero `Add-VpnConnection` fallaba con "Failed to generate
   the EAP Configuration ... (WIN32 1)" porque el XML del item 7a no cumplia el

@@ -210,6 +210,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 }
                 else
                 {
+                    EnsureEapCredentials(cn);
                     _vpnService.Connect(cn);
                 }
             }).ConfigureAwait(true); // true: seguir en el hilo de interfaz al continuar (BuildMenu/RefreshStatus tocan controles)
@@ -221,6 +222,42 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
         SetBusy(cn, false);
         await _stateService.RefreshAsync();
+    }
+
+    /// <summary>
+    /// "Reparar" una conexion ya existente (dada de alta con una version
+    /// anterior, sin credenciales EAP guardadas): antes de conectar, apunta
+    /// las credenciales de la entrada al certificado vigente. Idempotente y
+    /// barato; un fallo aqui no impide conectar (solo se avisa en el log: lo
+    /// peor que pasa es el dialogo de seleccion de siempre).
+    /// </summary>
+    private void EnsureEapCredentials(string cn)
+    {
+        try
+        {
+            var record = ConnectionStore.Load(cn);
+            if (record is null)
+            {
+                return;
+            }
+            using var store = new System.Security.Cryptography.X509Certificates.X509Store(
+                System.Security.Cryptography.X509Certificates.StoreName.My,
+                System.Security.Cryptography.X509Certificates.StoreLocation.CurrentUser);
+            store.Open(System.Security.Cryptography.X509Certificates.OpenFlags.ReadOnly);
+            var matches = store.Certificates.Find(
+                System.Security.Cryptography.X509Certificates.X509FindType.FindByThumbprint,
+                record.CertificateThumbprint, validOnly: false);
+            if (matches.Count == 0)
+            {
+                _logger.Warn($"No se encuentra el certificado de \"{cn}\" ({record.CertificateThumbprint}) en CurrentUser\\My: no se pueden guardar las credenciales EAP.");
+                return;
+            }
+            _vpnService.SaveEapCredentials(cn, matches[0]);
+        }
+        catch (Exception ex)
+        {
+            _logger.Warn($"No se han podido guardar las credenciales EAP de \"{cn}\" (se conecta igualmente): {ex.Message}");
+        }
     }
 
     private async void ImportProfile()
@@ -316,7 +353,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         SetBusy(cn, true);
         try
         {
-            var orchestrator = new RenewalOrchestrator(_certificateService, _estClient, _confirmations, _logger, AppVersionHelper.GetAppVersion());
+            var orchestrator = new RenewalOrchestrator(_certificateService, _estClient, _vpnService, _confirmations, _logger, AppVersionHelper.GetAppVersion());
             var result = await Task.Run(() => orchestrator.RenewIfDueAsync(connection, CancellationToken.None)).ConfigureAwait(true);
             switch (result.Outcome)
             {

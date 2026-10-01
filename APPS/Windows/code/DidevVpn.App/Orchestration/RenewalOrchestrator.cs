@@ -26,6 +26,7 @@ internal sealed class RenewalOrchestrator
 {
     private readonly ICertificateEnrollmentService _certificateService;
     private readonly IEstClient _estClient;
+    private readonly IVpnConnectionService _vpnConnectionService;
     private readonly IUserConfirmations _confirmations;
     private readonly FileLogger _logger;
     private readonly AppVersion _currentAppVersion;
@@ -33,12 +34,14 @@ internal sealed class RenewalOrchestrator
     public RenewalOrchestrator(
         ICertificateEnrollmentService certificateService,
         IEstClient estClient,
+        IVpnConnectionService vpnConnectionService,
         IUserConfirmations confirmations,
         FileLogger logger,
         AppVersion currentAppVersion)
     {
         _certificateService = certificateService;
         _estClient = estClient;
+        _vpnConnectionService = vpnConnectionService;
         _confirmations = confirmations;
         _logger = logger;
         _currentAppVersion = currentAppVersion;
@@ -90,6 +93,10 @@ internal sealed class RenewalOrchestrator
 
         using var installedCertificate = enrolled.Certificate;
         _logger.Info($"Renovacion: certificado nuevo instalado (huella {installedCertificate.Thumbprint}). Borrando el anterior.");
+
+        // El certificado nuevo es OTRO (otra huella): hay que apuntar a el las
+        // credenciales EAP guardadas, o la conexion seguiria pidiendo/usando el viejo.
+        _vpnConnectionService.SaveEapCredentials(state.Cn, installedCertificate);
 
         _certificateService.RemoveCertificate(currentCertificate);
 
