@@ -15,6 +15,7 @@ namespace DidevVpn.App.Tests;
 /// borrar el certificado viejo. Si falla cualquier paso intermedio, el viejo NO
 /// se borra. Todo con fakes que registran las llamadas en orden.
 /// </summary>
+[Collection(ConnectionStoreCollection.Name)]
 public sealed class ConfigurationOrderTests : IDisposable
 {
     private readonly List<string> _log = new();
@@ -26,7 +27,10 @@ public sealed class ConfigurationOrderTests : IDisposable
     private sealed class FakeVpn : IVpnConnectionService
     {
         private readonly List<string> _log;
-        public bool ThrowOnConfigure, ThrowOnSaveEap, EntryExists = true, EapCredentialsSaved = true;
+        public bool ThrowOnConfigure, ThrowOnSaveEap, EntryExists = true, NoSavedCredentials;
+        /// <summary>Si no es null, simula credenciales guardadas para OTRO certificado.</summary>
+        public string? SavedThumbprintOverride;
+        private string? _lastSavedThumbprint;
         public FakeVpn(List<string> log) => _log = log;
 
         public void CreateOrUpdateConnection(VpnConnectionSpec spec)
@@ -38,9 +42,14 @@ public sealed class ConfigurationOrderTests : IDisposable
         {
             _log.Add("SaveEap");
             if (ThrowOnSaveEap) throw new InvalidOperationException("fallo simulado al guardar credenciales");
+            _lastSavedThumbprint = certificate.Thumbprint;
         }
         public bool ConnectionExists(string connectionName) { _log.Add("Exists"); return EntryExists; }
-        public bool HasEapCredentials(string connectionName) { _log.Add("HasEap"); return EapCredentialsSaved; }
+        public string? GetSavedEapCertificateThumbprint(string connectionName)
+        {
+            _log.Add("SavedThumbprint");
+            return NoSavedCredentials ? null : SavedThumbprintOverride ?? _lastSavedThumbprint;
+        }
 
         public void RemoveConnection(string connectionName) => throw new NotSupportedException();
         public bool IsConnected(string connectionName) => throw new NotSupportedException();
@@ -175,7 +184,7 @@ public sealed class ConfigurationOrderTests : IDisposable
 
         Assert.Equal(RenewalOutcome.Renewed, result.Outcome);
         Assert.Equal(
-            new[] { "InstallNewCertificate", "SaveEap", "Exists", "HasEap", "Register", $"RemoveWithKey:{old.Thumbprint}", "CleanupStale" },
+            new[] { "InstallNewCertificate", "SaveEap", "Exists", "SavedThumbprint", "Register", $"RemoveWithKey:{old.Thumbprint}", "CleanupStale" },
             _log);
         // Cuando se borra el viejo, el estado de la conexion YA apunta al nuevo.
         Assert.Equal(newThumbprint, lifecycle.StateThumbprintAtRemoval);
@@ -185,12 +194,14 @@ public sealed class ConfigurationOrderTests : IDisposable
     [InlineData("SaveEap")]
     [InlineData("EntryMissing")]
     [InlineData("EapCredentialsMissing")]
+    [InlineData("EapCredentialsOfAnotherCertificate")]
     public async Task Renewal_AnyIntermediateStepFails_TheOldCertificateIsNotDeleted_AndTheStateIsNotChanged(string failure)
     {
         var (orchestrator, state, vpn, _, old, _) = SetUpRenewal();
         vpn.ThrowOnSaveEap = failure == "SaveEap";
         vpn.EntryExists = failure != "EntryMissing";
-        vpn.EapCredentialsSaved = failure != "EapCredentialsMissing";
+        vpn.NoSavedCredentials = failure == "EapCredentialsMissing";
+        vpn.SavedThumbprintOverride = failure == "EapCredentialsOfAnotherCertificate" ? "ABCDEF0123456789ABCDEF0123456789ABCDEF01" : null;
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => orchestrator.RenewIfDueAsync(state, CancellationToken.None));
 
@@ -233,7 +244,7 @@ public sealed class ConfigurationOrderTests : IDisposable
 
         Assert.Equal(profile.Cn, record.Cn);
         Assert.Equal(
-            new[] { "InstallNewCertificate", "Configure", "SaveEap", "Exists", "HasEap", "Register", "CleanupStale" },
+            new[] { "InstallNewCertificate", "Configure", "SaveEap", "Exists", "SavedThumbprint", "Register", "CleanupStale" },
             _log);
         // Al registrar y limpiar, el estado de la conexion YA esta guardado con el certificado nuevo.
         Assert.True(lifecycle.RecordSavedAtRegister);
@@ -245,13 +256,15 @@ public sealed class ConfigurationOrderTests : IDisposable
     [InlineData("SaveEap")]
     [InlineData("EntryMissing")]
     [InlineData("EapCredentialsMissing")]
+    [InlineData("EapCredentialsOfAnotherCertificate")]
     public async Task Enrollment_AnyIntermediateStepFails_NothingIsCleanedUp_AndTheConnectionStateIsNotSaved(string failure)
     {
         var (orchestrator, profile, vpn, _) = SetUpEnrollment();
         vpn.ThrowOnConfigure = failure == "Configure";
         vpn.ThrowOnSaveEap = failure == "SaveEap";
         vpn.EntryExists = failure != "EntryMissing";
-        vpn.EapCredentialsSaved = failure != "EapCredentialsMissing";
+        vpn.NoSavedCredentials = failure == "EapCredentialsMissing";
+        vpn.SavedThumbprintOverride = failure == "EapCredentialsOfAnotherCertificate" ? "ABCDEF0123456789ABCDEF0123456789ABCDEF01" : null;
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => orchestrator.EnrollAsync(profile, CancellationToken.None));
 

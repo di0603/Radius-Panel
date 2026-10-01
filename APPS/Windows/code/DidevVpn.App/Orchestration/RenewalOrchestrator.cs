@@ -109,7 +109,7 @@ internal sealed class RenewalOrchestrator
         //  4. SOLO ENTONCES borrar el viejo y limpiar.
         // Si 1, 2 o 3 fallan, se lanza y el certificado anterior se conserva.
         _vpnConnectionService.SaveEapCredentials(state.Cn, installedCertificate);
-        ConnectionConfigurationCheck.EnsureConfigured(_vpnConnectionService, state.Cn);
+        ConnectionConfigurationCheck.EnsureConfigured(_vpnConnectionService, state.Cn, installedCertificate.Thumbprint);
 
         var previousThumbprint = currentCertificate.Thumbprint;
         _lifecycle.Register(installedCertificate, state.Cn, state.Server, state.Cn);

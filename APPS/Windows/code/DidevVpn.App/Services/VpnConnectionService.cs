@@ -49,8 +49,8 @@ internal sealed class VpnConnectionService : IVpnConnectionService
         _logger = logger;
     }
 
-    public bool HasEapCredentials(string connectionName) =>
-        _eapCredentials.GetStoredBlob(connectionName) is { Length: > 0 };
+    public string? GetSavedEapCertificateThumbprint(string connectionName) =>
+        _eapCredentials.GetSavedCertificateThumbprint(connectionName);
 
     public void SaveEapCredentials(string connectionName, System.Security.Cryptography.X509Certificates.X509Certificate2 certificate)
     {

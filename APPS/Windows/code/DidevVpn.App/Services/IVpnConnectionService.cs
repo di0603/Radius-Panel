@@ -24,8 +24,11 @@ internal interface IVpnConnectionService
     /// <summary>Guarda que la entrada use SIEMPRE este certificado de CurrentUser\My al conectar (credenciales EAP de usuario): sin esto Windows abre el selector de certificado. La entrada ya tiene que existir.</summary>
     void SaveEapCredentials(string connectionName, System.Security.Cryptography.X509Certificates.X509Certificate2 certificate);
 
-    /// <summary>La entrada tiene credenciales EAP guardadas (RasGetEapUserData devuelve datos). Para comprobar que quedo configurada antes de borrar nada.</summary>
-    bool HasEapCredentials(string connectionName);
+    /// <summary>
+    /// Huella SHA-1 del certificado para el que la app guardo las credenciales EAP de la entrada, o null si no hay credenciales
+    /// (o ya no son las que la app guardo). Para comprobar que quedo configurada CON EL CERTIFICADO NUEVO antes de borrar nada.
+    /// </summary>
+    string? GetSavedEapCertificateThumbprint(string connectionName);
 
     /// <summary>Lanza la conexion y espera a que RAS la dé por establecida (error o 60 s de limite lanzan excepcion).</summary>
     void Connect(string connectionName);

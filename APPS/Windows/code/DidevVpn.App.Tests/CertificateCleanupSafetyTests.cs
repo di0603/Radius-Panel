@@ -10,6 +10,7 @@ namespace DidevVpn.App.Tests;
 /// registro y el almacen SIMULADOS: nada de lo que se borra aqui existe de
 /// verdad. Lo que se comprueba es la decision de borrar o no.
 /// </summary>
+[Collection(ConnectionStoreCollection.Name)]
 public class CertificateCleanupSafetyTests
 {
     private sealed class InMemoryRegistry : IInstalledCertificateRegistry

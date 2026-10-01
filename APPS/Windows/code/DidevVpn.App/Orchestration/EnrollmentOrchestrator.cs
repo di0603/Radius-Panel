@@ -190,7 +190,7 @@ internal sealed class EnrollmentOrchestrator
         // Si 1, 2 o 3 fallan, se lanza y los certificados anteriores se conservan.
         ConfigureVpnConnection(profile, root, chain, installedCertificate);
         _vpnConnectionService.SaveEapCredentials(profile.Cn, installedCertificate);
-        ConnectionConfigurationCheck.EnsureConfigured(_vpnConnectionService, profile.Cn);
+        ConnectionConfigurationCheck.EnsureConfigured(_vpnConnectionService, profile.Cn, installedCertificate.Thumbprint);
 
         var record = new ConnectionRecord
         {

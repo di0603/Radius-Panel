@@ -17,6 +17,7 @@ namespace DidevVpn.App.Tests;
 /// abuso del servidor), por eso la renovacion real contra el panel no se puede
 /// repetir a voluntad. Todo lo que crea lo borra.
 /// </summary>
+[Collection(ConnectionStoreCollection.Name)]
 public sealed class RenewalEndToEndTests : IDisposable
 {
     private readonly List<string> _thumbprints = new();

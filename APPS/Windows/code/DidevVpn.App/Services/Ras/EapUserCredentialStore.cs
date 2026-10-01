@@ -11,6 +11,13 @@ internal interface IEapUserCredentialStore
 
     /// <summary>Blob EAP guardado para la entrada, o null si no hay ninguno. Para tests y diagnostico.</summary>
     byte[]? GetStoredBlob(string connectionName);
+
+    /// <summary>
+    /// Huella SHA-1 del certificado para el que ESTA app guardo las credenciales de la entrada, o null si no hay credenciales,
+    /// o si lo que Windows tiene guardado ya no es lo que la app guardo (alguien las sobrescribio). Ver la clase: el blob de
+    /// Windows no contiene la huella, asi que la app la anota al guardar y la valida contra el blob real.
+    /// </summary>
+    string? GetSavedCertificateThumbprint(string connectionName);
 }
 
 /// <summary>
@@ -69,7 +76,22 @@ internal sealed class EapUserCredentialStore : IEapUserCredentialStore
         RunOnSta(() => SaveCertificateCore(connectionName, certificate));
     }
 
-    public byte[]? GetStoredBlob(string connectionName)
+    public string? GetSavedCertificateThumbprint(string connectionName)
+    {
+        var record = SavedCredentialRegistry.Find(connectionName);
+        var current = ReadStoredBlob(connectionName);
+        if (record is null || current is null || current.Length == 0)
+        {
+            return null;
+        }
+        // Solo vale si Windows sigue teniendo EXACTAMENTE lo que la app guardo con esa huella.
+        var currentDigest = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(current));
+        return string.Equals(currentDigest, record.BlobSha256, StringComparison.OrdinalIgnoreCase) ? record.Thumbprint : null;
+    }
+
+    public byte[]? GetStoredBlob(string connectionName) => ReadStoredBlob(connectionName);
+
+    private static byte[]? ReadStoredBlob(string connectionName)
     {
         uint size = 0;
         var first = EapNative.RasGetEapUserDataW(IntPtr.Zero, null, connectionName, IntPtr.Zero, ref size);
@@ -124,6 +146,16 @@ internal sealed class EapUserCredentialStore : IEapUserCredentialStore
             {
                 throw new InvalidOperationException($"RasSetEapUserDataW devolvio el codigo {setResult} para \"{connectionName}\".");
             }
+
+            // El blob que guarda Windows (74 bytes, con punteros) NO contiene la huella del certificado ni es
+            // determinista: no se puede leer de vuelta de ahi (medido en el prompt 12.12). Se lee lo que Windows
+            // guardo de verdad y se anota, junto con la huella, en un registro propio (sin secretos).
+            var stored = ReadStoredBlob(connectionName);
+            if (stored is null || stored.Length == 0)
+            {
+                throw new InvalidOperationException($"Windows no devolvio las credenciales EAP recien guardadas de \"{connectionName}\".");
+            }
+            SavedCredentialRegistry.Record(connectionName, certificate.Thumbprint, stored);
         }
         finally
         {
@@ -257,6 +289,57 @@ internal sealed class EapUserCredentialStore : IEapUserCredentialStore
             if (_unknown != IntPtr.Zero) Marshal.Release(_unknown);
             if (Marshal.IsComObject(_element)) Marshal.ReleaseComObject(_element);
             if (Marshal.IsComObject(_document)) Marshal.ReleaseComObject(_document);
+        }
+    }
+
+    internal sealed record SavedCredentialRecord(string Thumbprint, string BlobSha256);
+
+    /// <summary>eap-credentials.json en %LOCALAPPDATA%\didev-vpn: entrada -> huella del certificado y SHA-256 del blob guardado. Sin secretos.</summary>
+    internal static class SavedCredentialRegistry
+    {
+        private static readonly object FileLock = new();
+        private static readonly System.Text.Json.JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+
+        private static string PathFile => System.IO.Path.Combine(AppPaths.DataDirectory, "eap-credentials.json");
+
+        public static void Record(string connectionName, string thumbprint, byte[] blob)
+        {
+            lock (FileLock)
+            {
+                var all = Load();
+                all[connectionName] = new SavedCredentialRecord(
+                    thumbprint, Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(blob)));
+                Directory.CreateDirectory(AppPaths.DataDirectory);
+                var temp = PathFile + ".tmp";
+                File.WriteAllText(temp, System.Text.Json.JsonSerializer.Serialize(all, JsonOptions));
+                File.Move(temp, PathFile, overwrite: true);
+            }
+        }
+
+        public static SavedCredentialRecord? Find(string connectionName)
+        {
+            lock (FileLock)
+            {
+                return Load().TryGetValue(connectionName, out var record) ? record : null;
+            }
+        }
+
+        private static Dictionary<string, SavedCredentialRecord> Load()
+        {
+            var empty = new Dictionary<string, SavedCredentialRecord>(StringComparer.OrdinalIgnoreCase);
+            if (!File.Exists(PathFile))
+            {
+                return empty;
+            }
+            try
+            {
+                var loaded = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, SavedCredentialRecord>>(File.ReadAllText(PathFile), JsonOptions);
+                return loaded is null ? empty : new Dictionary<string, SavedCredentialRecord>(loaded, StringComparer.OrdinalIgnoreCase);
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                return empty;
+            }
         }
     }
 

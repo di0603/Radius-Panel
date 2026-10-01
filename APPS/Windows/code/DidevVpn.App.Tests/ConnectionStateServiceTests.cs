@@ -14,7 +14,7 @@ public class ConnectionStateServiceTests
         public void CreateOrUpdateConnection(VpnConnectionSpec spec) => throw new NotSupportedException();
         public void RemoveConnection(string connectionName) => throw new NotSupportedException();
         public void SaveEapCredentials(string connectionName, System.Security.Cryptography.X509Certificates.X509Certificate2 certificate) => throw new NotSupportedException();
-        public bool HasEapCredentials(string connectionName) => throw new NotSupportedException();
+        public string? GetSavedEapCertificateThumbprint(string connectionName) => throw new NotSupportedException();
         public void Connect(string connectionName) => throw new NotSupportedException();
         public void Disconnect(string connectionName) => throw new NotSupportedException();
 

@@ -87,4 +87,61 @@ public class EapUserCredentialStoreTests
             store.Remove(cert);
         }
     }
+
+    private static X509Certificate2 NewCertificate(string cn)
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var request = new CertificateRequest($"CN={cn}", key, HashAlgorithmName.SHA256);
+        var now = DateTimeOffset.UtcNow;
+        using var created = request.CreateSelfSigned(now.AddMinutes(-5), now.AddDays(1));
+        return new X509Certificate2(created.RawData);
+    }
+
+    /// <summary>
+    /// Integracion REAL: tras guardar, la huella se lee de vuelta; al guardar otro
+    /// certificado cambia; y si lo que Windows tiene guardado deja de ser lo que la app
+    /// anoto (alguien lo sobrescribio por fuera), devuelve null en vez de una huella falsa.
+    /// </summary>
+    [Fact]
+    public void GetSavedCertificateThumbprint_ReturnsTheSavedCertificate_AndDetectsAForeignOverwrite()
+    {
+        var entryName = $"didev-test-thumb-{Guid.NewGuid():N}"[..28];
+        using var certA = NewCertificate("thumb-a");
+        using var certB = NewCertificate("thumb-b");
+        var credentials = new EapUserCredentialStore();
+        var registryFile = System.IO.Path.Combine(DidevVpn.App.Services.AppPaths.DataDirectory, "eap-credentials.json");
+        try
+        {
+            PowerShellRunner.RunScript(
+                $"Add-VpnConnection -Name '{entryName}' -ServerAddress '203.0.113.1' -TunnelType Ikev2 -AuthenticationMethod MachineCertificate -Force | Out-Null");
+
+            Assert.Null(credentials.GetSavedCertificateThumbprint(entryName));
+
+            credentials.SaveCertificate(entryName, certA);
+            Assert.Equal(certA.Thumbprint, credentials.GetSavedCertificateThumbprint(entryName));
+            var registryAfterA = File.ReadAllText(registryFile);
+
+            credentials.SaveCertificate(entryName, certB);
+            Assert.Equal(certB.Thumbprint, credentials.GetSavedCertificateThumbprint(entryName));
+
+            // Sobrescritura "por fuera": Windows tiene las credenciales de B pero el registro de la app dice A.
+            File.WriteAllText(registryFile, registryAfterA);
+            Assert.Null(credentials.GetSavedCertificateThumbprint(entryName));
+
+            // El registro propio no lleva secretos: solo huella y digest del blob.
+            Assert.DoesNotContain("PRIVATE", registryAfterA, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            try
+            {
+                PowerShellRunner.RunScript(
+                    $"if (Get-VpnConnection -Name '{entryName}' -ErrorAction SilentlyContinue) {{ Remove-VpnConnection -Name '{entryName}' -Force }}");
+            }
+            catch
+            {
+                // best effort
+            }
+        }
+    }
 }
