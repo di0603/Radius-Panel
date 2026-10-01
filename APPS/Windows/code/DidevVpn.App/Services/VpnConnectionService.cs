@@ -386,6 +386,13 @@ internal sealed class VpnConnectionService : IVpnConnectionService
     /// solo el certificado de ESTE dispositivo encaja y SimpleCertSelection no
     /// tiene que elegir entre varios en CurrentUser\My (sin eso rasdial.exe
     /// falla con el error 703 porque no hay consola con la que preguntar).
+    ///
+    /// DisableUserPromptForServerValidation = true (prompt 12.9): nadie acepta
+    /// "a ciegas" otro servidor, porque la raiz (TrustedRootCA) y el nombre
+    /// (ServerNames) ya van fijados aqui: si el servidor no valida, falla
+    /// CERRADO, no pregunta. Medido en un equipo real con un solo certificado:
+    /// rasdial conecta con las cuatro combinaciones de este flag y
+    /// RememberCredential, asi que RememberCredential NO hace falta y no se usa.
     /// </summary>
     internal static string BuildEapConfigXml(string serverName, string rootThumbprintSha1, string clientCertificateIssuerThumbprintSha1) =>
         "<EapHostConfig xmlns=\"http://www.microsoft.com/provisioning/EapHostConfig\">" +
@@ -401,7 +408,7 @@ internal sealed class VpnConnectionService : IVpnConnectionService
         "<EapType xmlns=\"http://www.microsoft.com/provisioning/EapTlsConnectionPropertiesV1\">" +
         "<CredentialsSource><CertificateStore><SimpleCertSelection>true</SimpleCertSelection></CertificateStore></CredentialsSource>" +
         "<ServerValidation>" +
-        "<DisableUserPromptForServerValidation>false</DisableUserPromptForServerValidation>" +
+        "<DisableUserPromptForServerValidation>true</DisableUserPromptForServerValidation>" +
         $"<ServerNames>{System.Security.SecurityElement.Escape(serverName)}</ServerNames>" +
         $"<TrustedRootCA>{FormatThumbprint(rootThumbprintSha1)}</TrustedRootCA>" +
         "</ServerValidation>" +

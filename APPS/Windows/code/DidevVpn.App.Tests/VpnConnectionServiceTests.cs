@@ -134,4 +134,18 @@ public class VpnConnectionServiceTests
             try { File.Delete(xmlPath); } catch { /* best effort */ }
         }
     }
+
+    [Fact]
+    public void BuildEapConfigXml_NeverAsksTheUserToAcceptAServer_ButPinsRootAndServerName()
+    {
+        var xml = System.Xml.Linq.XDocument.Parse(
+            VpnConnectionService.BuildEapConfigXml("radius.vpn.example.org", "AABBCC", "DDEEFF"));
+
+        string Value(string name) => xml.Descendants().Single(e => e.Name.LocalName == name).Value;
+
+        Assert.Equal("true", Value("DisableUserPromptForServerValidation"));
+        Assert.Equal("radius.vpn.example.org", Value("ServerNames"));
+        Assert.Equal("aa bb cc ", Value("TrustedRootCA"));
+        Assert.Equal("true", Value("PerformServerValidation"));
+    }
 }
