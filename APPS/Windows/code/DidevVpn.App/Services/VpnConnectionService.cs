@@ -197,6 +197,60 @@ internal sealed class VpnConnectionService : IVpnConnectionService
                 "abriendo el dialogo nativo (rasphone.exe -d) como ultimo recurso.");
             RunRasPhoneDialog(connectionName);
         }
+
+        // El resultado NO se deduce del codigo de salida (rasphone sale al
+        // instante; rasdial puede salir antes de que el tunel este arriba):
+        // se sigue la fase real de RAS hasta Connected, error o 60 s.
+        WaitForConnected(connectionName);
+    }
+
+    public RasPhaseInfo GetConnectionPhase(string connectionName)
+    {
+        if (!_nativeReaderFailed)
+        {
+            try
+            {
+                return _rasReader.GetPhase(connectionName);
+            }
+            catch (Exception ex)
+            {
+                OnNativeReaderFailure(ex);
+            }
+        }
+        return new RasPhaseInfo(IsConnectedViaPowerShell(connectionName) ? RasPhase.Connected : RasPhase.Disconnected);
+    }
+
+    private void WaitForConnected(string connectionName)
+    {
+        var result = ConnectionWaiter
+            .WaitUntilSettledAsync(
+                () => GetConnectionPhase(connectionName),
+                ConnectionWaiter.DefaultTimeout,
+                ConnectionWaiter.DefaultPollInterval)
+            .GetAwaiter().GetResult();
+
+        switch (result.Outcome)
+        {
+            case WaitOutcome.Connected:
+                _logger?.Info($"\"{connectionName}\" conectada.");
+                return;
+            case WaitOutcome.Failed:
+                var detail = result.Error != 0 ? $"{RasErrorText(result.Error)} (codigo {result.Error})" : "la conexion se cerro antes de establecerse";
+                _logger?.Warn($"\"{connectionName}\" no se ha podido conectar: {detail}");
+                throw new InvalidOperationException($"No se ha podido conectar: {detail}.");
+            default:
+                _logger?.Warn($"\"{connectionName}\" no se ha establecido en {ConnectionWaiter.DefaultTimeout.TotalSeconds:0} s.");
+                throw new TimeoutException(
+                    $"La conexion no se ha establecido en {ConnectionWaiter.DefaultTimeout.TotalSeconds:0} segundos.");
+        }
+    }
+
+    private static string RasErrorText(int error)
+    {
+        var text = new StringBuilder(512);
+        return RasInterop.RasGetErrorStringW((uint)error, text, (uint)text.Capacity) == 0
+            ? text.ToString().Trim()
+            : $"error RAS {error}";
     }
 
     public void Disconnect(string connectionName) => RunRasDialExe(connectionName, disconnect: true);

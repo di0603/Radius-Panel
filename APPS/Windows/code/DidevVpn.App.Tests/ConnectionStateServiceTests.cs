@@ -27,6 +27,11 @@ public class ConnectionStateServiceTests
             return States.TryGetValue(connectionName, out var s) && s.Exists;
         }
 
+        public Services.Ras.RasPhaseInfo GetConnectionPhase(string connectionName) =>
+            States.TryGetValue(connectionName, out var s) && s.Connected
+                ? new Services.Ras.RasPhaseInfo(Services.Ras.RasPhase.Connected)
+                : new Services.Ras.RasPhaseInfo(Services.Ras.RasPhase.Disconnected);
+
         public bool IsConnected(string connectionName) =>
             States.TryGetValue(connectionName, out var s) && s.Connected;
 

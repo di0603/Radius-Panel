@@ -51,7 +51,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             ContextMenuStrip = new ContextMenuStrip(),
         };
 
-        _stateService = new ConnectionStateService(_vpnService, ConnectionStore.List, _logger);
+        _stateService = new ConnectionStateService(_vpnService, ConnectionStore.List, _logger, new Services.Ras.RasConnectionMonitor(_logger));
         _stateService.StateChanged += OnStateChanged;
 
         _managerForm = new ConnectionManagerForm(

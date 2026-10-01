@@ -1,9 +1,10 @@
 using System.Net.NetworkInformation;
+using DidevVpn.App.Services.Ras;
 using DidevVpn.Core.Net;
 
 namespace DidevVpn.App.Services;
 
-internal readonly record struct ConnectionRuntimeState(bool Connected, string? Ipv4Address);
+internal readonly record struct ConnectionRuntimeState(bool Connected, string? Ipv4Address, bool Connecting = false);
 
 /// <summary>
 /// Cache compartida del estado de todas las conexiones (existe/conectada/IP),
@@ -31,14 +32,17 @@ internal sealed class ConnectionStateService : IDisposable
     private readonly SynchronizationContext? _uiContext;
     private readonly object _cacheLock = new();
     private Dictionary<string, ConnectionRuntimeState> _cache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly IConnectionChangeNotifier? _notifier;
     private int _refreshing;
+    private int _refreshPending;
     private bool _disposed;
 
     /// <summary>Se entrega en el hilo de interfaz (ver comentario de la clase). Los suscriptores NO necesitan BeginInvoke propio.</summary>
     public event Action? StateChanged;
 
     public ConnectionStateService(
-        IVpnConnectionService vpnService, Func<IReadOnlyList<ConnectionRecord>> loadConnections, FileLogger logger)
+        IVpnConnectionService vpnService, Func<IReadOnlyList<ConnectionRecord>> loadConnections, FileLogger logger,
+        IConnectionChangeNotifier? notifier = null)
     {
         _vpnService = vpnService;
         _loadConnections = loadConnections;
@@ -51,6 +55,15 @@ internal sealed class ConnectionStateService : IDisposable
         _uiContext = SynchronizationContext.Current ?? new System.Windows.Forms.WindowsFormsSynchronizationContext();
         _debouncer = new Debouncer(DebounceWindow, () => _ = RefreshAsync());
 
+        // Notificaciones de RAS (prompt 12.8, punto 2): conexion establecida o
+        // caida desde cualquier sitio (esta app, rasphone, panel de Windows,
+        // perdida de red) -> refresco inmediato, sin el debounce de red.
+        _notifier = notifier;
+        if (_notifier is not null)
+        {
+            _notifier.Changed += OnRasChanged;
+        }
+
         NetworkChange.NetworkAddressChanged += OnNetworkChanged;
         NetworkChange.NetworkAvailabilityChanged += OnNetworkAvailabilityChanged;
 
@@ -58,6 +71,8 @@ internal sealed class ConnectionStateService : IDisposable
         _fallbackTimer.Tick += (_, _) => RequestRefresh();
         _fallbackTimer.Start();
     }
+
+    private void OnRasChanged() => _ = RefreshAsync();
 
     private void OnNetworkChanged(object? sender, EventArgs e) => RequestRefresh();
 
@@ -83,11 +98,18 @@ internal sealed class ConnectionStateService : IDisposable
     {
         if (Interlocked.Exchange(ref _refreshing, 1) == 1)
         {
+            // Ya hay uno en marcha, pero pudo leer el estado ANTES de este
+            // cambio: se anota para repetir una vez al terminar (sin esto, una
+            // notificacion de RAS que llega en mitad de un refresco se perderia).
+            Interlocked.Exchange(ref _refreshPending, 1);
             return;
         }
 
         try
         {
+          do
+          {
+            Interlocked.Exchange(ref _refreshPending, 0);
             var connections = _loadConnections();
             var newCache = await Task.Run(() =>
             {
@@ -105,6 +127,7 @@ internal sealed class ConnectionStateService : IDisposable
             }
 
             RaiseStateChanged();
+          } while (Volatile.Read(ref _refreshPending) == 1 && !_disposed);
         }
         finally
         {
@@ -121,9 +144,10 @@ internal sealed class ConnectionStateService : IDisposable
             {
                 return default;
             }
-            var connected = _vpnService.IsConnected(cn);
+            var phase = _vpnService.GetConnectionPhase(cn).Phase;
+            var connected = phase == RasPhase.Connected;
             var ip = connected ? _vpnService.GetAssignedIPv4Address(cn) : null;
-            return new ConnectionRuntimeState(connected, ip);
+            return new ConnectionRuntimeState(connected, ip, Connecting: phase == RasPhase.Connecting);
         }
         catch (Exception ex)
         {
@@ -151,6 +175,11 @@ internal sealed class ConnectionStateService : IDisposable
     public void Dispose()
     {
         _disposed = true;
+        if (_notifier is not null)
+        {
+            _notifier.Changed -= OnRasChanged;
+            _notifier.Dispose();
+        }
         NetworkChange.NetworkAddressChanged -= OnNetworkChanged;
         NetworkChange.NetworkAvailabilityChanged -= OnNetworkAvailabilityChanged;
         _fallbackTimer.Stop();

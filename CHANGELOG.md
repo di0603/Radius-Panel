@@ -7,6 +7,24 @@ Este proyecto usa versionado semantico.
 
 ### Anadido
 
+- **Prompt 12.8 (punto 2, Windows: estado real)**: tras conectar -sobre todo
+  por `rasphone`, que sale al instante y es la persona quien marca- la app
+  mostraba "Desconectado" aunque el tunel estuviera arriba, porque leia el
+  estado una sola vez justo despues de lanzar. Ahora `Connect` no deduce nada
+  del codigo de salida: sigue la fase real de RAS (`RasEnumConnections` +
+  `RasGetConnectStatus`) hasta Connected, error (con el texto de
+  `RasGetErrorString`) o 60 s (`ConnectionWaiter`, maquina de estados
+  probada con RAS simulado). Ademas `RasConnectionMonitor` se suscribe con
+  `RasConnectionNotification` (RASCN_Connection | RASCN_Disconnection, un
+  evento, todas las conexiones) y `ConnectionStateService` -el servicio unico
+  de bandeja y ventana- refresca al instante si la conexion sube o cae desde
+  fuera de la app (rasphone, panel de Windows, perdida de red); un cambio que
+  llega en mitad de un refresco ya no se pierde (repite una vez). Nuevo
+  estado "Conectando..." en la ventana.
+  - Tests: `ConnectionPhaseTests` (esperas, errores, cancelar el dialogo,
+    limite de tiempo, clasificacion de estados RAS, notificacion -> refresco)
+    y un test real de que el monitor se registra en Windows y se detiene.
+
 - **Prompt 12.8 (punto 1, Windows: conectar sin dialogos)**: EAP-TLS por
   IKEv2 abria siempre el selector de certificado al conectar, aunque solo
   hubiera un candidato (el filtro por emisor del 12.7 no basto, comprobado en

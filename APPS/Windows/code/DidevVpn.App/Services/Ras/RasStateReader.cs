@@ -2,6 +2,17 @@ namespace DidevVpn.App.Services.Ras;
 
 internal readonly record struct RasConnectionState(bool Connected, string? Ipv4Address);
 
+/// <summary>Fase de una conexion RAS: no aparece en la lista de activas / marcando (IKE, EAP...) / establecida / fallo con codigo RAS.</summary>
+internal enum RasPhase
+{
+    Disconnected,
+    Connecting,
+    Connected,
+    Failed,
+}
+
+internal readonly record struct RasPhaseInfo(RasPhase Phase, int Error = 0);
+
 /// <summary>Separado de la implementacion nativa para poder probar ConnectionStateService con un lector falso (ver DidevVpn.App.Tests).</summary>
 internal interface IRasStateReader
 {
@@ -10,6 +21,9 @@ internal interface IRasStateReader
 
     /// <summary>Estado de una conexion ACTIVA (RasEnumConnections); Connected=false si no aparece ahi -ni conectando ni conectada-.</summary>
     RasConnectionState GetState(string connectionName);
+
+    /// <summary>Fase actual (RasEnumConnections + RasGetConnectStatus), con el codigo de error RAS si ha fallado.</summary>
+    RasPhaseInfo GetPhase(string connectionName);
 }
 
 /// <summary>
@@ -63,6 +77,40 @@ internal sealed class RasStateReader : IRasStateReader
         }
 
         return new RasConnectionState(false, null);
+    }
+
+    public RasPhaseInfo GetPhase(string connectionName)
+    {
+        foreach (var conn in EnumConnections())
+        {
+            if (!string.Equals(conn.szEntryName, connectionName, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var status = new RasInterop.RasConnStatus { dwSize = RasInterop.RasConnStatus.Size };
+            if (RasInterop.RasGetConnectStatusW(conn.hrasconn, ref status) != RasInterop.ErrorSuccess)
+            {
+                return new RasPhaseInfo(RasPhase.Disconnected);
+            }
+            return ClassifyStatus(status.rasconnstate, status.dwError);
+        }
+        return new RasPhaseInfo(RasPhase.Disconnected);
+    }
+
+    /// <summary>Separado para poder probar la clasificacion sin Windows: error distinto de 0 = fallo; Connected = conectada; Disconnected = ya no; el resto = marcando.</summary>
+    internal static RasPhaseInfo ClassifyStatus(RasInterop.RasConnState state, int error)
+    {
+        if (error != 0)
+        {
+            return new RasPhaseInfo(RasPhase.Failed, error);
+        }
+        return state switch
+        {
+            RasInterop.RasConnState.Connected => new RasPhaseInfo(RasPhase.Connected),
+            RasInterop.RasConnState.Disconnected => new RasPhaseInfo(RasPhase.Disconnected),
+            _ => new RasPhaseInfo(RasPhase.Connecting),
+        };
     }
 
     private static string? TryGetIpv4(IntPtr hrasconn)

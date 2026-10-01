@@ -327,6 +327,11 @@ internal sealed class ConnectionManagerForm : Form
             row.Status.Text = "◐ Trabajando...";
             row.Status.ForeColor = Color.FromArgb(230, 200, 110);
         }
+        else if (state.Connecting)
+        {
+            row.Status.Text = "◐ Conectando...";
+            row.Status.ForeColor = Color.FromArgb(230, 200, 110);
+        }
         else
         {
             row.Status.Text = state.Connected ? "● Conectado" : "● Desconectado";
@@ -358,9 +363,10 @@ internal sealed class ConnectionManagerForm : Form
         _connectionName.Text = connection.Cn;
         _serverName.Text = connection.Server;
         _serverValue.Text = connection.Server;
-        _connectionState.Text = busy ? "Trabajando..." : state.Connected ? "Conectado" : "Desconectado";
-        _connectionState.ForeColor = busy ? Color.FromArgb(200, 160, 40) : state.Connected ? ConnectedColor : Muted;
-        _stateMark.ForeColor = busy ? Color.FromArgb(200, 160, 40) : state.Connected ? ConnectedColor : Color.FromArgb(144, 155, 160);
+        var inProgress = busy || state.Connecting;
+        _connectionState.Text = busy ? "Trabajando..." : state.Connecting ? "Conectando..." : state.Connected ? "Conectado" : "Desconectado";
+        _connectionState.ForeColor = inProgress ? Color.FromArgb(200, 160, 40) : state.Connected ? ConnectedColor : Muted;
+        _stateMark.ForeColor = inProgress ? Color.FromArgb(200, 160, 40) : state.Connected ? ConnectedColor : Color.FromArgb(144, 155, 160);
         _connectButton.Text = busy ? "Trabajando..." : state.Connected ? "Desconectar" : "Conectar";
         _connectButton.Enabled = !busy;
         _tunnelValue.Text = connection.TunnelMode.Equals("split", StringComparison.OrdinalIgnoreCase) ? "Túnel dividido" : "Túnel completo";

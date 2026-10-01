@@ -158,6 +158,17 @@ internal static class RasInterop
         public static int Size => Marshal.SizeOf<RasEntryName>();
     }
 
+    /// <summary>hrasconn = INVALID_HANDLE_VALUE (-1) significa "todas las conexiones", segun Ras.h/MSDN.</summary>
+    public static readonly IntPtr AllConnections = new(-1);
+    public const uint RasCnConnection = 0x1;
+    public const uint RasCnDisconnection = 0x2;
+
+    [DllImport("rasapi32.dll", CharSet = CharSet.Unicode, SetLastError = false)]
+    public static extern int RasConnectionNotificationW(IntPtr hrasconn, IntPtr hEvent, uint dwFlags);
+
+    [DllImport("rasapi32.dll", CharSet = CharSet.Unicode, SetLastError = false)]
+    public static extern int RasGetErrorStringW(uint uErrorValue, [Out] System.Text.StringBuilder lpszErrorString, uint cBufSize);
+
     [DllImport("rasapi32.dll", CharSet = CharSet.Unicode, SetLastError = false)]
     public static extern int RasEnumConnectionsW(
         [In, Out] RasConn[]? lprasconn, ref int lpcb, out int lpcConnections);
