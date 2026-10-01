@@ -7,6 +7,29 @@ Este proyecto usa versionado semantico.
 
 ### Anadido
 
+- **Prompt 12.8 (punto 3, Windows: panel de detalles)**: debajo de la
+  conexion, cuando esta Conectada, la ventana muestra el estado y el tiempo
+  conectado (`RasGetConnectionStatistics`), la IP resuelta del servidor, la
+  IPv4 y mascara, la puerta de enlace ("Punto a punto (sin puerta de enlace)",
+  con ayuda emergente: IKEv2 en Windows siempre da 0.0.0.0), los DNS recibidos,
+  el modo de tunel REAL leido de la tabla de rutas de la interfaz
+  (`GetIpForwardTable`: completo si hay 0.0.0.0/0, o la pareja 0.0.0.0/1 +
+  128.0.0.0/1; dividido con la lista de redes), el MTU, los bytes enviados y
+  recibidos (64 bits, `NetworkInterface`) con la velocidad actual de subida y
+  bajada, y el certificado (CN, caducidad, emisor, proveedor de la clave: TPM
+  o software). Sin PowerShell. Se actualiza cada 1,5 s SOLO con la ventana
+  visible (ni oculta ni minimizada) y la conexion conectada, en un hilo de
+  fondo; las filas se actualizan en sitio (el `Label` solo cambia si cambia el
+  texto), sin parpadeo. Boton "Copiar detalles" (texto plano, sin secretos).
+  - No se muestran los algoritmos IKE/ESP negociados: leerlos exige admin
+    (`Get-VpnConnectionIPsecConfiguration`/ETW) y se prefiere omitirlo a pedir
+    elevacion.
+  - Logica pura en `DidevVpn.Core.Net` (`TrafficFormatter`, `ThroughputMeter`,
+    `RouteSummary`, `ConnectionDetails`/`ConnectionDetailsText`), probada sin
+    Windows; `ConnectionDetailsCollector` (nativo) probado contra un adaptador
+    real; el formulario se construye y refresca en un test (STA) y se verifico
+    visualmente con una captura renderizada con datos simulados.
+
 - **Prompt 12.8 (punto 2, Windows: estado real)**: tras conectar -sobre todo
   por `rasphone`, que sale al instante y es la persona quien marca- la app
   mostraba "Desconectado" aunque el tunel estuviera arriba, porque leia el

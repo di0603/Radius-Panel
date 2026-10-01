@@ -24,6 +24,9 @@ internal interface IRasStateReader
 
     /// <summary>Fase actual (RasEnumConnections + RasGetConnectStatus), con el codigo de error RAS si ha fallado.</summary>
     RasPhaseInfo GetPhase(string connectionName);
+
+    /// <summary>Tiempo que lleva conectada (RasGetConnectionStatistics), o null si no esta activa.</summary>
+    TimeSpan? GetConnectedDuration(string connectionName);
 }
 
 /// <summary>
@@ -77,6 +80,22 @@ internal sealed class RasStateReader : IRasStateReader
         }
 
         return new RasConnectionState(false, null);
+    }
+
+    public TimeSpan? GetConnectedDuration(string connectionName)
+    {
+        foreach (var conn in EnumConnections())
+        {
+            if (!string.Equals(conn.szEntryName, connectionName, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+            var stats = new RasInterop.RasStats { dwSize = RasInterop.RasStats.Size };
+            return RasInterop.RasGetConnectionStatistics(conn.hrasconn, ref stats) == RasInterop.ErrorSuccess
+                ? TimeSpan.FromMilliseconds(stats.dwConnectDuration)
+                : null;
+        }
+        return null;
     }
 
     public RasPhaseInfo GetPhase(string connectionName)

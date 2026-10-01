@@ -61,7 +61,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
             ToggleConnection,
             ShowConnectionStatus,
             RemoveConnection,
-            IsBusy);
+            IsBusy,
+            new ConnectionDetailsCollector());
         _notifyIcon.DoubleClick += (_, _) => ShowManager();
 
         BuildMenu();

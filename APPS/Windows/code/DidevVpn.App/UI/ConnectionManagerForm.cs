@@ -1,4 +1,5 @@
 using DidevVpn.App.Services;
+using DidevVpn.Core.Net;
 
 namespace DidevVpn.App.UI;
 
@@ -50,8 +51,19 @@ internal sealed class ConnectionManagerForm : Form
     private Label _keyValue = null!;
     private Label _lastIssuedValue = null!;
     private Button _connectButton = null!;
+    private Button _copyButton = null!;
     private string? _selectedCn;
     private bool _refreshing;
+
+    // Panel de detalles (prompt 12.8, punto 3).
+    private readonly IConnectionDetailsCollector? _detailsCollector;
+    private readonly System.Windows.Forms.Timer _detailsTimer = new() { Interval = 1500 };
+    private readonly ToolTip _toolTip = new() { AutoPopDelay = 12000, InitialDelay = 300 };
+    private readonly List<Control> _detailControls = new();
+    private readonly Dictionary<string, Label> _detailValues = new();
+    private ConnectionDetails? _lastDetails;
+    private string? _detailsFor;
+    private int _collecting;
 
     public ConnectionManagerForm(
         Func<IReadOnlyList<ConnectionRecord>> loadConnections,
@@ -60,8 +72,10 @@ internal sealed class ConnectionManagerForm : Form
         Action<string, bool> toggleConnection,
         Action<string> showStatus,
         Action<string> removeConnection,
-        Func<string, bool> isBusy)
+        Func<string, bool> isBusy,
+        IConnectionDetailsCollector? detailsCollector = null)
     {
+        _detailsCollector = detailsCollector;
         _loadConnections = loadConnections;
         _getState = getState;
         _import = import;
@@ -72,8 +86,9 @@ internal sealed class ConnectionManagerForm : Form
 
         Text = "didev VPN";
         Width = 1000;
-        Height = 650;
-        MinimumSize = new Size(820, 520);
+        Height = 780;
+        MinimumSize = new Size(820, 560);
+        DoubleBuffered = true;
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Canvas;
         ForeColor = Ink;
@@ -153,6 +168,11 @@ internal sealed class ConnectionManagerForm : Form
             Font = new Font("Segoe UI", 8f),
         }, 0, 2);
 
+        // El sondeo de detalles solo corre con la ventana visible (no minimizada).
+        VisibleChanged += (_, _) => UpdateDetailsTimer();
+        SizeChanged += (_, _) => UpdateDetailsTimer();
+        _detailsTimer.Tick += (_, _) => CollectDetailsNow();
+
         FormClosing += (_, e) =>
         {
             if (e.CloseReason == CloseReason.UserClosing)
@@ -223,6 +243,7 @@ internal sealed class ConnectionManagerForm : Form
                 _selectedView.BringToFront();
                 UpdateSelectedDetails();
             }
+            UpdateDetailsTimer();
         }
         finally
         {
@@ -246,7 +267,7 @@ internal sealed class ConnectionManagerForm : Form
     {
         var view = new Panel { Dock = DockStyle.Fill, BackColor = Canvas, Visible = false };
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, BackColor = Canvas, Padding = new Padding(0, 4, 0, 0) };
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 152));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 132));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 60));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 55));
@@ -267,19 +288,38 @@ internal sealed class ConnectionManagerForm : Form
         statusButton.Click += (_, _) => { if (_selectedCn is not null) _showStatus(_selectedCn); };
         var removeButton = CreateButton("Quitar", Color.White, Color.FromArgb(174, 56, 56), 100, 40, Color.FromArgb(231, 203, 203));
         removeButton.Click += (_, _) => RemoveSelectedConnection();
-        actions.Controls.AddRange(new Control[] { _connectButton, statusButton, removeButton });
+        _copyButton = CreateButton("Copiar detalles", Color.White, Ink, 150, 40, Color.FromArgb(213, 219, 221));
+        _copyButton.Enabled = false;
+        _copyButton.Click += (_, _) => CopyDetails();
+        actions.Controls.AddRange(new Control[] { _connectButton, statusButton, _copyButton, removeButton });
         layout.Controls.Add(actions, 0, 1);
 
-        var infoPanel = new Panel { Dock = DockStyle.Fill, BackColor = Color.White, BorderStyle = BorderStyle.FixedSingle, Padding = new Padding(22, 16, 22, 14) };
-        var infoLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 4, BackColor = Color.White };
-        infoLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35));
-        infoLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 65));
-        for (var i = 0; i < 4; i++) infoLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 25));
+        var infoPanel = new Panel { Dock = DockStyle.Fill, BackColor = Color.White, BorderStyle = BorderStyle.FixedSingle, Padding = new Padding(22, 12, 22, 12), AutoScroll = true };
+        var infoLayout = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2, BackColor = Color.White };
+        infoLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190));
+        infoLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         infoPanel.Controls.Add(infoLayout);
-        AddInfoRow(infoLayout, 0, "Servidor", out _serverValue);
-        AddInfoRow(infoLayout, 1, "Modo de túnel", out _tunnelValue);
-        AddInfoRow(infoLayout, 2, "Protección de clave", out _keyValue);
-        AddInfoRow(infoLayout, 3, "Última emisión", out _lastIssuedValue);
+        AddInfoRow(infoLayout, "Servidor", out _serverValue);
+        AddInfoRow(infoLayout, "Modo de túnel", out _tunnelValue);
+        AddInfoRow(infoLayout, "Protección de clave", out _keyValue);
+        AddInfoRow(infoLayout, "Última emisión", out _lastIssuedValue);
+
+        // Detalles de la conexion activa: filas que solo se ven conectada y se
+        // actualizan EN EL SITIO (mismo Label), sin reconstruir nada.
+        AddDetailHeader(infoLayout, "Detalles de la conexión");
+        AddDetailRow(infoLayout, "state", "Estado");
+        AddDetailRow(infoLayout, "serverIp", "IP del servidor");
+        AddDetailRow(infoLayout, "ipv4", "IPv4 asignada");
+        AddDetailRow(infoLayout, "gateway", "Puerta de enlace ⓘ", ConnectionDetailsText.PointToPointHelp);
+        AddDetailRow(infoLayout, "dns", "DNS recibidos");
+        AddDetailRow(infoLayout, "tunnel", "Túnel (rutas reales)");
+        AddDetailRow(infoLayout, "mtu", "MTU de la interfaz");
+        AddDetailRow(infoLayout, "traffic", "Tráfico (enviado / recibido)");
+        AddDetailRow(infoLayout, "speed", "Velocidad (subida / bajada)");
+        AddDetailRow(infoLayout, "cert", "Certificado");
+        AddDetailRow(infoLayout, "issuer", "Emisor");
+        AddDetailRow(infoLayout, "keyProvider", "Proveedor de la clave");
+        SetDetailsVisible(false);
         layout.Controls.Add(infoPanel, 0, 2);
         layout.Controls.Add(new Label
         {
@@ -296,7 +336,7 @@ internal sealed class ConnectionManagerForm : Form
     {
         var row = new Panel
         {
-            Width = 248,
+            Width = 236,
             Height = 72,
             Margin = new Padding(0, 0, 0, 8),
             Cursor = Cursors.Hand,
@@ -342,6 +382,8 @@ internal sealed class ConnectionManagerForm : Form
     private void SelectConnection(string cn)
     {
         _selectedCn = cn;
+        _lastDetails = null;
+        _detailsTimer.Stop(); // otra conexion: UpdateDetailsTimer rearranca el sondeo si procede
         UpdateSelectedDetails();
         RefreshConnections();
     }
@@ -416,10 +458,204 @@ internal sealed class ConnectionManagerForm : Form
         return button;
     }
 
-    private static void AddInfoRow(TableLayoutPanel layout, int row, string caption, out Label value)
+    private static void AddInfoRow(TableLayoutPanel layout, string caption, out Label value)
     {
-        layout.Controls.Add(new Label { Text = caption, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Muted, Font = new Font("Segoe UI", 9f) }, 0, row);
-        value = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Ink, Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold), AutoEllipsis = true };
+        var row = layout.RowCount++;
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.Controls.Add(MakeCaption(caption), 0, row);
+        value = MakeValue();
         layout.Controls.Add(value, 1, row);
+    }
+
+    private void AddDetailHeader(TableLayoutPanel layout, string text)
+    {
+        var row = layout.RowCount++;
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        var header = new Label
+        {
+            Text = text.ToUpperInvariant(),
+            AutoSize = true,
+            Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
+            ForeColor = Accent,
+            Margin = new Padding(0, 12, 0, 2),
+            Anchor = AnchorStyles.Left,
+        };
+        layout.Controls.Add(header, 0, row);
+        layout.SetColumnSpan(header, 2);
+        _detailControls.Add(header);
+    }
+
+    private void AddDetailRow(TableLayoutPanel layout, string key, string caption, string? help = null)
+    {
+        var row = layout.RowCount++;
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        var captionLabel = MakeCaption(caption);
+        var value = MakeValue();
+        value.MaximumSize = new Size(560, 0); // se parte en varias lineas (lista de rutas) en vez de salirse
+        layout.Controls.Add(captionLabel, 0, row);
+        layout.Controls.Add(value, 1, row);
+        if (help is not null)
+        {
+            _toolTip.SetToolTip(captionLabel, help);
+            _toolTip.SetToolTip(value, help);
+        }
+        _detailControls.Add(captionLabel);
+        _detailControls.Add(value);
+        _detailValues[key] = value;
+    }
+
+    private static Label MakeCaption(string text) => new()
+    {
+        Text = text,
+        AutoSize = true,
+        Anchor = AnchorStyles.Left | AnchorStyles.Top,
+        ForeColor = Muted,
+        Font = new Font("Segoe UI", 9f),
+        Margin = new Padding(0, 3, 8, 3),
+    };
+
+    private static Label MakeValue() => new()
+    {
+        AutoSize = true,
+        Anchor = AnchorStyles.Left | AnchorStyles.Top,
+        ForeColor = Ink,
+        Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold),
+        Margin = new Padding(0, 3, 0, 3),
+    };
+
+    private void SetDetailsVisible(bool visible)
+    {
+        foreach (var control in _detailControls)
+        {
+            if (control.Visible != visible)
+            {
+                control.Visible = visible;
+            }
+        }
+    }
+
+    /// <summary>El Label solo se toca si el texto cambia: sin parpadeo.</summary>
+    private static void SetText(Label label, string text)
+    {
+        if (!string.Equals(label.Text, text, StringComparison.Ordinal))
+        {
+            label.Text = text;
+        }
+    }
+
+    /// <summary>Sondeo cada 1,5 s SOLO con la ventana visible (no oculta ni minimizada) y la conexion seleccionada conectada.</summary>
+    private void UpdateDetailsTimer()
+    {
+        var connected = _selectedCn is not null && _getState(_selectedCn).Connected;
+        var want = _detailsCollector is not null && connected && Visible && WindowState != FormWindowState.Minimized;
+
+        if (want)
+        {
+            if (!_detailsTimer.Enabled)
+            {
+                _detailsTimer.Start();
+                CollectDetailsNow();
+            }
+            return;
+        }
+
+        _detailsTimer.Stop();
+        if (_detailsFor is not null)
+        {
+            _detailsCollector?.Forget(_detailsFor);
+            _detailsFor = null;
+        }
+        _lastDetails = null;
+        _copyButton.Enabled = false;
+        SetDetailsVisible(false);
+    }
+
+    private void CollectDetailsNow()
+    {
+        if (_detailsCollector is null || _selectedCn is null || Interlocked.Exchange(ref _collecting, 1) == 1)
+        {
+            return;
+        }
+
+        var cn = _selectedCn;
+        var record = _loadConnections().FirstOrDefault(c => string.Equals(c.Cn, cn, StringComparison.OrdinalIgnoreCase));
+        var state = _getState(cn);
+        if (record is null || !state.Connected)
+        {
+            Interlocked.Exchange(ref _collecting, 0);
+            return;
+        }
+
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                return _detailsCollector.Collect(record, state);
+            }
+            catch
+            {
+                return null;
+            }
+        }).ContinueWith(task =>
+        {
+            Interlocked.Exchange(ref _collecting, 0);
+            var details = task.Status == TaskStatus.RanToCompletion ? task.Result : null;
+            if (details is null || IsDisposed || !IsHandleCreated)
+            {
+                return;
+            }
+            try
+            {
+                BeginInvoke(() => ApplyDetails(cn, details));
+            }
+            catch (InvalidOperationException)
+            {
+                // la ventana se cerro mientras tanto
+            }
+        }, TaskScheduler.Default);
+    }
+
+    private void ApplyDetails(string cn, ConnectionDetails details)
+    {
+        if (!string.Equals(_selectedCn, cn, StringComparison.OrdinalIgnoreCase) || !_detailsTimer.Enabled)
+        {
+            return;
+        }
+
+        _lastDetails = details;
+        _detailsFor = cn;
+        _copyButton.Enabled = true;
+        SetDetailsVisible(true);
+
+        SetText(_detailValues["state"], details.ConnectedFor is { } span
+            ? $"Conectado · {TrafficFormatter.FormatDuration(span)}" + (details.ConnectedSince is { } since ? $"  (desde {since.ToLocalTime():dd/MM HH:mm})" : "")
+            : "Conectado");
+        SetText(_detailValues["serverIp"], details.ServerIp ?? "(sin resolver)");
+        SetText(_detailValues["ipv4"], details.Ipv4Address is null ? "-" : details.SubnetMask is null ? details.Ipv4Address : $"{details.Ipv4Address} / {details.SubnetMask}");
+        SetText(_detailValues["gateway"], ConnectionDetailsText.Gateway(details));
+        SetText(_detailValues["dns"], details.DnsServers.Count == 0 ? "-" : string.Join(", ", details.DnsServers));
+        SetText(_detailValues["tunnel"], ConnectionDetailsText.TunnelDescription(details));
+        SetText(_detailValues["mtu"], details.Mtu?.ToString() ?? "-");
+        SetText(_detailValues["traffic"], $"↑ {TrafficFormatter.FormatBytes(details.BytesSent)}    ↓ {TrafficFormatter.FormatBytes(details.BytesReceived)}");
+        SetText(_detailValues["speed"], $"↑ {TrafficFormatter.FormatSpeed(details.UploadBytesPerSecond)}    ↓ {TrafficFormatter.FormatSpeed(details.DownloadBytesPerSecond)}");
+        SetText(_detailValues["cert"], details.Certificate is { } cert ? $"{cert.CommonName} · caduca {cert.NotAfter.ToLocalTime():dd/MM/yyyy}" : "-");
+        SetText(_detailValues["issuer"], details.Certificate?.Issuer ?? "-");
+        SetText(_detailValues["keyProvider"], details.Certificate is { } c ? (c.IsTpm ? $"{c.KeyProvider} (TPM)" : c.KeyProvider) : "-");
+    }
+
+    private void CopyDetails()
+    {
+        if (_lastDetails is null)
+        {
+            return;
+        }
+        try
+        {
+            Clipboard.SetText(ConnectionDetailsText.Build(_lastDetails));
+        }
+        catch (System.Runtime.InteropServices.ExternalException)
+        {
+            // el portapapeles puede estar ocupado por otra app: el usuario puede reintentar
+        }
     }
 }

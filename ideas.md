@@ -423,10 +423,10 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
   `didev-vpn-windows` como cliente generico va en
   `feat/vpn-12-windows-wip`. Detalle completo en el CHANGELOG.
 - [ ] **Prompt 12.8 (conectar sin dialogos, estado real y panel de detalles)**:
-  puntos 1 y 2 hechos (credenciales EAP de usuario guardadas con
+  puntos 1, 2 y 3 hechos (credenciales EAP de usuario guardadas con
   `RasSetEapUserDataW`; estado real con RasConnectionNotification y espera
-  hasta Connected/error/60 s); pendientes el panel de detalles (punto 3) y la
-  0.1.8 (punto 5). Rama
+  hasta Connected/error/60 s; panel de detalles nativo con "Copiar
+  detalles"); pendiente la 0.1.8 (punto 5). Rama
   `feat/vpn-12.7-windows-rendimiento`, pendiente de revision.
 - [x] **Prompt 12.7 (Windows: rendimiento)**: la app se congelaba varios
   segundos en cada refresco (cada consulta de estado lanzaba un

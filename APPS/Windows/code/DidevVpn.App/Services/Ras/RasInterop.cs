@@ -158,6 +158,32 @@ internal static class RasInterop
         public static int Size => Marshal.SizeOf<RasEntryName>();
     }
 
+    /// <summary>RAS_STATS de Ras.h: 15 DWORD (60 bytes). Los contadores de bytes son de 32 bits (dan la vuelta a los 4 GB): para bytes se usa NetworkInterface; de aqui solo se aprovecha dwConnectDuration (ms).</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RasStats
+    {
+        public int dwSize;
+        public uint dwBytesXmited;
+        public uint dwBytesRcved;
+        public uint dwFramesXmited;
+        public uint dwFramesRcved;
+        public uint dwCrcErr;
+        public uint dwTimeoutErr;
+        public uint dwAlignmentErr;
+        public uint dwHardwareOverrunErr;
+        public uint dwFramingErr;
+        public uint dwBufferOverrunErr;
+        public uint dwCompressionRatioIn;
+        public uint dwCompressionRatioOut;
+        public uint dwBps;
+        public uint dwConnectDuration;
+
+        public static int Size => Marshal.SizeOf<RasStats>();
+    }
+
+    [DllImport("rasapi32.dll", SetLastError = false)]
+    public static extern int RasGetConnectionStatistics(IntPtr hrasconn, ref RasStats lpStatistics);
+
     /// <summary>hrasconn = INVALID_HANDLE_VALUE (-1) significa "todas las conexiones", segun Ras.h/MSDN.</summary>
     public static readonly IntPtr AllConnections = new(-1);
     public const uint RasCnConnection = 0x1;
