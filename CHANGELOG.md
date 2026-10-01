@@ -7,6 +7,16 @@ Este proyecto usa versionado semantico.
 
 ### Anadido
 
+- **Prompt 12.9 (hotfix 0.1.10, Windows)**: al pulsar Conectar la 0.1.9 mostraba
+  un volcado `CultureNotFoundException: Only the invariant culture is supported
+  in globalization-invariant mode` (`TrafficFormatter..cctor`): la app se
+  publica con `InvariantGlobalization=true` y el formateador del panel de
+  detalles pedia `CultureInfo.GetCultureInfo("es-ES")`. Ahora usa un
+  `NumberFormatInfo` propio (coma decimal) sin depender de ninguna cultura. Los
+  tests no lo vieron porque su host NO era invariante: ahora los dos proyectos
+  de tests corren con `InvariantGlobalization=true` y hay un test-guarda que
+  falla si dejan de hacerlo.
+
 - **Prompt 12.9 (arreglos tras la prueba real de la 0.1.8, Windows)**:
   - **Estado de conexion (1, 2)**: la app esperaba 60 s y se quedaba en
     "Trabajando..." aunque el tunel estuviera arriba. Causa raiz, medida con la

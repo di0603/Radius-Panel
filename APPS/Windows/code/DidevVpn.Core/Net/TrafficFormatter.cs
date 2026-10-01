@@ -5,7 +5,11 @@ namespace DidevVpn.Core.Net;
 /// <summary>Formateo de bytes, velocidades y duraciones para el panel de detalles (siempre en espanol, coma decimal, independiente de la cultura del equipo para que sea determinista).</summary>
 public static class TrafficFormatter
 {
-    private static readonly CultureInfo Spanish = CultureInfo.GetCultureInfo("es-ES");
+    // NumberFormatInfo propio, NO CultureInfo.GetCultureInfo("es-ES"): la app se
+    // publica con InvariantGlobalization=true y en ese modo pedir cualquier
+    // cultura distinta de la invariante lanza CultureNotFoundException (fallo
+    // real en la 0.1.9 al pulsar Conectar, en el constructor estatico).
+    private static readonly NumberFormatInfo Spanish = new() { NumberDecimalSeparator = ",", NumberGroupSeparator = "." };
     private static readonly string[] Units = { "B", "KB", "MB", "GB", "TB" };
 
     public static string FormatBytes(long bytes) => FormatScaled(Math.Max(0, bytes));

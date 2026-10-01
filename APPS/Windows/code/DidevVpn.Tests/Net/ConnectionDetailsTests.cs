@@ -228,4 +228,23 @@ public class ConnectionDetailsTests
         Assert.False(summary.FullTunnel);
         Assert.Empty(summary.Networks);
     }
+
+    /// <summary>
+    /// La app se publica con InvariantGlobalization=true: pedir una cultura
+    /// concreta lanza CultureNotFoundException (fallo real de la 0.1.9 al pulsar
+    /// Conectar). Si este test falla, los tests ya no corren en el mismo modo que
+    /// la app y ese tipo de fallo volveria a pasar desapercibido.
+    /// </summary>
+    [Fact]
+    public void Tests_RunInInvariantGlobalizationMode_LikeTheShippedApp()
+    {
+        Assert.Throws<System.Globalization.CultureNotFoundException>(() => System.Globalization.CultureInfo.GetCultureInfo("es-ES"));
+    }
+
+    [Fact]
+    public void Formatter_DoesNotNeedAnySpecificCulture()
+    {
+        Assert.Equal("1,5 MB", TrafficFormatter.FormatBytes(1_572_864));
+        Assert.Equal("2,5 MB/s", TrafficFormatter.FormatSpeed(2.5 * 1024 * 1024));
+    }
 }
