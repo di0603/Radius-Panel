@@ -181,38 +181,52 @@ internal sealed class EnrollmentOrchestrator
         }
 
         using var certificateToRelease = installedCertificate;
+        // Solo se deshace un certificado que instalo ESTA ejecucion: uno reutilizado ya estaba ahi (y puede ser el unico valido).
+        var installedByThisRun = reusable is null;
 
         // ORDEN ESTRICTO (los certificados anteriores se borran al FINAL y solo si todo lo anterior salio bien):
         //  1. crear/actualizar la conexion con el certificado nuevo y guardar sus credenciales EAP;
         //  2. comprobar que la entrada existe y esas credenciales quedaron guardadas;
         //  3. guardar el estado de la conexion (ConnectionStore.Save);
         //  4. SOLO ENTONCES registrar y limpiar los anteriores (RegisterAndCleanUp).
-        // Si 1, 2 o 3 fallan, se lanza y los certificados anteriores se conservan.
-        ConfigureVpnConnection(profile, root, chain, installedCertificate);
-        _vpnConnectionService.SaveEapCredentials(profile.Cn, installedCertificate);
-        ConnectionConfigurationCheck.EnsureConfigured(_vpnConnectionService, profile.Cn, installedCertificate.Thumbprint);
-
-        var record = new ConnectionRecord
+        // Si 1, 2 o 3 fallan (y el certificado lo instalo esta ejecucion): ROLLBACK -se borra el certificado
+        // NUEVO con su clave, porque dos del mismo emisor provocan el selector de Windows (703)-, se
+        // conservan los anteriores y se relanza la excepcion original.
+        ConnectionRecord record;
+        try
         {
-            Cn = profile.Cn,
-            Server = profile.Server,
-            EstBaseUrl = profile.EstBaseUrl,
-            CaChainPem = profile.CaChainPem!,
-            RootCaSha256 = profile.RootCaSha256,
-            SignerKeySha256 = profile.SignerKeySha256,
-            CertificateThumbprint = installedCertificate.Thumbprint,
-            IsTpmBacked = isTpmBacked,
-            TunnelMode = profile.TunnelMode,
-            SplitRoutes = new List<string>(profile.SplitRoutes),
-            Dns = profile.Dns,
-            IkeEncryption = profile.Ike.Encryption,
-            IkeIntegrity = profile.Ike.Prf,
-            IkeDhGroup = profile.Ike.DhGroup,
-            EspEncryption = profile.Esp.Encryption,
-            EspPfsGroup = profile.Esp.DhGroup,
-            LastEnrolledAtUtc = DateTimeOffset.UtcNow,
-        };
-        ConnectionStore.Save(record);
+            ConfigureVpnConnection(profile, root, chain, installedCertificate);
+            _vpnConnectionService.SaveEapCredentials(profile.Cn, installedCertificate);
+            ConnectionConfigurationCheck.EnsureConfigured(_vpnConnectionService, profile.Cn, installedCertificate.Thumbprint);
+
+            record = new ConnectionRecord
+            {
+                Cn = profile.Cn,
+                Server = profile.Server,
+                EstBaseUrl = profile.EstBaseUrl,
+                CaChainPem = profile.CaChainPem!,
+                RootCaSha256 = profile.RootCaSha256,
+                SignerKeySha256 = profile.SignerKeySha256,
+                CertificateThumbprint = installedCertificate.Thumbprint,
+                IsTpmBacked = isTpmBacked,
+                TunnelMode = profile.TunnelMode,
+                SplitRoutes = new List<string>(profile.SplitRoutes),
+                Dns = profile.Dns,
+                IkeEncryption = profile.Ike.Encryption,
+                IkeIntegrity = profile.Ike.Prf,
+                IkeDhGroup = profile.Ike.DhGroup,
+                EspEncryption = profile.Esp.Encryption,
+                EspPfsGroup = profile.Esp.DhGroup,
+                LastEnrolledAtUtc = DateTimeOffset.UtcNow,
+            };
+            ConnectionStore.Save(record);
+        }
+        catch (Exception ex) when (installedByThisRun)
+        {
+            NewCertificateRollback.Run(_lifecycle, _logger, "Alta", installedCertificate.Thumbprint, ex);
+            throw;
+        }
+
         RegisterAndCleanUp(profile, installedCertificate);
         _logger.Info($"Alta: completada para \"{profile.Cn}\".");
         return record;

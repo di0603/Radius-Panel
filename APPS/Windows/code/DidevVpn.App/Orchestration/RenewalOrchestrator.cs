@@ -107,16 +107,34 @@ internal sealed class RenewalOrchestrator
         //  2. comprobar que la entrada existe y esas credenciales quedaron guardadas;
         //  3. registrar el nuevo y guardar el estado de la conexion con la huella nueva;
         //  4. SOLO ENTONCES borrar el viejo y limpiar.
-        // Si 1, 2 o 3 fallan, se lanza y el certificado anterior se conserva.
-        _vpnConnectionService.SaveEapCredentials(state.Cn, installedCertificate);
-        ConnectionConfigurationCheck.EnsureConfigured(_vpnConnectionService, state.Cn, installedCertificate.Thumbprint);
-
+        // Si 1, 2 o 3 fallan: ROLLBACK (se borra el certificado NUEVO con su clave -dos del mismo
+        // emisor provocan el selector de Windows, el 703-, se devuelven las credenciales EAP al viejo,
+        // se conserva el viejo y se relanza la excepcion original).
         var previousThumbprint = currentCertificate.Thumbprint;
-        _lifecycle.Register(installedCertificate, state.Cn, state.Server, state.Cn);
-        state.CertificateThumbprint = installedCertificate.Thumbprint;
-        state.IsTpmBacked = enrolled.IsTpmBacked;
-        state.LastEnrolledAtUtc = DateTimeOffset.UtcNow;
-        ConnectionStore.Save(state);
+        var originalThumbprint = state.CertificateThumbprint;
+        var originalTpm = state.IsTpmBacked;
+        var originalLastEnrolled = state.LastEnrolledAtUtc;
+        try
+        {
+            _vpnConnectionService.SaveEapCredentials(state.Cn, installedCertificate);
+            ConnectionConfigurationCheck.EnsureConfigured(_vpnConnectionService, state.Cn, installedCertificate.Thumbprint);
+
+            _lifecycle.Register(installedCertificate, state.Cn, state.Server, state.Cn);
+            state.CertificateThumbprint = installedCertificate.Thumbprint;
+            state.IsTpmBacked = enrolled.IsTpmBacked;
+            state.LastEnrolledAtUtc = DateTimeOffset.UtcNow;
+            ConnectionStore.Save(state);
+        }
+        catch (Exception ex)
+        {
+            state.CertificateThumbprint = originalThumbprint;
+            state.IsTpmBacked = originalTpm;
+            state.LastEnrolledAtUtc = originalLastEnrolled;
+            NewCertificateRollback.Run(
+                _lifecycle, _logger, "Renovacion", installedCertificate.Thumbprint, ex,
+                restorePreviousConfiguration: () => _vpnConnectionService.SaveEapCredentials(state.Cn, currentCertificate));
+            throw;
+        }
 
         try
         {
