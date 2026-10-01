@@ -7,6 +7,392 @@ Este proyecto usa versionado semantico.
 
 ### Anadido
 
+- **Prompt 12.12 (correcciones tras la revision de 12.10/12.11)**:
+  - **Rollback del certificado nuevo (1)**: si falla cualquier paso entre
+    instalar el certificado nuevo y el final de la confirmacion (credenciales
+    EAP, comprobacion de la entrada, registro, estado de la conexion; en el alta
+    tambien crear la conexion) se borra el NUEVO con su clave, se conserva el
+    viejo, se relanza la excepcion original y queda un WARN. Dos certificados del
+    mismo emisor en `CurrentUser\My` provocan el 703 (selector de Windows) aunque
+    haya credenciales guardadas. En la renovacion ademas se devuelven las
+    credenciales EAP al viejo y se restaura el estado en memoria; en el alta solo
+    se deshace un certificado instalado por ESA ejecucion (nunca uno reutilizado).
+    Si el propio rollback falla se registra (con el aviso de que el nuevo puede
+    haber quedado instalado) y no oculta la excepcion original
+    (`NewCertificateRollback`).
+  - **Credenciales EAP = certificado nuevo (2)**: `EnsureConfigured` exige ahora
+    que las credenciales guardadas sean las de la huella del certificado nuevo.
+    Medido: el blob de `RasSetEapUserData` (74 bytes) no contiene la huella ni es
+    determinista, asi que la app anota al guardar la huella y el SHA-256 del blob
+    leido de vuelta (`eap-credentials.json`, sin secretos) y solo la da por buena
+    si el blob actual de Windows sigue coincidiendo (si alguien lo sobrescribe,
+    devuelve null). Sustituye a `HasEapCredentials`.
+  - **Arranque del registro (3)**: `AdoptConnectionCertificates` se llamaba en
+    `TrayApplicationContext` (constructor) sin test; ahora va por
+    `CertificateRegistryStartup.AdoptExistingConnections` (protegido: un fallo no
+    impide arrancar) con tests y una guarda de cableado.
+  - Tests: las clases que usan `ConnectionStore` o crean entradas de la agenda RAS
+    corren serializadas (una carrera entre el test de `ListOrNull` y otros daba un
+    fallo intermitente).
+
+- **Prompt 12.10 (correcciones tras la revision)**:
+  - **Sincronizador, BLOQUEANTE (1)**: la guarda de rutas de
+    `deploy/freeradius-vpn-ca-sync.sh` estaba al reves: con los valores por
+    defecto (`INTERMEDIATE_DIR=.../certs/vpn`, `CA_PATH=.../certs/vpn/ca`) el
+    script abortaba con "tienen que ser distintos" antes de sincronizar nada.
+    Ahora impide lo contrario: que `INTERMEDIATE_DIR` sea `CA_PATH` o quede
+    dentro (normalizando barras finales). Tests sin `openssl rehash` (no se
+    omiten en ningun entorno con bash): valores por defecto no abortan, igual a
+    `CA_PATH` aborta, dentro de `CA_PATH` aborta; comprobado por mutacion (con la
+    guarda antigua fallan 3 tests). El extremo a extremo con openssl real y la
+    disposicion real ya no se omite por falta de `openssl rehash`: si el openssl
+    no lo soporta (Git for Windows) corre con un shim que lo emula con copias,
+    con constancia visible en la salida; solo se omite si falta bash/openssl/curl.
+    Al ejecutarlo por primera vez aqui destapo dos errores del propio test (la
+    raiz si conserva su enlace `.0`; la CRL instalada lleva la etiqueta
+    `X509 CRL`), corregidos.
+  - **Limpieza de certificados (2)**: el borrado de huerfanos solo ocurre si la
+    lista de conexiones se leyo bien (`ConnectionStore.ListOrNull()`: null si el
+    directorio no se puede enumerar o algun fichero esta corrupto; con null no se
+    borra ningun huerfano y se registra un WARN); un certificado solo es
+    "sustituido"/"huerfano" si coincide el SERVIDOR y el emisor (por nombre y por
+    Authority Key Identifier, guardado en el registro: dos CA con el mismo CN ya
+    no colisionan; si solo uno de los dos conoce el identificador no se borra).
+    Tests con registro y almacen simulados.
+  - **Orden alta/renovacion (3)**: instalar el nuevo -> credenciales EAP /
+    conexion con el nuevo -> comprobar que la entrada existe y tiene las
+    credenciales guardadas (`ConnectionConfigurationCheck`) -> guardar el estado
+    -> SOLO ENTONCES borrar el viejo. Antes, la renovacion borraba el viejo antes
+    de guardar el estado y sin comprobar la entrada. Tests con fakes que registran
+    las llamadas, incluido el fallo de cada paso intermedio.
+  - **Comentario de `EapUserCredentialStore` (4)**: decia que sin credenciales
+    guardadas EAP-TLS siempre abre el selector aunque haya un solo candidato; no
+    estaba medido. Medido (2026-10-01): un candidato y SIN credenciales -> rasdial
+    conecta sin dialogo (exit 0); dos candidatos y credenciales YA guardadas ->
+    seguia el 703. El almacen no se ha demostrado necesario; se mantiene
+    (funciona, inocuo). Experimento repetible en
+    `APPS/Windows/code/experimentos/exp-sin-credenciales.ps1`.
+
+- **Prompt 12.9 (hotfix 0.1.10, Windows)**: al pulsar Conectar la 0.1.9 mostraba
+  un volcado `CultureNotFoundException: Only the invariant culture is supported
+  in globalization-invariant mode` (`TrafficFormatter..cctor`): la app se
+  publica con `InvariantGlobalization=true` y el formateador del panel de
+  detalles pedia `CultureInfo.GetCultureInfo("es-ES")`. Ahora usa un
+  `NumberFormatInfo` propio (coma decimal) sin depender de ninguna cultura. Los
+  tests no lo vieron porque su host NO era invariante: ahora los dos proyectos
+  de tests corren con `InvariantGlobalization=true` y hay un test-guarda que
+  falla si dejan de hacerlo.
+
+- **Prompt 12.9 (arreglos tras la prueba real de la 0.1.8, Windows)**:
+  - **Estado de conexion (1, 2)**: la app esperaba 60 s y se quedaba en
+    "Trabajando..." aunque el tunel estuviera arriba. Causa raiz, medida con la
+    VPN conectada: `RasGetConnectStatusW` devolvia 632 (`ERROR_INVALID_SIZE`)
+    porque `RASCONNSTATUSW` se declaraba con 562 bytes y Windows solo acepta
+    564; la app tomaba ese fallo por "desconectada". `RasEnumConnections` y el
+    nombre de la entrada estaban bien. Ademas `RasGetProjectionInfo` da 87 en
+    IKEv2 (no hay PPP): la IP sale del adaptador (`NetworkInterface` Ppp, Up,
+    mismo nombre), que tambien sirve de respaldo de la fase. Se registra el
+    codigo de retorno y los nombres que lista RAS cuando no encuentra la
+    entrada. Al agotar el limite se relee el estado real; con el dialogo de
+    rasphone abierto el limite empieza al cerrarse (tope 120 s); la bandeja
+    libera "Trabajando..." en un `finally`. Verificado en vivo con `rasdial`:
+    estado, estadisticas y notificaciones RAS de conexion y desconexion.
+    (Con `rasphone` no se pudo verificar sin dialogo: la lectura es la misma.)
+  - **Menu de bandeja**: una excepcion al consultar el Programador de tareas
+    (volcado real: `FileNotFoundException` al cargarlo) ya no sube hasta el
+    `WndProc` y tumba la app; el elemento sale desactivado y se registra. No se
+    pudo reproducir con el codigo actual (probado single-file con y sin tarea).
+  - **Tests y log real (3)**: `DIDEVVPN_DATA_DIR` (solo pruebas) redirige los
+    datos; los tests ya no escriben en `%LOCALAPPDATA%\didev-vpn` (comprobado:
+    el log real no crece al ejecutarlos).
+  - **FormatException en /status (4)**: el servidor devolvia `notAfter` como lo
+    entrega MariaDB (`2026-10-31 10:03:43`, UTC sin zona) y la app lo leia con
+    `GetDateTimeOffset()` (exige ISO 8601). Servidor: ISO 8601 UTC. Cliente:
+    acepta ambos formatos y, si no entiende el valor, dice cual llego. Android
+    lo trata como cadena. Con esto la version minima y la renovacion llegan a
+    comprobarse de verdad.
+  - **Limpieza de certificados (5)**: registro propio
+    (`installed-certificates.json`, sin secretos) de lo que la app instala.
+    Quitar una conexion borra certificado Y clave (TPM o software); al dar de
+    alta, reparar o renovar se borran los anteriores del mismo dispositivo y los
+    que ya no pertenecen a ninguna conexion, solo los del registro y del mismo
+    emisor. La ventana avisa (lista con CN y caducidad, y como quitarlos) si hay
+    mas de un certificado candidato del mismo emisor. Los tests dejaban
+    certificados y claves huerfanos en el almacen del usuario: `RemoveCertificate`
+    ahora borra tambien la clave.
+  - **Dos conexiones del mismo emisor (6)**: test real
+    (`SameIssuerTwoConnectionsTests`) que prueba si las credenciales EAP
+    guardadas evitan el selector. Windows solo ofrece como candidatos los
+    certificados cuya cadena llega a una raiz de confianza (sin ella da 798), por
+    lo que el test instala su CA en `LocalMachine\Root` y SOLO corre desde una
+    consola de administrador. Resultado pendiente de ejecutarlo elevado; si
+    resultara que no bastan, queda el aviso del punto 5 y el punto 7(b) del
+    12.7 (RasDial con RASEAPINFO).
+  - **XML EAP (7)**: `DisableUserPromptForServerValidation = true` (raiz y
+    nombre ya fijados: falla cerrado). Medido con un solo certificado:
+    `rasdial` conecta con las cuatro combinaciones de ese flag y
+    `RememberCredential`; `RememberCredential` no hace falta y no se usa.
+  - **Renovacion (8)**: `DIDEVVPN_RENEW_THRESHOLD_DAYS` (solo pruebas) fuerza
+    el umbral. Contra el panel real: `/status` ya funciona (sin
+    `FormatException`) y el panel rechaza `simplereenroll` con 409 "una
+    renovacion cada 12h" (control de abuso del servidor, no se toca): la
+    renovacion real solo se puede repetir 12 h despues de emitir el certificado.
+    Verificada de extremo a extremo con un EST simulado y todo lo demas real
+    (CertEnroll/TPM, almacen, registro, credenciales EAP de una entrada RAS):
+    el certificado nuevo se instala con el mismo tipo de clave, el viejo se
+    borra con su clave, el blob de credenciales EAP cambia. El XML EAP no lleva
+    huella de certificado (filtra por emisor), asi que no necesita cambios.
+
+- **Prompt 12.8 (punto 3, Windows: panel de detalles)**: debajo de la
+  conexion, cuando esta Conectada, la ventana muestra el estado y el tiempo
+  conectado (`RasGetConnectionStatistics`), la IP resuelta del servidor, la
+  IPv4 y mascara, la puerta de enlace ("Punto a punto (sin puerta de enlace)",
+  con ayuda emergente: IKEv2 en Windows siempre da 0.0.0.0), los DNS recibidos,
+  el modo de tunel REAL leido de la tabla de rutas de la interfaz
+  (`GetIpForwardTable`: completo si hay 0.0.0.0/0, o la pareja 0.0.0.0/1 +
+  128.0.0.0/1; dividido con la lista de redes), el MTU, los bytes enviados y
+  recibidos (64 bits, `NetworkInterface`) con la velocidad actual de subida y
+  bajada, y el certificado (CN, caducidad, emisor, proveedor de la clave: TPM
+  o software). Sin PowerShell. Se actualiza cada 1,5 s SOLO con la ventana
+  visible (ni oculta ni minimizada) y la conexion conectada, en un hilo de
+  fondo; las filas se actualizan en sitio (el `Label` solo cambia si cambia el
+  texto), sin parpadeo. Boton "Copiar detalles" (texto plano, sin secretos).
+  - No se muestran los algoritmos IKE/ESP negociados: leerlos exige admin
+    (`Get-VpnConnectionIPsecConfiguration`/ETW) y se prefiere omitirlo a pedir
+    elevacion.
+  - Logica pura en `DidevVpn.Core.Net` (`TrafficFormatter`, `ThroughputMeter`,
+    `RouteSummary`, `ConnectionDetails`/`ConnectionDetailsText`), probada sin
+    Windows; `ConnectionDetailsCollector` (nativo) probado contra un adaptador
+    real; el formulario se construye y refresca en un test (STA) y se verifico
+    visualmente con una captura renderizada con datos simulados.
+
+- **Prompt 12.8 (punto 2, Windows: estado real)**: tras conectar -sobre todo
+  por `rasphone`, que sale al instante y es la persona quien marca- la app
+  mostraba "Desconectado" aunque el tunel estuviera arriba, porque leia el
+  estado una sola vez justo despues de lanzar. Ahora `Connect` no deduce nada
+  del codigo de salida: sigue la fase real de RAS (`RasEnumConnections` +
+  `RasGetConnectStatus`) hasta Connected, error (con el texto de
+  `RasGetErrorString`) o 60 s (`ConnectionWaiter`, maquina de estados
+  probada con RAS simulado). Ademas `RasConnectionMonitor` se suscribe con
+  `RasConnectionNotification` (RASCN_Connection | RASCN_Disconnection, un
+  evento, todas las conexiones) y `ConnectionStateService` -el servicio unico
+  de bandeja y ventana- refresca al instante si la conexion sube o cae desde
+  fuera de la app (rasphone, panel de Windows, perdida de red); un cambio que
+  llega en mitad de un refresco ya no se pierde (repite una vez). Nuevo
+  estado "Conectando..." en la ventana.
+  - Tests: `ConnectionPhaseTests` (esperas, errores, cancelar el dialogo,
+    limite de tiempo, clasificacion de estados RAS, notificacion -> refresco)
+    y un test real de que el monitor se registra en Windows y se detiene.
+
+- **Prompt 12.8 (punto 1, Windows: conectar sin dialogos)**: EAP-TLS por
+  IKEv2 abria siempre el selector de certificado al conectar, aunque solo
+  hubiera un candidato (el filtro por emisor del 12.7 no basto, comprobado en
+  un equipo real). Ahora el alta -y cada conexion, "reparando" las dadas de
+  alta con versiones anteriores- guarda las credenciales EAP de usuario de la
+  entrada de la agenda: `EapUserCredentialStore` (`Services/Ras/`) construye el
+  XML `EapHostUserCredentials` de EAP-TLS (certificado en `UserCert`, segun
+  `C:\Windows\schemas\EAPMethods\eaptlsuserpropertiesv1.xsd`; nunca clave
+  privada), lo convierte con `EapHostPeerConfigXml2Blob` +
+  `EapHostPeerCredentialsXml2Blob` (eappcfg.dll) y lo guarda con
+  `RasSetEapUserDataW`. Tras renovar (simplereenroll) se actualiza al
+  certificado nuevo. `rasphone -d` queda solo como ultimo recurso (WARN).
+  - Las firmas P/Invoke salen de las cabeceras reales del SDK instalado
+    (`eaphostpeerconfigapis.h`, `Ras.h`), no de memoria: una firma supuesta en
+    la primera prueba reventaba con `AccessViolationException` (la funcion no
+    recibe `EAP_METHOD_TYPE` de entrada sino `IXMLDOMNode*` + el blob de
+    configuracion; devuelve el metodo por `out`).
+  - Tests: XML de credenciales validado contra el esquema (EAP-TLS, solo
+    certificado publico) y test de integracion que crea una entrada RAS de
+    prueba, guarda las credenciales con un certificado autofirmado y comprueba
+    con `RasGetEapUserData` que se guardaron, borrandolo todo despues.
+
+- **Prompt 12.8 (Windows 0.1.7: XML de EAP valido y reintento del alta)**: la
+  0.1.6 llegaba a EST pero `Add-VpnConnection` fallaba con "Failed to generate
+  the EAP Configuration ... (WIN32 1)" porque el XML del item 7a no cumplia el
+  esquema estricto de EapHost.
+  - `VpnConnectionService.BuildEapConfigXml` se reescribe tomando como base
+    exacta el XML que genero Windows para una conexion EAP-TLS que si
+    funciono (`New-EapConfiguration -Tls -UserCertificate
+    -VerifyServerIdentity`): mismo orden y namespaces, en una sola linea.
+    Encima: `ServerNames` = identidad AAA, `TrustedRootCA` = huella de la raiz
+    del perfil (sin aviso de verificar el servidor), `PerformServerValidation`
+    y `AcceptServerName` (V2) y `TLSExtensions` (V2) > `FilteringInfo` (V3) >
+    `CAHashList Enabled="true"` > `IssuerHash` = huella de la intermedia.
+    Las huellas van en el formato de EapHost ("5c 0d ed ... ").
+  - Test de integracion en Windows (`BuildEapConfigXml_IsAcceptedByAddVpnConnection`):
+    crea `didev-vpn-xmltest` con el XML generado y la borra, sin alta EST ni
+    tokens. Comprobado que el XML de la 0.1.6 se rechaza con el mismo error y
+    el nuevo se acepta.
+  - Reintento sin token nuevo: si el alta falla tras instalar el certificado,
+    `EnrollmentOrchestrator` reutiliza el certificado de CurrentUser\My que
+    sea del dispositivo (CN), vigente, con clave privada, emitido por la
+    intermedia del perfil (o la raiz si no hay) y con cadena valida hasta la
+    raiz del perfil, y solo crea la conexion
+    (`SelectReusableCertificate`, 7 tests con una PKI de prueba).
+
+- **Prompt 12.7 (Windows: item 7, filtrado del certificado EAP)**: conectar
+  fallaba con "Error de Acceso remoto 703: la conexion necesita informacion
+  de su parte, pero la aplicacion no permite interaccion del usuario" -
+  rasdial.exe no tiene consola con la que Windows pueda preguntar cual
+  certificado usar cuando hay mas de un candidato con EKU clientAuth en
+  CurrentUser\My-.
+  - (a) El XML EAP de la conexion (`VpnConnectionService.BuildEapConfigXml`)
+    anade `FilteringInfo/CAHashList` con la huella SHA-1 de quien firmo
+    DIRECTAMENTE el certificado del dispositivo (la intermedia del panel, o
+    la raiz si todavia no hay intermedia): con `SimpleCertSelection` (ya
+    presente) y el emisor fijado, solo hay UN certificado candidato y
+    Windows no necesita preguntar nada. `EnrollmentOrchestrator` calcula esa
+    huella (`FindIssuerThumbprint`) comparando el emisor del certificado
+    recien instalado contra la cadena del propio perfil.
+  - (c) Ultimo recurso: si rasdial.exe termina con el codigo 703, se abre el
+    dialogo nativo `rasphone.exe -d "<conexion>"` (visible, para que la
+    persona delante del equipo elija a mano) en vez de fallar sin mas.
+  - **Decision consciente, pendiente de confirmar con prueba real**: NO se
+    ha implementado (b) del prompt (RasDial por P/Invoke con
+    RasGetEapUserIdentity/RasSetEapUserData para elegir el certificado de
+    forma no interactiva desde dentro del proceso). (a)+(c) ya cubren el
+    sintoma reportado (703 por ambiguedad de certificado) con mucho menos
+    riesgo -la API RAS de identidades EAP esta pobremente documentada y sus
+    structs, como ya paso con RasStateReader en este mismo prompt, exigen
+    probar tamanos contra una conexion REAL antes de confiar en ellos; no
+    hay una VPN real conectada en este entorno de desarrollo para hacerlo
+    con seguridad-. Si la prueba en el equipo real (conectar/desconectar sin
+    ningun dialogo) no basta con (a)+(c), se anadira (b) en un prompt
+    siguiente.
+  - Tests: `VpnConnectionServiceTests` (nuevo) comprueba que
+    `TrustedRootCA` (validacion del SERVIDOR) e `IssuerHash` (filtrado del
+    certificado del CLIENTE) son huellas independientes en el XML generado.
+
+- **Prompt 12.7 (Windows: item 10, clave del dispositivo por CertEnroll)**:
+  Schannel rechazaba en EAP-TLS el certificado instalado por el alta con
+  0x8009030D SEC_E_UNKNOWN_CREDENTIALS, aunque la clave CNG asociada a mano
+  (prompt 12.6, `CertSetCertificateContextProperty`) firmaba y verificaba
+  bien -verificado con un handshake TLS mutuo real (`SslStream`,
+  `AuthenticateAsClient`) en esta maquina: el fallo solo se manifiesta ahi,
+  nunca en un `ECDsa.SignData`/`VerifyData` suelto-. Arreglado generando la
+  clave y el CSR con CertEnroll (COM, `X509Enrollment.*`: `CX509PrivateKey`
+  ECDSA P-256 no exportable, `CX509CertificateRequestPkcs10` con SAN
+  dNSName = CN, `CX509Enrollment`) e instalando la respuesta de EST con
+  `CX509Enrollment.InstallResponse` -instalar y enlazar la clave es un unico
+  paso con CertEnroll, verificado con un handshake TLS mutuo real que SI la
+  acepta-. TPM primero ("Microsoft Platform Crypto Provider"), con
+  confirmacion explicita antes de caer a software ("Microsoft Software Key
+  Storage Provider"), igual que antes. `CertificateEnrollmentService` ahora
+  expone un unico `EnrollAsync` (clave+CSR+simpleenroll/simplereenroll+
+  instalacion en un solo hilo STA dedicado -CertEnroll es COM de apartamento
+  unico, no se puede repartir entre hilos-, nunca en el hilo de interfaz);
+  `EstClient` devuelve tambien el cuerpo PKCS7 crudo de EST (antes se
+  descartaba tras parsear el certificado), que hace falta sin tocar para
+  `InstallResponse`. La comprobacion de version minima del alta ahora se
+  hace CON el certificado ya instalado (antes se enlazaba en memoria sin
+  instalar): si el panel exige una version superior, se desinstala el
+  certificado recien puesto en vez de no instalarlo nunca -con CertEnroll no
+  hay forma de "probar sin instalar"-.
+  - Tests: `CertificateEnrollmentServiceTests` reescrito para comprobar la
+    aceptacion REAL por Schannel (handshake TLS mutuo de verdad, TPM y
+    software), no solo firma/verifica -esa comprobacion antigua no detectaba
+    el bug real-; 9 tests en verde en esta maquina (con TPM disponible).
+  - Documentado en el codigo por que `KeySpec` tiene que ser `AT_SIGNATURE`
+    (2) y no `AT_KEYEXCHANGE` (1): con una clave puramente CNG, `AT_KEYEXCHANGE`
+    da "Acceso denegado" (NTE_PERM) al firmar el CSR -verificado en esta
+    maquina-.
+  - Pendiente en la misma rama: items 7 (filtrado del certificado EAP +
+    RasDial no interactivo) y 11 (compilar 0.1.6) del prompt 12.7.
+
+- **Prompt 12.7 (Windows: rendimiento)**: la app iba muy lenta -cada
+  consulta de estado lanzaba un `powershell.exe` nuevo (con el modulo
+  `VpnClient`), en el hilo de interfaz, varias veces por conexion y varias
+  veces por minuto (menu de bandeja, ventana cada 5s, bandeja cada 15s)-.
+  - Nuevo `RasStateReader` (`DidevVpn.App/Services/Ras/`): P/Invoke directo
+    a `rasapi32.dll` (`RasEnumConnectionsW`, `RasGetConnectStatusW`,
+    `RasGetProjectionInfoW` para la IP, `RasEnumEntriesW` para si existe en
+    la agenda), milisegundos en vez de segundos, sin crear ningun proceso.
+    `VpnConnectionService` cae de vuelta a PowerShell automaticamente si el
+    P/Invoke fallara alguna vez. Conectar/desconectar usa `rasdial.exe`
+    directamente (ya no via `powershell.exe`). PowerShell queda solo para
+    crear/actualizar/borrar la conexion (el alta).
+  - **Hallazgo real verificado en esta maquina**: `RasEnumConnectionsW`/
+    `RasEnumEntriesW` exigen que `dwSize` coincida EXACTAMENTE con uno de
+    varios tamanos de struct reconocidos (`ERROR_INVALID_SIZE` si no,
+    a diferencia de la mayoria de APIs de Windows). Los tamanos de
+    `RasInterop.cs` se verificaron con un programa de sondeo (no
+    versionado) contra esta maquina real hasta encontrar los aceptados; con
+    ellos se obtuvieron datos reales (la agenda RAS de este equipo).
+    `RasGetConnectStatusW`/`RasGetProjectionInfoW` no mostraron el mismo
+    problema, pero no se han podido probar contra una conexion activa de
+    verdad (respaldo automatico por PowerShell si hiciera falta).
+  - Nada bloqueante en el hilo de interfaz: conectar/desconectar, importar
+    perfil y renovar van en `Task.Run`, con el control correspondiente
+    deshabilitado y "Trabajando..." mientras dura.
+  - Nuevo `ConnectionStateService`: cache UNICA del estado de todas las
+    conexiones para la bandeja y la ventana a la vez (antes cada una
+    sondeaba por su cuenta). Refresco por `NetworkChange.*` con debounce de
+    ~500ms (`DidevVpn.Core.Net.Debouncer`) + temporizador de respaldo cada
+    30s, en un hilo de fondo.
+  - `ConnectionManagerForm.RefreshConnections` ya no hace `Controls.Clear()`
+    + reconstruir todo: solo anade/quita filas si cambia la LISTA de
+    conexiones, actualiza los mismos `Label` en el sitio si solo cambia el
+    estado. Sin parpadeo.
+  - `PublishReadyToRun=true` en las dos variantes; confirmado que el
+    portable single-file solo extrae ~8MB de nativos a
+    `%TEMP%\.net\didev-vpn\` (nunca el bundle completo), cacheados entre
+    ejecuciones de la misma version.
+  - **Medido de verdad en esta maquina**: arranque ~360ms -> ~241ms
+    (variante instalada, con ReadyToRun); un refresco completo con 3
+    conexiones, ~6,3s (PowerShell) -> ~10ms (RAS nativo). El `.exe` portable
+    sale ~15% mas grande con ReadyToRun (168MB -> 194MB): compromiso pedido
+    explicitamente (arranque vs tamano).
+  - Tests: `DidevVpn.Tests` (`DebouncerTests`, con ventanas reales
+    pequenas) y `DidevVpn.App.Tests` (`RasStateReaderTests` contra RAS real
+    -sin lanzar con nombres que no existen-, `ConnectionStateServiceTests`
+    con un `IVpnConnectionService` falso: refresco, debounce, y que una
+    conexion que lanza no bloquea el refresco de las demas). 70 tests en
+    verde (62+8).
+  - Version 0.1.6 compilada de verdad (`build.ps1`), en
+    `APPS/Windows/ejecutables/` (fuera de git): `.msi`/`.exe`/`.zip` sin
+    firmar + `SHA256SUMS.txt`. Ejecutado de verdad (no solo compilado):
+    arranca, tray+ventana aparecen, sin excepciones en el log tras varios
+    segundos.
+  - `deploy/vpn-gateway-agent.sh`, `deploy/freeradius-vpn-ca-sync.sh` y
+    `deploy/deploy.sh` marcados en git con modo 100755 (`git update-index
+    --chmod=+x`): se habian subido como 644 desde Windows y systemd no podia
+    ejecutarlos.
+  - `deploy/freeradius-vpn-ca-sync.sh` (prompt 12.7, sobre lo entregado en
+    los prompts 14/14.5): con `X509_V_FLAG_PARTIAL_CHAIN` activo en
+    FreeRADIUS, tener el certificado de la CA intermedia dentro de `ca_path`
+    hacia que la cadena terminara ahi -la raiz nunca entraba en la
+    validacion- y la comprobacion de revocacion de la PROPIA intermedia
+    fallaba con `unable to get certificate CRL` (bug real, reproducido con
+    `openssl verify`). Arreglado: la intermedia se guarda ahora en
+    `INTERMEDIATE_DIR`, siempre fuera de `ca_path` (`ca_path` solo lleva la
+    CRL de la intermedia, nunca su certificado ni un enlace `.0`); el
+    script limpia cualquier `panel-intermediate-*.pem` que hubiera quedado
+    dentro de `ca_path` por el esquema anterior. La comprobacion de
+    `TLS_CONFIG_FILE` ahora resuelve `${certdir}`/`${confdir}` si `ca_path`
+    los usa (antes exigia coincidencia literal) y avisa (sin fallar) si no
+    encuentra una linea `ca_file` (raiz + su propia CRL, requerida ademas de
+    `ca_path` para poder validar la revocacion de la intermedia). El hash de
+    cambios se versiono (`"v2\n"` de prefijo) para forzar exactamente una
+    resincronizacion en el primer arranque del script corregido, aunque el
+    contenido de la CA/CRL no haya cambiado -si no, un host ya sincronizado
+    con el bug se quedaria con el esquema viejo hasta la siguiente rotacion
+    real-. Documentado en el propio script y en el `.example` que
+    `tls-config tls-vpn` necesita ademas `ecdh_curve =
+    "secp384r1:prime256v1"` (las claves TPM/cliente son P-256; con solo
+    `secp384r1` FreeRADIUS corta con "wrong curve").
+  - Tests nuevos en `server/src/lib/deployScripts.test.ts`: el camino feliz
+    ahora comprueba que la intermedia queda fuera de `ca_path` (antes
+    comprobaba lo contrario) y que `openssl rehash` solo genera un enlace
+    `.r0` (CRL), nunca `.0`; nuevo test que reproduce el bug con `openssl
+    verify -partial_chain -untrusted <intermedia> -crl_check_all` (falla con
+    el esquema antiguo, pasa con el nuevo con `-CAfile` para la raiz+su
+    CRL); los tres tests de rechazo tambien comprueban que `INTERMEDIATE_DIR`
+    queda vacio.
+  - README actualizado (seccion "Sincronizacion de la CA intermedia con
+    FreeRADIUS"): nuevo esquema `ca_path`/`INTERMEDIATE_DIR`/`ca_file`,
+    ejemplo de `openssl verify` y pasos de "volver atras" al dia.
+  - Rama `feat/vpn-12.7-windows-rendimiento`, pendiente de revision.
+
 - **Prompt 12.6 (Windows: asociar la clave CNG sin exportarla)**: el alta
   fallaba con "Clave no valida para utilizar en el estado especificado" justo
   tras `simpleenroll` (con el token de un solo uso ya consumido):

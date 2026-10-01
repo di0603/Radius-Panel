@@ -19,8 +19,13 @@ internal static class AppPaths
 {
     public const string DisplayName = "didev VPN";
 
+    /// <summary>Variable de entorno SOLO PARA PRUEBAS: redirige todos los datos (log, conexiones, registro de certificados) a otra carpeta, para que los tests no escriban en los datos reales del usuario.</summary>
+    public const string DataDirectoryOverrideVariable = "DIDEVVPN_DATA_DIR";
+
     public static string DataDirectory { get; } =
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "didev-vpn");
+        Environment.GetEnvironmentVariable(DataDirectoryOverrideVariable) is { Length: > 0 } overridden
+            ? overridden
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "didev-vpn");
 
     public static string LogsDirectory => Path.Combine(DataDirectory, "logs");
 

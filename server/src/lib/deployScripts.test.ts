@@ -1,11 +1,11 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildCrl } from '../services/pki.js';
-import { EC_P384_SIGNING_ALGORITHM, generateEcKeyPair, sha256Hex, x509 } from './x509.js';
+import { crlToPem, EC_P384_SIGNING_ALGORITHM, generateEcKeyPair, sha256Hex, x509 } from './x509.js';
 
 /**
  * `deploy/vpn-gateway-agent.sh` y `deploy/freeradius-vpn-ca-sync.sh` corren
@@ -43,6 +43,74 @@ function hasWorkingOpensslRehash(): boolean {
   }
 }
 
+const opensslRehashWorks = hasCli('openssl') && hasWorkingOpensslRehash();
+
+/** Ruta real de openssl tal como la ve bash (para que el shim delegue en el). */
+function realOpensslPath(): string {
+  return execFileSync('bash', ['-c', 'command -v openssl'], { encoding: 'utf8' }).trim();
+}
+
+/**
+ * Equivalente de `openssl rehash` para entornos donde el binario no lo soporta
+ * (Git for Windows): mismos nombres de enlace que haria rehash -<hash>.0 para
+ * certificados, <hash>.r0 para CRL, con el hash del sujeto/emisor-, pero con
+ * copias en vez de symlinks. Con esto el camino feliz y la comprobacion del
+ * esquema corren en TODOS los entornos con openssl, no solo en Linux.
+ */
+function rehashFallback(dir: string): void {
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith('.pem')) continue;
+    const file = join(dir, name);
+    if (/-----BEGIN (X509 )?CRL-----/.test(readFileSync(file, 'utf8'))) {
+      const hash = execFileSync('openssl', ['crl', '-in', file, '-noout', '-hash'], { encoding: 'utf8' }).trim();
+      copyFileSync(file, join(dir, `${hash}.r0`));
+    } else {
+      const hash = execFileSync('openssl', ['x509', '-in', file, '-noout', '-subject_hash'], { encoding: 'utf8' }).trim();
+      copyFileSync(file, join(dir, `${hash}.0`));
+    }
+  }
+}
+
+function rehashDir(dir: string): void {
+  if (opensslRehashWorks) {
+    execFileSync('openssl', ['rehash', dir], { timeout: 5000 });
+  } else {
+    rehashFallback(dir);
+  }
+}
+
+/**
+ * Directorio con un `openssl` que delega en el real salvo para "rehash", que
+ * hace con copias (ver rehashFallback). Solo se usa cuando el real no lo
+ * soporta; el script bajo prueba se ejecuta SIN modificar.
+ */
+function makeOpensslShimDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'openssl-shim-'));
+  const real = realOpensslPath();
+  const shim = `#!/bin/bash
+REAL='${real}'
+if [ "$1" = "rehash" ]; then
+  dir="$2"
+  for f in "$dir"/*.pem; do
+    [ -e "$f" ] || continue
+    if grep -qE -- '-----BEGIN (X509 )?CRL-----' "$f"; then
+      h="$("$REAL" crl -in "$f" -noout -hash)"
+      cp "$f" "$dir/$h.r0"
+    else
+      h="$("$REAL" x509 -in "$f" -noout -subject_hash)"
+      cp "$f" "$dir/$h.0"
+    fi
+  done
+  exit 0
+fi
+exec "$REAL" "$@"
+`;
+  const file = join(dir, 'openssl');
+  writeFileSync(file, shim, { encoding: 'utf8', mode: 0o755 });
+  chmodSync(file, 0o755);
+  return dir;
+}
+
 test(
   'shellcheck no encuentra problemas en deploy/vpn-gateway-agent.sh',
   { skip: !hasCli('shellcheck') && 'shellcheck no disponible' },
@@ -69,9 +137,10 @@ test(
  * real; en Windows requiere Git Bash, que es justo donde corre este test).
  */
 const canRunSyncIntegration = hasCli('bash') && hasCli('openssl') && hasCli('curl');
-// Solo el camino feliz llega a "openssl rehash" (los rechazos salen antes):
-// separado para no perder cobertura de los rechazos en un entorno sin rehash.
-const canRunHappyPath = canRunSyncIntegration && hasWorkingOpensslRehash();
+// El camino feliz llega a "openssl rehash": si el openssl del entorno no lo
+// soporta se usa un shim (ver makeOpensslShimDir), asi que NO se omite por eso:
+// solo se omite si falta bash, openssl o curl.
+const canRunHappyPath = canRunSyncIntegration;
 
 async function buildTestChain() {
   const rootKeys = await generateEcKeyPair('P-384');
@@ -134,18 +203,28 @@ function writeConfig(dir: string, overrides: Record<string, string>): string {
 }
 
 /**
- * El script exige que TLS_CONFIG_FILE exista y contenga "ca_path = CA_PATH"
- * (para detectar un CA_PATH mal configurado en el propio script/FreeRADIUS).
- * `withReloadInterval` incluye ademas "ca_path_reload_interval", para que el
- * script no intente reiniciar nada (los tests no tienen un FreeRADIUS real
- * al que reiniciar).
+ * El script exige que TLS_CONFIG_FILE exista y que la linea "ca_path = ..."
+ * (resuelta) coincida con CA_PATH. `withReloadInterval` incluye ademas
+ * "ca_path_reload_interval", para que el script no intente reiniciar nada
+ * (los tests no tienen un FreeRADIUS real al que reiniciar). `caPathLiteral`
+ * permite escribir un valor con variables de FreeRADIUS (p.ej.
+ * "${certdir}/vpn/ca") en vez del CA_PATH real, para probar la resolucion;
+ * por defecto es el propio `caPath`. `withCaFile` anade una linea "ca_file"
+ * (el script solo avisa si falta, no lo exige, pero probar tambien el caso
+ * en que SI esta evita que ese aviso ensucie la salida de los demas tests).
  */
-function writeTlsConfig(dir: string, caPath: string, withReloadInterval: boolean): string {
+function writeTlsConfig(
+  dir: string,
+  caPath: string,
+  withReloadInterval: boolean,
+  options: { caPathLiteral?: string; withCaFile?: boolean } = {},
+): string {
   const tlsConfigPath = join(dir, 'eap_vpn');
   const reloadLine = withReloadInterval ? '    ca_path_reload_interval = 900\n' : '';
+  const caFileLine = options.withCaFile ? `    ca_file = "${join(dir, 'root-bundle.pem')}"\n` : '';
   writeFileSync(
     tlsConfigPath,
-    `eap_vpn {\n  tls-config tls-vpn {\n    ca_path = "${caPath}"\n${reloadLine}  }\n}\n`,
+    `eap_vpn {\n  tls-config tls-vpn {\n    ca_path = "${options.caPathLiteral ?? caPath}"\n${caFileLine}${reloadLine}  }\n}\n`,
     'utf8',
   );
   return tlsConfigPath;
@@ -153,8 +232,14 @@ function writeTlsConfig(dir: string, caPath: string, withReloadInterval: boolean
 
 test(
   'freeradius-vpn-ca-sync.sh: sincroniza una intermedia+CRL reales, sin tocar la raiz, e idempotente',
-  { skip: !canRunHappyPath && 'bash/openssl/curl/openssl-rehash no disponibles' },
-  async () => {
+  { skip: !canRunHappyPath && 'bash/openssl/curl no disponibles' },
+  async (t) => {
+    const extraEnv: Record<string, string> = {};
+    if (!opensslRehashWorks) {
+      extraEnv.PATH = `${makeOpensslShimDir()}${delimiter}${process.env.PATH ?? ''}`;
+      t.diagnostic('openssl rehash no esta soportado por este openssl: el script corre con un shim que lo emula con copias (el script no se modifica)');
+    }
+
     const chain = await buildTestChain();
     const crl = await buildCrl({
       issuerCert: chain.intermediateCert,
@@ -163,11 +248,15 @@ test(
       nextUpdateDays: 30,
     });
 
-    const dir = mkdtempSync(join(tmpdir(), 'freeradius-ca-sync-'));
-    const pkiDir = join(dir, 'pki');
-    const caPath = join(dir, 'ca_path');
-    const stateDir = join(dir, 'state');
-    execFileSync('mkdir', ['-p', pkiDir, caPath, stateDir]);
+    // Disposicion REAL de la .28: INTERMEDIATE_DIR (.../certs/vpn) es el PADRE de
+    // CA_PATH (.../certs/vpn/ca). Rutas con "/" (como en Linux) para que la guarda
+    // de rutas del script compare igual que alli.
+    const dir = mkdtempSync(join(tmpdir(), 'freeradius-ca-sync-')).replace(/\\/g, '/');
+    const pkiDir = `${dir}/pki`;
+    const intermediateDir = `${dir}/certs/vpn`;
+    const caPath = `${dir}/certs/vpn/ca`;
+    const stateDir = `${dir}/state`;
+    execFileSync('mkdir', ['-p', pkiDir, caPath, intermediateDir, stateDir]);
 
     writeFileSync(join(pkiDir, 'ca-chain.pem'), `${chain.intermediateCert.toString()}\n${chain.rootCert.toString()}`, 'utf8');
     writeFileSync(join(pkiDir, 'crl.pem'), crl.toString(), 'utf8');
@@ -178,11 +267,12 @@ test(
 
     // ca_path_reload_interval SI presente: el script no debe intentar
     // "freeradius -XC" ni systemctl (no hay un FreeRADIUS real en el test).
-    const tlsConfigPath = writeTlsConfig(dir, caPath, true);
+    const tlsConfigPath = writeTlsConfig(dir, caPath, true, { withCaFile: true });
 
     const configPath = writeConfig(dir, {
       PANEL_PKI_URL: `file://${pkiDir}`,
       CA_PATH: caPath,
+      INTERMEDIATE_DIR: intermediateDir,
       ROOT_CERT_FILE: rootPath,
       ROOT_CERT_SHA256: rootSha256,
       FREERADIUS_SERVICE: 'freeradius-does-not-exist-in-this-test',
@@ -193,14 +283,32 @@ test(
     const firstRun = runSyncScript({
       FREERADIUS_VPN_CA_SYNC_CONFIG: configPath,
       FREERADIUS_VPN_CA_SYNC_STATE_DIR: stateDir,
+      ...extraEnv,
     });
     assert.equal(firstRun.status, 0, `primera ejecucion deberia salir 0: ${firstRun.stderr}`);
+    // Con ca_file presente en TLS_CONFIG_FILE, no debe avisar de que falta.
+    assert.doesNotMatch(firstRun.stderr, /no tiene ninguna linea 'ca_file/);
 
-    const installedIntermediate = readFileSync(join(caPath, 'panel-intermediate-1.pem'), 'utf8');
+    // La intermedia va FUERA de ca_path (item 9): nunca su certificado ni un
+    // enlace .0 dentro de CA_PATH, sea cual sea el resultado de rehash.
+    assert.equal(existsSync(join(caPath, 'panel-intermediate-1.pem')), false);
+    const installedIntermediate = readFileSync(join(intermediateDir, 'panel-intermediate-1.pem'), 'utf8');
     assert.equal(installedIntermediate.trim(), chain.intermediateCert.toString().trim());
 
     const installedCrl = readFileSync(join(caPath, 'panel-crl.pem'), 'utf8');
-    assert.equal(installedCrl.trim(), crl.toString().trim());
+    // El script la deja con la etiqueta PEM correcta (X509 CRL, RFC 7468), la misma que sirve el panel (crlToPem).
+    assert.equal(installedCrl.trim(), crlToPem(crl).trim());
+
+    // `openssl rehash` sobre CA_PATH: la RAIZ (ca.pem) tiene su enlace .0 -en
+    // produccion lo deja el que prepara ca_path, y el rehash lo conserva-, y la
+    // CRL de la intermedia su .r0. Lo que NO puede haber es el .0 de la
+    // INTERMEDIA: seria un ancla de confianza (PARTIAL_CHAIN) dentro de ca_path.
+    const caPathEntries = execFileSync('ls', ['-1', caPath], { encoding: 'utf8' }).trim().split('\n');
+    const intermediateHash = execFileSync('openssl', ['x509', '-in', join(intermediateDir, 'panel-intermediate-1.pem'), '-noout', '-subject_hash'], { encoding: 'utf8' }).trim();
+    const rootHash = execFileSync('openssl', ['x509', '-in', rootPath, '-noout', '-subject_hash'], { encoding: 'utf8' }).trim();
+    assert.ok(caPathEntries.includes(`${intermediateHash}.r0`), `deberia haber un enlace ${intermediateHash}.r0 para la CRL de la intermedia; hay: ${caPathEntries.join(', ')}`);
+    assert.ok(!caPathEntries.includes(`${intermediateHash}.0`), 'no deberia haber un enlace .0 de la intermedia en ca_path');
+    assert.ok(caPathEntries.includes(`${rootHash}.0`), 'la raiz conserva su enlace .0');
 
     // La raiz (ca.pem) no se toca: sigue siendo exactamente lo que era.
     assert.equal(readFileSync(rootPath, 'utf8').trim(), chain.rootCert.toString().trim());
@@ -213,9 +321,116 @@ test(
     const secondRun = runSyncScript({
       FREERADIUS_VPN_CA_SYNC_CONFIG: configPath,
       FREERADIUS_VPN_CA_SYNC_STATE_DIR: stateDir,
+      ...extraEnv,
     });
     assert.equal(secondRun.status, 0);
     assert.match(secondRun.stdout, /[Ss]in cambios/);
+  },
+);
+
+test(
+  'freeradius-vpn-ca-sync.sh: el esquema nuevo (intermedia fuera de ca_path + ca_file) resuelve "unable to get certificate CRL" del esquema antiguo',
+  { skip: !hasCli('openssl') && 'openssl no disponible' },
+  async () => {
+    // Reproduce el bug de raiz (item 9) con openssl verify directamente,
+    // sin pasar por el script: X509_V_FLAG_PARTIAL_CHAIN (que activa
+    // -partial_chain) hace que, si la intermedia esta DENTRO de ca_path, la
+    // cadena termine ahi -la raiz nunca entra en la validacion- y entonces
+    // no hay forma de comprobar la revocacion de la PROPIA intermedia (para
+    // eso hace falta la CRL de la raiz, que solo el esquema nuevo aporta via
+    // ca_file). Con la intermedia FUERA de ca_path (pasada por -untrusted,
+    // como hace el cliente EAP-TLS de verdad) y la raiz+su CRL en ca_file,
+    // la cadena si llega hasta la raiz y la comprobacion funciona.
+    const chain = await buildTestChain();
+    const intermediateCrl = await buildCrl({
+      issuerCert: chain.intermediateCert,
+      signingKey: chain.intermediateKeys.privateKey,
+      entries: [],
+      nextUpdateDays: 30,
+    });
+    const rootCrl = await buildCrl({
+      issuerCert: chain.rootCert,
+      signingKey: chain.rootKeys.privateKey,
+      entries: [],
+      nextUpdateDays: 30,
+    });
+
+    const deviceKeys = await generateEcKeyPair('P-384');
+    const deviceCert = await x509.X509CertificateGenerator.create({
+      subject: 'CN=vpn-test-device',
+      issuer: chain.intermediateCert.subject,
+      publicKey: deviceKeys.publicKey,
+      signingKey: chain.intermediateKeys.privateKey,
+      signingAlgorithm: EC_P384_SIGNING_ALGORITHM,
+      notBefore: new Date(Date.now() - 86_400_000),
+      notAfter: new Date(Date.now() + 30 * 86_400_000),
+      extensions: [
+        new x509.BasicConstraintsExtension(false),
+        new x509.ExtendedKeyUsageExtension([x509.ExtendedKeyUsage.clientAuth], true),
+      ],
+    });
+
+    const dir = mkdtempSync(join(tmpdir(), 'freeradius-ca-sync-verify-'));
+    const rootPemPath = join(dir, 'root.pem');
+    const intermediatePemPath = join(dir, 'intermediate.pem');
+    const devicePemPath = join(dir, 'device.pem');
+    writeFileSync(rootPemPath, chain.rootCert.toString(), 'utf8');
+    writeFileSync(intermediatePemPath, chain.intermediateCert.toString(), 'utf8');
+    writeFileSync(devicePemPath, deviceCert.toString(), 'utf8');
+
+    // Esquema ANTIGUO (con bug): ca_path lleva la raiz, la intermedia Y su
+    // CRL juntas, tal como hacia el script antes de este cambio.
+    const oldCaPath = join(dir, 'ca_path_old');
+    execFileSync('mkdir', ['-p', oldCaPath]);
+    writeFileSync(join(oldCaPath, 'root.pem'), chain.rootCert.toString(), 'utf8');
+    writeFileSync(join(oldCaPath, 'intermediate.pem'), chain.intermediateCert.toString(), 'utf8');
+    writeFileSync(join(oldCaPath, 'intermediate-crl.pem'), crlToPem(intermediateCrl), 'utf8');
+    rehashDir(oldCaPath);
+
+    const oldResult = (() => {
+      try {
+        execFileSync(
+          'openssl',
+          ['verify', '-CApath', oldCaPath, '-partial_chain', '-untrusted', intermediatePemPath, '-crl_check_all', devicePemPath],
+          { timeout: 5000, encoding: 'utf8', stdio: 'pipe' },
+        );
+        return { status: 0, output: '' };
+      } catch (err) {
+        const e = err as { status?: number; stdout?: string; stderr?: string };
+        return { status: e.status ?? 1, output: `${e.stdout ?? ''}${e.stderr ?? ''}` };
+      }
+    })();
+    assert.notEqual(oldResult.status, 0, 'el esquema antiguo deberia fallar la verificacion');
+    assert.match(oldResult.output, /unable to get certificate CRL/);
+
+    // Esquema NUEVO (item 9): ca_path lleva SOLO la raiz + la CRL de la
+    // intermedia (nunca la intermedia); ca_file lleva la raiz + su propia
+    // CRL, para poder validar la revocacion de la intermedia.
+    const newCaPath = join(dir, 'ca_path_new');
+    execFileSync('mkdir', ['-p', newCaPath]);
+    writeFileSync(join(newCaPath, 'root.pem'), chain.rootCert.toString(), 'utf8');
+    writeFileSync(join(newCaPath, 'intermediate-crl.pem'), crlToPem(intermediateCrl), 'utf8');
+    rehashDir(newCaPath);
+
+    const caFilePath = join(dir, 'root-bundle.pem');
+    writeFileSync(caFilePath, `${chain.rootCert.toString()}\n${crlToPem(rootCrl)}`, 'utf8');
+
+    execFileSync(
+      'openssl',
+      [
+        'verify',
+        '-CApath',
+        newCaPath,
+        '-CAfile',
+        caFilePath,
+        '-partial_chain',
+        '-untrusted',
+        intermediatePemPath,
+        '-crl_check_all',
+        devicePemPath,
+      ],
+      { timeout: 5000, encoding: 'utf8', stdio: 'pipe' },
+    );
   },
 );
 
@@ -234,7 +449,8 @@ test(
     const dir = mkdtempSync(join(tmpdir(), 'freeradius-ca-sync-badroot-'));
     const pkiDir = join(dir, 'pki');
     const caPath = join(dir, 'ca_path');
-    execFileSync('mkdir', ['-p', pkiDir, caPath]);
+    const intermediateDir = join(dir, 'intermediates');
+    execFileSync('mkdir', ['-p', pkiDir, caPath, intermediateDir]);
 
     writeFileSync(join(pkiDir, 'ca-chain.pem'), `${chain.intermediateCert.toString()}\n${chain.rootCert.toString()}`, 'utf8');
     writeFileSync(join(pkiDir, 'crl.pem'), crl.toString(), 'utf8');
@@ -246,6 +462,7 @@ test(
     const configPath = writeConfig(dir, {
       PANEL_PKI_URL: `file://${pkiDir}`,
       CA_PATH: caPath,
+      INTERMEDIATE_DIR: intermediateDir,
       ROOT_CERT_FILE: rootPath,
       ROOT_CERT_SHA256: '0'.repeat(64), // deliberadamente incorrecta
       FREERADIUS_SERVICE: 'freeradius-does-not-exist-in-this-test',
@@ -261,6 +478,7 @@ test(
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /no coincide/);
     assert.equal(existsSync(join(caPath, 'panel-intermediate-1.pem')), false, 'no debe escribir nada si la raiz no coincide');
+    assert.equal(existsSync(join(intermediateDir, 'panel-intermediate-1.pem')), false);
   },
 );
 
@@ -282,7 +500,8 @@ test(
     const dir = mkdtempSync(join(tmpdir(), 'freeradius-ca-sync-rogue-'));
     const pkiDir = join(dir, 'pki');
     const caPath = join(dir, 'ca_path');
-    execFileSync('mkdir', ['-p', pkiDir, caPath]);
+    const intermediateDir = join(dir, 'intermediates');
+    execFileSync('mkdir', ['-p', pkiDir, caPath, intermediateDir]);
 
     // El servidor HTTP (comprometido/erroneo) sirve la intermedia AJENA,
     // seguida de SU PROPIA raiz -que el script debe descartar sin usarla-.
@@ -301,6 +520,7 @@ test(
     const configPath = writeConfig(dir, {
       PANEL_PKI_URL: `file://${pkiDir}`,
       CA_PATH: caPath,
+      INTERMEDIATE_DIR: intermediateDir,
       ROOT_CERT_FILE: rootPath,
       ROOT_CERT_SHA256: rootSha256,
       FREERADIUS_SERVICE: 'freeradius-does-not-exist-in-this-test',
@@ -316,6 +536,7 @@ test(
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /no verifica contra la raiz local/);
     assert.equal(existsSync(join(caPath, 'panel-intermediate-1.pem')), false);
+    assert.equal(existsSync(join(intermediateDir, 'panel-intermediate-1.pem')), false);
   },
 );
 
@@ -335,7 +556,8 @@ test(
     const dir = mkdtempSync(join(tmpdir(), 'freeradius-ca-sync-expiredcrl-'));
     const pkiDir = join(dir, 'pki');
     const caPath = join(dir, 'ca_path');
-    execFileSync('mkdir', ['-p', pkiDir, caPath]);
+    const intermediateDir = join(dir, 'intermediates');
+    execFileSync('mkdir', ['-p', pkiDir, caPath, intermediateDir]);
 
     writeFileSync(join(pkiDir, 'ca-chain.pem'), `${chain.intermediateCert.toString()}\n${chain.rootCert.toString()}`, 'utf8');
     writeFileSync(join(pkiDir, 'crl.pem'), expiredCrl.toString(), 'utf8');
@@ -348,6 +570,7 @@ test(
     const configPath = writeConfig(dir, {
       PANEL_PKI_URL: `file://${pkiDir}`,
       CA_PATH: caPath,
+      INTERMEDIATE_DIR: intermediateDir,
       ROOT_CERT_FILE: rootPath,
       ROOT_CERT_SHA256: rootSha256,
       FREERADIUS_SERVICE: 'freeradius-does-not-exist-in-this-test',
@@ -363,5 +586,80 @@ test(
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /caducado/);
     assert.equal(existsSync(join(caPath, 'panel-intermediate-1.pem')), false);
+    assert.equal(existsSync(join(intermediateDir, 'panel-intermediate-1.pem')), false);
+  },
+);
+
+/**
+ * Guarda de rutas (prompt 12.10): INTERMEDIATE_DIR no puede ser CA_PATH ni
+ * quedar dentro de el (la intermedia acabaria como ancla en ca_path), pero SI
+ * puede ser su directorio padre -es el valor por defecto-. La guarda se
+ * ejecuta antes de tocar nada: estos tests no necesitan openssl ni rehash, asi
+ * que no se omiten en ningun entorno con bash. El "no aborta en la guarda" se
+ * comprueba porque el script llega al SIGUIENTE chequeo (ROOT_CERT_FILE
+ * inexistente a proposito) en vez de salir por la guarda.
+ */
+const GUARD_MESSAGE = /es CA_PATH .* o esta dentro de el/;
+
+function runGuard(layout: (root: string) => { caPath: string; intermediateDir: string }): SyncRunResult {
+  // Rutas con "/" aunque estemos en Windows: el script compara como texto
+  // (case ... "$CA_PATH"/*), y en la .28 real siempre son rutas POSIX.
+  const root = mkdtempSync(join(tmpdir(), 'ca-sync-guard-')).replace(/\\/g, '/');
+  const { caPath, intermediateDir } = layout(root);
+  mkdirSync(caPath, { recursive: true });
+  const configPath = writeConfig(root, {
+    PANEL_PKI_URL: 'file:///nada',
+    CA_PATH: caPath,
+    INTERMEDIATE_DIR: intermediateDir,
+    ROOT_CERT_FILE: join(root, 'no-existe.pem'),
+    ROOT_CERT_SHA256: '0'.repeat(64),
+  });
+  return runSyncScript({
+    FREERADIUS_VPN_CA_SYNC_CONFIG: configPath,
+    FREERADIUS_VPN_CA_SYNC_STATE_DIR: join(root, 'state'),
+  });
+}
+
+test(
+  'freeradius-vpn-ca-sync.sh (guarda de rutas): los valores por defecto -INTERMEDIATE_DIR es el padre de CA_PATH- NO abortan en la guarda',
+  { skip: !hasCli('bash') && 'bash no disponible' },
+  () => {
+    const result = runGuard((root) => ({
+      intermediateDir: `${root}/certs/vpn`,
+      caPath: `${root}/certs/vpn/ca`,
+    }));
+
+    assert.doesNotMatch(result.stderr, GUARD_MESSAGE, 'la guarda no debe abortar con INTERMEDIATE_DIR como padre de CA_PATH');
+    assert.match(result.stderr, /ROOT_CERT_FILE .* no existe/, 'debe llegar al siguiente chequeo');
+  },
+);
+
+test(
+  'freeradius-vpn-ca-sync.sh (guarda de rutas): INTERMEDIATE_DIR igual a CA_PATH aborta (tambien con barra final)',
+  { skip: !hasCli('bash') && 'bash no disponible' },
+  () => {
+    for (const trailing of ['', '/']) {
+      const result = runGuard((root) => ({
+        caPath: `${root}/ca`,
+        intermediateDir: `${root}/ca${trailing}`,
+      }));
+
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, GUARD_MESSAGE);
+    }
+  },
+);
+
+test(
+  'freeradius-vpn-ca-sync.sh (guarda de rutas): INTERMEDIATE_DIR dentro de CA_PATH aborta',
+  { skip: !hasCli('bash') && 'bash no disponible' },
+  () => {
+    const result = runGuard((root) => ({
+      caPath: `${root}/ca`,
+      intermediateDir: `${root}/ca/intermedias`,
+    }));
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, GUARD_MESSAGE);
   },
 );

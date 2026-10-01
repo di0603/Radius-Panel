@@ -26,19 +26,25 @@ internal sealed class RenewalOrchestrator
 {
     private readonly ICertificateEnrollmentService _certificateService;
     private readonly IEstClient _estClient;
+    private readonly IVpnConnectionService _vpnConnectionService;
     private readonly IUserConfirmations _confirmations;
     private readonly FileLogger _logger;
     private readonly AppVersion _currentAppVersion;
+    private readonly ICertificateLifecycle _lifecycle;
 
     public RenewalOrchestrator(
         ICertificateEnrollmentService certificateService,
         IEstClient estClient,
+        IVpnConnectionService vpnConnectionService,
         IUserConfirmations confirmations,
         FileLogger logger,
-        AppVersion currentAppVersion)
+        AppVersion currentAppVersion,
+        ICertificateLifecycle lifecycle)
     {
+        _lifecycle = lifecycle;
         _certificateService = certificateService;
         _estClient = estClient;
+        _vpnConnectionService = vpnConnectionService;
         _confirmations = confirmations;
         _logger = logger;
         _currentAppVersion = currentAppVersion;
@@ -65,57 +71,109 @@ internal sealed class RenewalOrchestrator
             return new RenewalResult(RenewalOutcome.BlockedByMinAppVersion, message);
         }
 
-        if (!status.RenewDue)
+        if (!IsRenewalDue(status, DateTimeOffset.UtcNow, Environment.GetEnvironmentVariable(RenewThresholdVariable), out var forcedByThreshold))
         {
             _logger.Info($"Renovacion: \"{state.Cn}\" todavia vigente (caduca {status.NotAfter:u}).");
             return new RenewalResult(RenewalOutcome.NotDue);
         }
 
+        if (forcedByThreshold)
+        {
+            _logger.Warn($"Renovacion FORZADA por {RenewThresholdVariable} (solo pruebas): el panel decia que aun no tocaba.");
+        }
         _logger.Info($"Renovacion: toca renovar \"{state.Cn}\" (caduca {status.NotAfter:u}). Generando clave nueva.");
 
-        using var newKey = CreateRenewalKey(state.Cn);
-
-        X509Certificate2 newCertificate;
+        InstalledCertificateResult enrolled;
         try
         {
-            newCertificate = await _estClient
-                .SimpleReenrollAsync(estBaseUri, currentCertificate, newKey.CsrDer, chain, ct)
-                .ConfigureAwait(false);
+            enrolled = await _certificateService.EnrollAsync(
+                state.Cn,
+                _confirmations.ConfirmSoftwareKeyFallback,
+                (csrDer, enrollCt) => _estClient.SimpleReenrollAsync(estBaseUri, currentCertificate, csrDer, chain, enrollCt),
+                ct).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            _logger.Error("Renovacion: simplereenroll ha fallado, se conserva el certificado anterior", ex);
+            _logger.Error("Renovacion: simplereenroll/instalacion ha fallado, se conserva el certificado anterior", ex);
             throw;
         }
 
-        var installedCertificate = _certificateService.InstallIssuedCertificate(newCertificate, newKey);
-        _logger.Info($"Renovacion: certificado nuevo instalado (huella {installedCertificate.Thumbprint}). Borrando el anterior.");
+        using var installedCertificate = enrolled.Certificate;
+        _logger.Info($"Renovacion: certificado nuevo instalado (huella {installedCertificate.Thumbprint}).");
 
-        _certificateService.RemoveCertificate(currentCertificate);
+        // ORDEN ESTRICTO (el certificado viejo se borra el ULTIMO y solo si todo lo anterior salio bien):
+        //  1. credenciales EAP de la entrada apuntando al certificado NUEVO (otra huella: si no, la
+        //     conexion seguiria usando el viejo);
+        //  2. comprobar que la entrada existe y esas credenciales quedaron guardadas;
+        //  3. registrar el nuevo y guardar el estado de la conexion con la huella nueva;
+        //  4. SOLO ENTONCES borrar el viejo y limpiar.
+        // Si 1, 2 o 3 fallan: ROLLBACK (se borra el certificado NUEVO con su clave -dos del mismo
+        // emisor provocan el selector de Windows, el 703-, se devuelven las credenciales EAP al viejo,
+        // se conserva el viejo y se relanza la excepcion original).
+        var previousThumbprint = currentCertificate.Thumbprint;
+        var originalThumbprint = state.CertificateThumbprint;
+        var originalTpm = state.IsTpmBacked;
+        var originalLastEnrolled = state.LastEnrolledAtUtc;
+        try
+        {
+            _vpnConnectionService.SaveEapCredentials(state.Cn, installedCertificate);
+            ConnectionConfigurationCheck.EnsureConfigured(_vpnConnectionService, state.Cn, installedCertificate.Thumbprint);
 
-        state.CertificateThumbprint = installedCertificate.Thumbprint;
-        state.IsTpmBacked = newKey.IsTpmBacked;
-        state.LastEnrolledAtUtc = DateTimeOffset.UtcNow;
-        ConnectionStore.Save(state);
+            _lifecycle.Register(installedCertificate, state.Cn, state.Server, state.Cn);
+            state.CertificateThumbprint = installedCertificate.Thumbprint;
+            state.IsTpmBacked = enrolled.IsTpmBacked;
+            state.LastEnrolledAtUtc = DateTimeOffset.UtcNow;
+            ConnectionStore.Save(state);
+        }
+        catch (Exception ex)
+        {
+            state.CertificateThumbprint = originalThumbprint;
+            state.IsTpmBacked = originalTpm;
+            state.LastEnrolledAtUtc = originalLastEnrolled;
+            NewCertificateRollback.Run(
+                _lifecycle, _logger, "Renovacion", installedCertificate.Thumbprint, ex,
+                restorePreviousConfiguration: () => _vpnConnectionService.SaveEapCredentials(state.Cn, currentCertificate));
+            throw;
+        }
+
+        try
+        {
+            _lifecycle.RemoveWithKey(previousThumbprint);
+        }
+        catch (Exception ex)
+        {
+            _logger.Warn($"Renovacion: no se ha podido borrar el certificado anterior (no es grave, la proxima limpieza lo intentara): {ex.Message}");
+        }
+
+        try
+        {
+            _lifecycle.CleanupStale(state.Cn, state.Server, installedCertificate, ConnectionStore.ListOrNull()?.Select(c => c.Cn).ToList());
+        }
+        catch (Exception ex)
+        {
+            _logger.Warn($"Renovacion: no se ha podido limpiar certificados antiguos (no es grave): {ex.Message}");
+        }
 
         _logger.Info($"Renovacion: completada para \"{state.Cn}\".");
         return new RenewalResult(RenewalOutcome.Renewed);
     }
 
-    private EnrolledKey CreateRenewalKey(string cn)
+    /// <summary>SOLO PARA PRUEBAS: si el certificado caduca en menos de estos dias, se renueva aunque el panel diga que aun no toca (p.ej. 40 con certificados de 30 dias).</summary>
+    internal const string RenewThresholdVariable = "DIDEVVPN_RENEW_THRESHOLD_DAYS";
+
+    internal static bool IsRenewalDue(EstStatus status, DateTimeOffset now, string? thresholdDays, out bool forcedByThreshold)
     {
-        if (_certificateService.TryCreateTpmBackedKey(cn, out var tpmKey, out var failure))
+        forcedByThreshold = false;
+        if (status.RenewDue)
         {
-            return tpmKey!;
+            return true;
         }
-
-        _logger.Warn($"Renovacion: no se pudo usar el TPM ({failure?.Message}).");
-        if (!_confirmations.ConfirmSoftwareKeyFallback(failure?.Message ?? "TPM no disponible"))
+        if (int.TryParse(thresholdDays, out var days) && days > 0 && status.NotAfter - now <= TimeSpan.FromDays(days))
         {
-            throw new OperationCanceledException("Renovacion cancelada: no hay TPM disponible y no se confirmo continuar con una clave por software.");
+            forcedByThreshold = true;
+            return true;
         }
-
-        return _certificateService.CreateSoftwareBackedKey(cn);
+        return false;
     }
 
     private static X509Certificate2? FindCurrentCertificate(ConnectionRecord state)

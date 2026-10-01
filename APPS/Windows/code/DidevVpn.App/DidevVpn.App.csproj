@@ -13,6 +13,14 @@
     <InvariantGlobalization>true</InvariantGlobalization>
     <!-- No usar trimming: no soportado para WinForms (NETSDK1175), ver APPS/Windows/NOTAS-prompt-12-en-pausa.md punto 10. -->
     <PublishTrimmed>false</PublishTrimmed>
+    <!--
+      ReadyToRun (prompt 12.7): precompila a nativo en el propio publish, en
+      vez de compilar JIT en cada arranque -mejora el tiempo de arranque,
+      sobre todo con un runtime self-contained como este-. Necesita un RID
+      concreto (build.ps1/build.sh ya pasan -r win-x64 explicitamente en
+      cada publish; sin RID, esta propiedad no hace nada).
+    -->
+    <PublishReadyToRun>true</PublishReadyToRun>
   </PropertyGroup>
 
   <ItemGroup>

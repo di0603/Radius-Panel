@@ -115,13 +115,7 @@ internal static class UninstallCleanupRunner
     {
         try
         {
-            using var store = new X509Store(StoreName.My, StoreLocation.CurrentUser);
-            store.Open(OpenFlags.ReadWrite);
-            var matches = store.Certificates.Find(X509FindType.FindByThumbprint, thumbprint, validOnly: false);
-            foreach (var cert in matches)
-            {
-                store.Remove(cert);
-            }
+            new CertificateLifecycle(logger).RemoveWithKey(thumbprint);
         }
         catch (Exception ex)
         {
