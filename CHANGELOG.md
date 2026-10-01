@@ -7,6 +7,44 @@ Este proyecto usa versionado semantico.
 
 ### Anadido
 
+- **Prompt 12.10 (correcciones tras la revision)**:
+  - **Sincronizador, BLOQUEANTE (1)**: la guarda de rutas de
+    `deploy/freeradius-vpn-ca-sync.sh` estaba al reves: con los valores por
+    defecto (`INTERMEDIATE_DIR=.../certs/vpn`, `CA_PATH=.../certs/vpn/ca`) el
+    script abortaba con "tienen que ser distintos" antes de sincronizar nada.
+    Ahora impide lo contrario: que `INTERMEDIATE_DIR` sea `CA_PATH` o quede
+    dentro (normalizando barras finales). Tests sin `openssl rehash` (no se
+    omiten en ningun entorno con bash): valores por defecto no abortan, igual a
+    `CA_PATH` aborta, dentro de `CA_PATH` aborta; comprobado por mutacion (con la
+    guarda antigua fallan 3 tests). El extremo a extremo con openssl real y la
+    disposicion real ya no se omite por falta de `openssl rehash`: si el openssl
+    no lo soporta (Git for Windows) corre con un shim que lo emula con copias,
+    con constancia visible en la salida; solo se omite si falta bash/openssl/curl.
+    Al ejecutarlo por primera vez aqui destapo dos errores del propio test (la
+    raiz si conserva su enlace `.0`; la CRL instalada lleva la etiqueta
+    `X509 CRL`), corregidos.
+  - **Limpieza de certificados (2)**: el borrado de huerfanos solo ocurre si la
+    lista de conexiones se leyo bien (`ConnectionStore.ListOrNull()`: null si el
+    directorio no se puede enumerar o algun fichero esta corrupto; con null no se
+    borra ningun huerfano y se registra un WARN); un certificado solo es
+    "sustituido"/"huerfano" si coincide el SERVIDOR y el emisor (por nombre y por
+    Authority Key Identifier, guardado en el registro: dos CA con el mismo CN ya
+    no colisionan; si solo uno de los dos conoce el identificador no se borra).
+    Tests con registro y almacen simulados.
+  - **Orden alta/renovacion (3)**: instalar el nuevo -> credenciales EAP /
+    conexion con el nuevo -> comprobar que la entrada existe y tiene las
+    credenciales guardadas (`ConnectionConfigurationCheck`) -> guardar el estado
+    -> SOLO ENTONCES borrar el viejo. Antes, la renovacion borraba el viejo antes
+    de guardar el estado y sin comprobar la entrada. Tests con fakes que registran
+    las llamadas, incluido el fallo de cada paso intermedio.
+  - **Comentario de `EapUserCredentialStore` (4)**: decia que sin credenciales
+    guardadas EAP-TLS siempre abre el selector aunque haya un solo candidato; no
+    estaba medido. Medido (2026-10-01): un candidato y SIN credenciales -> rasdial
+    conecta sin dialogo (exit 0); dos candidatos y credenciales YA guardadas ->
+    seguia el 703. El almacen no se ha demostrado necesario; se mantiene
+    (funciona, inocuo). Experimento repetible en
+    `APPS/Windows/code/experimentos/exp-sin-credenciales.ps1`.
+
 - **Prompt 12.9 (hotfix 0.1.10, Windows)**: al pulsar Conectar la 0.1.9 mostraba
   un volcado `CultureNotFoundException: Only the invariant culture is supported
   in globalization-invariant mode` (`TrafficFormatter..cctor`): la app se

@@ -422,6 +422,14 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
   lado del panel (rama `feat/vpn-12.5-huellas-panel`); la reescritura de
   `didev-vpn-windows` como cliente generico va en
   `feat/vpn-12-windows-wip`. Detalle completo en el CHANGELOG.
+- [x] **Prompt 12.10 (correcciones tras la revision)**: guarda de rutas del
+  sincronizador corregida (abortaba con los valores por defecto) con tests que no
+  dependen de `openssl rehash`; limpieza de certificados mas segura (lista de
+  conexiones leida, mismo servidor y emisor); orden garantizado alta/renovacion
+  (el viejo se borra el ultimo); comentario del almacen de credenciales EAP con lo
+  realmente medido. Pendiente de probar en el equipo: el experimento de dos
+  conexiones del mismo emisor (exige administrador) y la renovacion real contra el
+  panel. Rama `feat/vpn-12.7-windows-rendimiento`, pendiente de revision.
 - [ ] **Prompt 12.9 (arreglos tras la prueba real de la 0.1.8)**: hechos el
   estado real (causa: tamano de `RASCONNSTATUSW` 564, no 562), la UI que nunca
   se queda en "Trabajando...", los tests sin tocar el log real, el
