@@ -405,7 +405,10 @@ export function VpnProfilesPage() {
           integra a mano una sola vez (sets vacios + reglas fijas; con los sets vacios no pasa nada
           de la VPN). Lo que cambia con los rangos y la lista es <Code>vpn-profiles.nft</Code>, que
           solo rellena esos sets y se aplica con <Code>deploy/vpn-gateway-apply-profiles.sh</Code>{' '}
-          (con confirmacion y reversion automatica en 60 s).
+          (con confirmacion y reversion automatica en 60 s). Antes de integrar el fragmento, ejecuta
+          una vez <Code>--init-empty</Code> en la VM VPN: el <Code>include</Code> final de
+          <Code>nftables.conf</Code> no puede apuntar a un fichero que no existe (la maquina
+          arrancaria sin firewall).
         </Text>
       </Alert>
 

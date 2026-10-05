@@ -430,6 +430,50 @@ test('integrar el fragmento quita EXACTAMENTE las tres lineas literales de forwa
   assert.ok(inp.indexOf('tcp dport 22 accept') < inp.indexOf('@vpn_lan_full_ips'));
 });
 
+/* ----------------------- script de aplicacion: coherencia con el generador ----------------------- */
+
+test('el script de aplicacion gestiona EXACTAMENTE los mismos sets que genera el panel (sin deriva)', () => {
+  const script = readFileSync(
+    resolve(
+      dirname(fileURLToPath(import.meta.url)),
+      '..',
+      '..',
+      '..',
+      'deploy',
+      'vpn-gateway-apply-profiles.sh',
+    ),
+    'utf8',
+  );
+  const match = /^ALLOWED_SETS="([^"]+)"/m.exec(script);
+  assert.ok(match, 'ALLOWED_SETS en el script');
+  assert.deepEqual(match![1]!.split(' ').sort(), [...ALL_SET_NAMES].sort());
+});
+
+test('el fragmento y el script exigen el fichero vacio ANTES de integrar (--init-empty) y el include no puede apuntar a algo inexistente', () => {
+  const text = buildNftablesFragment(OPTIONS, FIXED_DATE);
+  assert.ok(text.includes('vpn-gateway-apply-profiles.sh --init-empty'));
+  assert.ok(text.includes('arranca SIN firewall'));
+  assert.ok(
+    text.indexOf('--init-empty') < text.indexOf('PARTE 1: pegar'),
+    'el paso del fichero vacio va antes de integrar',
+  );
+  const script = readFileSync(
+    resolve(
+      dirname(fileURLToPath(import.meta.url)),
+      '..',
+      '..',
+      '..',
+      'deploy',
+      'vpn-gateway-apply-profiles.sh',
+    ),
+    'utf8',
+  );
+  assert.ok(script.includes('--init-empty'));
+  assert.ok(script.includes('atomic_install'));
+  assert.ok(/mv -f "\$tmp" "\$dest"/.test(script), 'sustitucion por rename');
+  assert.ok(script.includes('NO existe: al arrancar, nft -f abortaria'));
+});
+
 /* ------------------------------ nft -c -f (opcional) ---------------------------- */
 
 /** Un nft capaz de hacer `-c` en este entorno (directo, o dentro de un netns de usuario), o null. */

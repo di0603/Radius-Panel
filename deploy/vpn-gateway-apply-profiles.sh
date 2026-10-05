@@ -7,11 +7,19 @@
 # El fichero SOLO rellena sets que YA existen dentro de "inet filter"
 # (flush set + add element, en una carga atomica): las reglas que los usan
 # viven en /etc/nftables.conf (fragmento revisado e integrado a mano una vez,
-# ver el boton "Descargar fragmento de nftables.conf" del panel). Este script
-# NO crea tablas, cadenas ni reglas, y NO edita /etc/nftables.conf.
+# ver el boton "Fragmento de nftables.conf" del panel). Este script NO crea
+# tablas, cadenas ni reglas, y NO edita /etc/nftables.conf.
 #
-# NO lo lanza el panel ni ningun timer: lo revisas y lo ejecutas tu, como root:
+# NO lo lanza el panel ni ningun timer: lo revisas y lo ejecutas tu, como root.
 #
+# PRIMERA VEZ (ANTES de integrar el fragmento en /etc/nftables.conf):
+#   sudo deploy/vpn-gateway-apply-profiles.sh --init-empty
+# Crea (de forma atomica: temporal + rename) la version VACIA valida de
+# $TARGET -solo con los "flush set"- si no existe. Es imprescindible: el
+# fragmento termina con `include "$TARGET"` y, si ese fichero no existe, nft -f
+# aborta TODA la carga de nftables.conf y la maquina arranca sin firewall.
+#
+# USO NORMAL:
 #   1. Descarga vpn-profiles.nft desde el panel (VPN -> Perfiles de acceso) y
 #      copialo a la .29. Revisalo: nada de el se carga hasta el paso 3.
 #   2. sudo deploy/vpn-gateway-apply-profiles.sh --check-only vpn-profiles.nft
@@ -20,6 +28,9 @@
 #         y escribe CONFIRMAR antes de que acabe la cuenta atras.
 #
 # Que hace, en orden (parando en el primer fallo):
+#   - SE NIEGA A CONTINUAR si /etc/nftables.conf incluye $TARGET y ese fichero
+#     no existe (el arranque abortaria), o si existe pero no es un fichero de
+#     sets valido.
 #   - Rechaza el fichero si trae CUALQUIER linea que no sea comentario, linea
 #     vacia, "flush set inet filter <set vpn_...>" o "add element inet filter
 #     <set vpn_...> { ... }" (adios a "flush ruleset", tablas, cadenas, reglas).
@@ -28,15 +39,17 @@
 #   - nft -c -f (comprueba la sintaxis sin cargar nada).
 #   - Copia de seguridad en $BACKUP_DIR: nftables.conf, el fichero instalado
 #     anterior, el ruleset completo y el contenido actual de los sets.
-#   - Carga atomica (nft -f es una unica transaccion) y lanza un vigilante
-#     independiente de esta sesion (setsid) que restaura los sets pasados
-#     $CONFIRM_SECONDS salvo que se confirme.
-#   - Solo tras CONFIRMAR instala el fichero en $TARGET (el que incluye
-#     /etc/nftables.conf para que sobreviva a un reinicio).
+#   - ARMA el vigilante (independiente de esta sesion: setsid) ANTES de cargar y
+#     despues carga de forma atomica (nft -f es una unica transaccion). Armarlo
+#     antes elimina la ventana en la que una sesion muerta justo tras la carga
+#     dejaba los sets nuevos sin vigilante. Si no se confirma en $CONFIRM_SECONDS
+#     el vigilante restaura los sets.
+#   - Solo tras CONFIRMAR instala el fichero en $TARGET, de forma atomica
+#     (temporal en el mismo directorio + rename): nunca queda a medias.
 #
 # Revertir a mano despues de confirmar: restaura el fichero anterior de
-# $BACKUP_DIR (vpn-profiles.nft.installed.<fecha>) en $TARGET y vuelve a
-# cargarlo (nft -f), o carga $BACKUP_DIR/revert-vpn-profiles.<fecha>.nft.
+# $BACKUP_DIR/run.<fecha>.<id>/vpn-profiles.nft.installed en $TARGET y vuelve a
+# cargarlo (nft -f), o carga $BACKUP_DIR/run.<fecha>.<id>/revert-vpn-profiles.nft.
 #
 # Variables (todas opcionales): NFT_BIN, NFTABLES_CONF, TARGET, BACKUP_DIR,
 # CONFIRM_SECONDS.
@@ -51,17 +64,21 @@ FAMILY="inet"
 TABLE="filter"
 # Sets que este script puede tocar (los mismos que declara el fragmento).
 ALLOWED_SETS="vpn_lan_restricted_ips vpn_lan_full_ips vpn_internet_only_ips vpn_internet_lan_restricted_ips vpn_internet_lan_full_ips vpn_restricted_dests vpn_restricted_icmp"
+set_re="vpn_[a-z_]+"
 
 usage() {
-  echo "Uso: $0 [--check-only] <vpn-profiles.nft>" >&2
+  echo "Uso: $0 --init-empty" >&2
+  echo "     $0 [--check-only] <vpn-profiles.nft>" >&2
   exit 2
 }
 
 check_only=0
+init_empty=0
 file=""
 for arg in "$@"; do
   case "$arg" in
     --check-only) check_only=1 ;;
+    --init-empty) init_empty=1 ;;
     -h | --help) usage ;;
     -*) usage ;;
     *)
@@ -70,7 +87,11 @@ for arg in "$@"; do
       ;;
   esac
 done
-[ -n "$file" ] || usage
+if [ "$init_empty" -eq 1 ]; then
+  { [ -z "$file" ] && [ "$check_only" -eq 0 ]; } || usage
+else
+  [ -n "$file" ] || usage
+fi
 
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
 die() {
@@ -85,32 +106,99 @@ esac
 if [ "${SKIP_ROOT_CHECK:-0}" != "1" ] && [ "$(id -u)" -ne 0 ]; then
   die "ejecutalo como root (sudo): nft necesita privilegios"
 fi
-[ -r "$file" ] || die "no se puede leer $file"
 
-# 1) Lista blanca estricta de lineas: solo rellena sets, nada mas.
-set_re="vpn_[a-z_]+"
-bad_lines="$(
-  grep -Ev \
-    -e '^[[:space:]]*$' \
-    -e '^[[:space:]]*#' \
-    -e "^flush set $FAMILY $TABLE $set_re\$" \
-    -e "^add element $FAMILY $TABLE $set_re \\{ [0-9A-Za-z./, -]+ \\}\$" \
-    "$file" || true
-)"
-if [ -n "$bad_lines" ]; then
-  echo "Lineas no permitidas en $file (solo 'flush set' y 'add element' sobre sets vpn_*):" >&2
-  echo "$bad_lines" | head -5 >&2
-  die "$file no es un fichero de sets valido; no se ha tocado nada"
+# Valida un fichero de sets con una lista blanca estricta de lineas: solo rellena
+# sets vpn_*, nada mas. Deja en REFERENCED_SETS los sets que toca.
+REFERENCED_SETS=""
+validate_sets_file() {
+  local f="$1" bad name
+  [ -r "$f" ] || die "no se puede leer $f"
+  bad="$(
+    grep -Ev \
+      -e '^[[:space:]]*$' \
+      -e '^[[:space:]]*#' \
+      -e "^flush set $FAMILY $TABLE $set_re\$" \
+      -e "^add element $FAMILY $TABLE $set_re \\{ [0-9A-Za-z./, -]+ \\}\$" \
+      "$f" || true
+  )"
+  if [ -n "$bad" ]; then
+    echo "Lineas no permitidas en $f (solo 'flush set' y 'add element' sobre sets vpn_*):" >&2
+    echo "$bad" | head -5 >&2
+    die "$f no es un fichero de sets valido; no se ha tocado nada"
+  fi
+  REFERENCED_SETS="$(grep -Eo "^(flush set|add element) $FAMILY $TABLE $set_re" "$f" | awk '{print $NF}' | sort -u)"
+  [ -n "$REFERENCED_SETS" ] || die "$f no rellena ningun set"
+  for name in $REFERENCED_SETS; do
+    case " $ALLOWED_SETS " in
+      *" $name "*) ;;
+      *) die "el set '$name' no esta entre los que gestiona este script ($ALLOWED_SETS)" ;;
+    esac
+  done
+}
+
+# Instalacion ATOMICA: temporal en el MISMO directorio + rename. Nunca deja el destino a medias.
+atomic_install() {
+  local src="$1" dest="$2" dir tmp
+  dir="$(dirname "$dest")"
+  mkdir -p "$dir"
+  tmp="$(mktemp "$dir/.$(basename "$dest").XXXXXX")"
+  if ! { cp "$src" "$tmp" && chmod 0644 "$tmp"; }; then
+    rm -f "$tmp"
+    die "no se pudo preparar el temporal junto a $dest"
+  fi
+  sync "$tmp" 2>/dev/null || sync 2>/dev/null || true
+  mv -f "$tmp" "$dest" || {
+    rm -f "$tmp"
+    die "no se pudo renombrar el temporal a $dest"
+  }
+}
+
+# --init-empty: version vacia valida de $TARGET (solo los flush set), ANTES de integrar el fragmento.
+if [ "$init_empty" -eq 1 ]; then
+  if [ -e "$TARGET" ]; then
+    validate_sets_file "$TARGET"
+    log "$TARGET ya existe y es un fichero de sets valido: no se toca."
+    exit 0
+  fi
+  empty_src="$(mktemp)"
+  {
+    echo "#!/usr/sbin/nft -f"
+    echo "# Version VACIA valida de los sets de los perfiles de acceso VPN (solo 'flush set')."
+    echo "# La crea deploy/vpn-gateway-apply-profiles.sh --init-empty ANTES de integrar el fragmento en"
+    echo "# /etc/nftables.conf: el 'include' de este fichero no puede apuntar a algo que no existe."
+    for name in $ALLOWED_SETS; do echo "flush set $FAMILY $TABLE $name"; done
+  } >"$empty_src"
+  validate_sets_file "$empty_src"
+  atomic_install "$empty_src" "$TARGET"
+  rm -f "$empty_src"
+  log "Creado $TARGET (version vacia valida, instalacion atomica)."
+  log "Ya puedes integrar el fragmento en /etc/nftables.conf (su 'include' apunta a este fichero)."
+  exit 0
 fi
 
-referenced_sets="$(grep -Eo "^(flush set|add element) $FAMILY $TABLE $set_re" "$file" | awk '{print $NF}' | sort -u)"
-[ -n "$referenced_sets" ] || die "$file no rellena ningun set"
-for name in $referenced_sets; do
-  case " $ALLOWED_SETS " in
-    *" $name "*) ;;
-    *) die "el set '$name' no esta entre los que gestiona este script ($ALLOWED_SETS)" ;;
-  esac
-done
+# 0) El include de nftables.conf no puede apuntar a un fichero que no existe: nft -f abortaria TODA la
+#    carga al arrancar y la maquina se quedaria sin firewall.
+include_found=0
+if [ -f "$NFTABLES_CONF" ]; then
+  while IFS= read -r line; do
+    inc="$(printf '%s\n' "$line" | sed -n 's/^[[:space:]]*include[[:space:]]*"\([^"]*\)".*$/\1/p')"
+    [ -n "$inc" ] || continue
+    case "$inc" in *'*'* | *'?'* | *'['*) continue ;; esac # comodines: nft admite que no haya coincidencias
+    if [ "$inc" = "$TARGET" ]; then
+      include_found=1
+      [ -e "$TARGET" ] || die "$NFTABLES_CONF incluye $TARGET y ese fichero NO existe: al arrancar, nft -f abortaria toda la carga y la maquina se quedaria sin firewall. Crealo ya con: $0 --init-empty"
+    elif [ ! -e "$inc" ]; then
+      log "AVISO: $NFTABLES_CONF incluye $inc, que no existe (no es nuestro, pero al arrancar nft -f abortaria)."
+    fi
+  done <"$NFTABLES_CONF"
+fi
+if [ -e "$TARGET" ]; then
+  validate_sets_file "$TARGET" # si esta instalado, tiene que ser valido
+fi
+
+# 1) Lista blanca estricta de lineas del fichero a aplicar.
+validate_sets_file "$file"
+referenced_sets="$REFERENCED_SETS"
 
 # 2) Los sets tienen que existir ya en inet filter (los declara el fragmento).
 for name in $referenced_sets; do
@@ -132,7 +220,7 @@ if [ "$(printf '%s\n%s\n' "5.6" "$kernel" | sort -V | head -1)" != "5.6" ]; then
   log "AVISO: kernel $kernel < 5.6: puede no soportar sets de intervalos concatenados (vpn_restricted_dests)."
 fi
 
-if [ -f "$NFTABLES_CONF" ] && ! grep -q "$(basename "$TARGET")" "$NFTABLES_CONF"; then
+if [ -f "$NFTABLES_CONF" ] && [ "$include_found" -eq 0 ]; then
   log "AVISO: $NFTABLES_CONF no incluye $TARGET; los sets se vaciarian en el proximo reinicio (la VPN fallaria cerrando)."
   log "       Anade a mano al final: include \"$TARGET\"   (este script no edita nftables.conf)"
 fi
@@ -146,16 +234,21 @@ fi
 stamp="$(date +%Y%m%d-%H%M%S)"
 umask 077
 mkdir -p "$BACKUP_DIR"
-backup_conf="$BACKUP_DIR/nftables.conf.$stamp"
-backup_target="$BACKUP_DIR/vpn-profiles.nft.installed.$stamp"
-backup_ruleset="$BACKUP_DIR/ruleset.$stamp.nft"
-revert_file="$BACKUP_DIR/revert-vpn-profiles.$stamp.nft"
-confirm_flag="$BACKUP_DIR/confirm.$stamp"
+# Directorio UNICO por ejecucion (mktemp -d): todo lo de esta ejecucion -copias, fichero de reversion y la
+# bandera de confirmacion- vive aqui y nunca puede coincidir con lo de otra. (Antes los nombres salian solo
+# de un sello de 1 s: dos ejecuciones en el mismo segundo compartian "confirm.<sello>" y el vigilante de la
+# segunda veia la bandera de la primera, creia que ya estaba confirmada y NO revertia.)
+run_dir="$(mktemp -d "$BACKUP_DIR/run.$stamp.XXXXXX")"
+backup_conf="$run_dir/nftables.conf"
+backup_target="$run_dir/vpn-profiles.nft.installed"
+backup_ruleset="$run_dir/ruleset.nft"
+revert_file="$run_dir/revert-vpn-profiles.nft"
+confirm_flag="$run_dir/confirm"
 
 [ ! -f "$NFTABLES_CONF" ] || cp -p "$NFTABLES_CONF" "$backup_conf"
 [ ! -f "$TARGET" ] || cp -p "$TARGET" "$backup_target"
 "$NFT_BIN" list ruleset >"$backup_ruleset"
-log "Copias de seguridad en $BACKUP_DIR (sufijo $stamp)."
+log "Copias de seguridad en $run_dir."
 
 # Fichero de reversion: el contenido ACTUAL de cada set que se va a tocar.
 {
@@ -181,10 +274,10 @@ revert_now() {
   fi
 }
 
-# 5) Carga atomica + vigilante independiente de esta sesion.
-log "Aplicando $file (carga atomica)..."
-"$NFT_BIN" -f "$file" || die "nft -f ha fallado; la carga es atomica, no ha cambiado nada"
-
+# 5) ARMAR el vigilante ANTES de cargar (setsid: sobrevive a que se muera esta sesion) y despues cargar.
+#    Si la sesion muere en cualquier punto a partir de aqui -incluso justo despues de la carga atomica-
+#    el vigilante ya existe y restaura los sets. Si no llega a cargarse nada, restaurar es inocuo
+#    (el fichero de reversion es el estado actual).
 watchdog_pid=""
 setsid nohup bash -c '
   sleep "$1"
@@ -193,6 +286,12 @@ setsid nohup bash -c '
   fi
 ' _ "$CONFIRM_SECONDS" "$confirm_flag" "$NFT_BIN" "$revert_file" >>"$BACKUP_DIR/watchdog.log" 2>&1 </dev/null &
 watchdog_pid=$!
+
+log "Aplicando $file (carga atomica)..."
+if ! "$NFT_BIN" -f "$file"; then
+  kill "$watchdog_pid" 2>/dev/null || true
+  die "nft -f ha fallado; la carga es atomica, no ha cambiado nada"
+fi
 
 echo
 log "Sets cargados. Abre OTRA sesion SSH para comprobar que sigues entrando y que la VPN va."
@@ -208,9 +307,8 @@ fi
 if [ "$answer" = "CONFIRMAR" ]; then
   touch "$confirm_flag"
   kill "$watchdog_pid" 2>/dev/null || true
-  mkdir -p "$(dirname "$TARGET")"
-  install -m 0644 "$file" "$TARGET"
-  log "Confirmado. Instalado en $TARGET."
+  atomic_install "$file" "$TARGET"
+  log "Confirmado. Instalado en $TARGET (instalacion atomica)."
   log "Reversion manual: nft -f $revert_file  (y restaura $backup_target en $TARGET si existia)."
   exit 0
 fi

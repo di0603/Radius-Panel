@@ -84,7 +84,34 @@ Este proyecto usa versionado semantico.
       `deploy/test-apply-profiles-netns.sh` para el script de aplicacion. Los
       golden files (`services/__golden__/vpn-profiles/`) cubren los ficheros de
       sets por perfil, el fragmento y el conf ensamblado.
-    - **Ajuste a la salida real de `nft list ruleset` de la .29**: el fragmento
+    - **Vigilante de SSH muerto (causa real) y fichero `include` (revision)**:
+    - Causa del fallo intermitente: el script nombraba la copia de seguridad, el
+      fichero de reversion y la bandera de confirmacion solo con un sello de 1 s
+      (`date +%Y%m%d-%H%M%S`). Dos ejecuciones en el mismo segundo -una confirmada
+      y la siguiente- compartian `confirm.<sello>`: el vigilante de la segunda veia
+      la bandera de la primera, daba el cambio por confirmado y NO revertia.
+      Reproducido de forma determinista con un `date` congelado: con el script
+      antiguo, 10 de 10 repeticiones fallan; el escenario original sin ese choque
+      no falla (40/40), que es por lo que parecia aleatorio. Arreglo: un directorio
+      unico por ejecucion (`mktemp -d "$BACKUP_DIR/run.<sello>.XXXXXX"`) con todos
+      los ficheros de esa ejecucion. Ademas, el vigilante se ARMA ANTES de la carga
+      atomica (antes habia una ventana de milisegundos entre la carga y el arranque
+      del vigilante en la que una sesion muerta dejaba los sets nuevos sin
+      vigilante). `deploy/test-apply-watchdog-netns.sh` repite el caso N veces en
+      tres modos (`asap`: kill en el instante en que se ven los sets nuevos;
+      `samesecond`: reloj congelado y sin limpiar entre repeticiones; `fixed`:
+      las temporizaciones de la prueba original): 50/50 en cada uno.
+    - `include "/etc/nftables.d/vpn-profiles.nft"` al final de nftables.conf: si
+      el fichero no existe, `nft -f` aborta TODA la carga y la .29 arranca sin
+      firewall. Nuevo `deploy/vpn-gateway-apply-profiles.sh --init-empty`: crea de
+      forma atomica (temporal + rename) la version vacia valida (solo `flush set`)
+      si no existe, y es el paso 1 del procedimiento, ANTES de integrar el
+      fragmento. El script de aplicacion se niega a continuar si nftables.conf
+      incluye ese fichero y no existe, o si el instalado no es un fichero de sets
+      valido, y siempre lo sustituye de forma atomica (comprobado con un lector
+      concurrente: 0 lecturas a medias). El procedimiento (paso 8) rellena los
+      sets nada mas cargar el conf.
+  - **Ajuste a la salida real de `nft list ruleset` de la .29**: el fragmento
       cita las TRES lineas literales de `chain forward` a eliminar
       (`meta ipsec exists ip daddr { 192.168.10.28, 192.168.10.30 } drop`, el
       accept de `ip saddr 192.168.10.0/24 ip daddr != 192.168.10.0/24` y el de

@@ -208,8 +208,11 @@ export function buildNftablesFragment(options: FragmentOptions, generatedAt: Dat
 #
 # ORDEN DE INTEGRACION (siempre en una COPIA de /etc/nftables.conf, nunca sobre el fichero vivo):
 #   0. En la .29: nft --version (>= 0.9.4) y uname -r (>= 5.6): sets concatenados con intervalos.
-#   1. Descargar vpn-profiles.nft del panel e instalarlo en ${SETS_FILE_INSTALL_PATH}
-#      (el include de la PARTE 4 lo necesita para poder cargar la copia).
+#   1. ANTES de tocar nftables.conf: deploy/vpn-gateway-apply-profiles.sh --init-empty. Crea, de forma
+#      atomica (temporal + rename), ${SETS_FILE_INSTALL_PATH} en su version VACIA valida (solo
+#      "flush set") si no existe. IMPRESCINDIBLE: la PARTE 4 es un "include" de ese fichero y, si no
+#      existe, nft -f aborta TODA la carga de nftables.conf y la .29 arranca SIN firewall. Comprobar
+#      con: test -s ${SETS_FILE_INSTALL_PATH}. Nunca borrarlo ni renombrarlo a mano.
 #   2. PARTE 1: pegar la declaracion de los sets dentro de "table ${FILTER_FAMILY} ${FILTER_TABLE} { ... }", antes de las cadenas.
 #   3. En "chain forward" ELIMINAR estas TRES lineas literales (y solo ellas):
 ${remove}
@@ -217,7 +220,12 @@ ${remove}
 #      "${EXISTING_EST_FORWARD_LINE}", que se queda), pegar la PARTE 2.
 #   5. PARTE 3: al final de "chain input", despues de la regla de SSH existente.
 #   6. PARTE 4: una linea "include" al final del fichero, DESPUES de la tabla.
-#   7. nft -c -f <copia>, y cargarla de una vez (nft -f es atomico: sets y reglas a la vez).
+#   7. nft -c -f <copia> (el include se resuelve: si el fichero del paso 1 no existe, falla aqui) y
+#      cargarla de una vez (nft -f es atomico: sets y reglas a la vez), con la reversion armada.
+#   8. Nada mas cargar, rellenar los sets con el fichero real descargado del panel:
+#      deploy/vpn-gateway-apply-profiles.sh vpn-profiles.nft (y CONFIRMAR). Hasta ese momento los sets
+#      estan vacios: los clientes VPN solo tienen EST 8443 e icmp (ventana corta; fallo cerrando).
+#      Ese script se niega a continuar si nftables.conf incluye un fichero que no existe.
 #
 # NO tocar (se quedan como estan): iif lo, ct state (invalid drop, established,related accept),
 # el MSS clamp, icmp/icmpv6, udp 500/4500, 3799 desde ${RADIUS_HOST}, la regla de SSH

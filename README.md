@@ -638,10 +638,17 @@ intervalos): `nft --version` (>= 0.9.4) y `uname -r` (>= 5.6).
 
 **Orden exacto de integracion (primera vez, en una COPIA de `/etc/nftables.conf`):**
 
-1. Instalar `vpn-profiles.nft` (descargado del panel) en
-   `/etc/nftables.d/vpn-profiles.nft`: el `include` de la PARTE 4 lo necesita.
-   Los dispositivos existentes estan en `internet_lan_full` (rango 75-99 de la
-   migracion): deben estar en ese fichero para no perder acceso.
+1. **ANTES de tocar `nftables.conf`:** `sudo deploy/vpn-gateway-apply-profiles.sh
+   --init-empty`. Crea, de forma atomica (temporal + rename),
+   `/etc/nftables.d/vpn-profiles.nft` en su version **vacia valida** (solo los
+   `flush set`) si no existe; si ya existe y es valido, no lo toca. Es
+   imprescindible: la PARTE 4 es un `include` de ese fichero y, **si no existe,
+   `nft -f` aborta TODA la carga de `nftables.conf` y la .29 arranca sin
+   firewall**. Comprueba con `test -s /etc/nftables.d/vpn-profiles.nft`. Nunca lo
+   borres ni lo renombres a mano. A partir de aqui el script de aplicacion se
+   niega a continuar si `nftables.conf` incluye un fichero que no existe, o si el
+   instalado no es un fichero de sets valido, y siempre lo reemplaza de forma
+   atomica (temporal en el mismo directorio + rename).
 2. PARTE 1 (sets) dentro de `table inet filter { ... }`, antes de las cadenas.
 3. En `chain forward`, **eliminar estas tres lineas literales** (y solo ellas):
    ```
@@ -657,16 +664,21 @@ intervalos): `nft --version` (>= 0.9.4) y `uname -r` (>= 5.6).
    (`meta ipsec missing ip saddr 192.168.10.0/24 tcp dport 22 accept`); en
    input no hay drop explicito, solo la policy.
 6. PARTE 4 (`include ...`) al final del fichero, fuera de la tabla.
-7. `nft -c -f <copia>`. Para cargarla con red de seguridad (solo afecta al
-   trafico del tunel; SSH desde la LAN fisica no cambia):
+7. `nft -c -f <copia>` (el `include` se resuelve aqui: si el paso 1 no se hizo,
+   falla). Para cargarla con red de seguridad (solo afecta al trafico del
+   tunel; SSH desde la LAN fisica no cambia):
    ```
    nft list ruleset > /root/ruleset.antes.nft
-   ( sleep 120; nft flush ruleset; nft -f /root/ruleset.antes.nft ) & REVERT=$!
+   ( sleep 300; nft flush ruleset; nft -f /root/ruleset.antes.nft ) & REVERT=$!
    nft -f <copia>        # atomico: sets y reglas a la vez
-   # comprueba la VPN desde un cliente; si va bien:
-   kill $REVERT
-   cp <copia> /etc/nftables.conf
    ```
+8. **Nada mas cargar**, rellena los sets con el fichero real descargado del
+   panel: `sudo deploy/vpn-gateway-apply-profiles.sh vpn-profiles.nft` y
+   `CONFIRMAR`. Hasta entonces los sets estan vacios (los clientes VPN solo
+   tienen EST 8443 e icmp: ventana corta, falla cerrando; los dispositivos
+   existentes estan en `internet_lan_full`, rango 75-99 de la migracion, y
+   vuelven al aplicar el fichero). Comprueba la VPN desde un cliente y, si va
+   bien: `kill $REVERT` y `cp <copia> /etc/nftables.conf`.
    (Los cambios posteriores de rangos o lista ya no tocan `nftables.conf`: solo
    el script de aplicacion.)
 
@@ -676,9 +688,9 @@ rechazaria. ICMP va en un set aparte porque `th dport` en un paquete ICMP lee el
 checksum, no un puerto. Nota: `icmp` en input ya esta aceptado por la regla
 existente, asi que un cliente VPN puede hacer ping a la .29 con cualquier perfil.
 
-Reversion manual tras confirmar: `nft -f /var/backups/vpn-gateway/revert-vpn-profiles.<fecha>.nft`
-(estado anterior de los sets) y restaurar `vpn-profiles.nft.installed.<fecha>`
-en `/etc/nftables.d/`. Para quitar los perfiles del todo, restaurar el
+Reversion manual tras confirmar: `nft -f /var/backups/vpn-gateway/run.<fecha>.<id>/revert-vpn-profiles.nft`
+(estado anterior de los sets; cada ejecucion tiene su propio directorio unico) y
+restaurar `run.<fecha>.<id>/vpn-profiles.nft.installed` en `/etc/nftables.d/`. Para quitar los perfiles del todo, restaurar el
 `nftables.conf` anterior y cargarlo.
 
 Pruebas con nft real (sin tocar la maquina, en un netns de usuario):
@@ -688,7 +700,10 @@ Pruebas con nft real (sin tocar la maquina, en un netns de usuario):
 cada perfil hacia .28/.29/.30, otra IP de la LAN e Internet; IPsec no se puede
 simular y el script sustituye `meta ipsec exists/missing` por la interfaz del
 cliente) y `unshare -rn bash deploy/test-apply-profiles-netns.sh /tmp/nft` (el
-script de aplicacion).
+script de aplicacion: include inexistente, `--init-empty`, sustitucion atomica,
+confirmar/revertir) y `unshare -rn bash deploy/test-apply-watchdog-netns.sh /tmp/nft 50`
+(el vigilante con la sesion muerta, 50 veces; `MODE=samesecond` o `MODE=fixed`
+para los otros dos escenarios).
 
 ### Firewall de la puerta de enlace VPN (192.168.10.29)
 
