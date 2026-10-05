@@ -34,18 +34,8 @@ Este proyecto usa versionado semantico.
     en transaccion; si falla la ficha se deshace) y desconecta la sesion activa
     con el Disconnect existente; si falla, la respuesta lo indica y la interfaz
     avisa de que aplica en la proxima conexion.
-  - **Generador** `services/vpnProfilesNft.ts` + `GET /api/vpn-profiles/nft`
-    (solo admin): tabla propia `inet vpn_profiles` (sets por perfil, cadenas
-    `forward` e `input`, EST 8443 a la .28 para todos, drop con contador), para
-    incluir desde el `/etc/nftables.conf` existente sin sustituirlo. Validado
-    con `nft -c -f` (nft 1.0.2 en un netns de usuario) y cargado dos veces
-    seguidas para comprobar que es idempotente.
-  - **Script** `deploy/vpn-gateway-apply-profiles.sh` (se lanza a mano en la
-    .29): rechaza ficheros que toquen algo mas que su tabla, `nft -c -f`,
-    copias de seguridad, carga atomica y reversion automatica si no se escribe
-    `CONFIRMAR` en 60 s, tambien con la sesion SSH muerta (vigilante con
-    `setsid`). Probado con nft real: comprobar, confirmar, no confirmar y
-    sesion matada.
+  - **Generador y script**: ver "Rediseno" mas abajo (los ficheros nftables se
+    integran en `inet filter`, no en una tabla propia).
   - **Interfaz**: selector de perfil (alta y ficha) con descripcion y aviso rojo
     en los perfiles `*_full`, columna de perfil en la tabla, pagina VPN >
     Perfiles de acceso (rangos, lista, descarga del `.nft`), solo admin.
@@ -55,13 +45,48 @@ Este proyecto usa versionado semantico.
     inyeccion, golden files por perfil (`services/__golden__/vpn-profiles/`,
     regenerar con `UPDATE_GOLDEN=1`), cambio de perfil con desconexion
     simulada y rutas HTTP con rol y auditoria.
-  - **Limitaciones/decisiones**: (1) la tabla `vpn_clients` del agente de
-    permisos por dispositivo sigue existiendo y, si esta cargada, tambien
-    filtra: hay que retirarla para que `*_full` llegue a .28/.30. (2) "Internet"
-    = todo salvo redes privadas (como hoy), con `oifname` solo si se define
-    `VPN_EGRESS_IFACE` (la .29 tiene una sola interfaz y no distinguiria LAN de
-    Internet). (3) Desde un perfil no `*_full` se bloquea todo el trafico
-    dirigido a la propia .29 (SSH, ping, DNS local).
+  - **Limitaciones/decisiones**: (1) "Internet" = todo salvo redes privadas
+    (como hoy), con `oifname` solo si se define `VPN_EGRESS_IFACE` (la .29 tiene
+    una sola interfaz y no distinguiria LAN de Internet). (2) Desde un perfil
+    no `*_full` se bloquea todo el trafico dirigido a la propia .29 (SSH, ping,
+    DNS local). (3) Un accept de input para `*_full` no anula un drop explicito
+    que ya hubiera en `chain input`: hay que revisar la regla de SSH existente.
+  - **Rediseno (tras ver el `nft list ruleset` real de la .29)**: en la .29 solo
+    existe la tabla `inet filter` con policy drop en input y forward; un accept
+    en otra tabla no anula ese drop y, si fallase, quedaria fail-open. Se
+    descarta la tabla propia `inet vpn_profiles`:
+    - `services/vpnProfilesNft.ts` genera (1) un **fragmento de nftables.conf**
+      (`GET /api/vpn-profiles/nftables-fragment`): siete sets vacios dentro de
+      `inet filter` y las reglas fijas de forward/input que los usan, que falla
+      cerrando (sets vacios = nada de la VPN); y (2) el **fichero de sets**
+      (`GET /api/vpn-profiles/nft`): solo `flush set` + `add element`, una carga
+      atomica. Un set `interval ipv4_addr` por perfil, `vpn_restricted_dests`
+      (`ipv4_addr . inet_proto . inet_service`, con intervalos; nft 1.0.2) y
+      `vpn_restricted_icmp` aparte (en ICMP `th dport` lee el checksum).
+    - La lista restringida no admite entradas que se solapen, y los puertos de
+      una entrada se ordenan y unen (un set de intervalos no admite solapes).
+    - `deploy/vpn-gateway-apply-profiles.sh` adaptado: lista blanca estricta de
+      lineas (solo `flush set`/`add element` sobre sets `vpn_*`; rechaza
+      `flush ruleset`, tablas, cadenas, reglas), comprueba que los sets existen
+      en `inet filter` antes de rellenarlos (si no, aborta con mensaje claro),
+      copia de seguridad, `nft -c -f`, carga atomica y reversion automatica de
+      los sets a los 60 s sin `CONFIRMAR` (vigilante `setsid`, tambien con el
+      SSH muerto).
+    - Retirado el parche `vpn-clients-delegar-a-perfiles` y la opcion
+      `VPN_CLIENTS_DELEGATE_TO_PROFILES` (no hacen falta: no existe `vpn_clients`
+      en la .29). `VPN_EGRESS_IFACE` se mantiene (afecta solo al fragmento).
+    - Pruebas con nft real en un netns de usuario: `nft -c -f` sobre el
+      nftables.conf ensamblado (stand-in de la .29 + fragmento + sets) con los 5
+      perfiles y variantes; `deploy/test-vpn-profiles-netns.sh`: 144
+      comprobaciones de paquetes desde un rango de cada perfil (y desde una IP
+      sin perfil) hacia .28, .29, .30, otra IP de la LAN, Internet y una red
+      privada, con sets llenos y con sets vacios; y
+      `deploy/test-apply-profiles-netns.sh` para el script de aplicacion. Los
+      golden files (`services/__golden__/vpn-profiles/`) cubren los ficheros de
+      sets por perfil, el fragmento y el conf ensamblado.
+    - Limitacion: el stand-in de `nftables.conf` de los tests es inventado (el
+      real no esta en el repo); las dos lineas a eliminar de `forward` se
+      describen, no se citan literalmente.
 
 - **Prompt 12.12 (correcciones tras la revision de 12.10/12.11)**:
   - **Rollback del certificado nuevo (1)**: si falla cualquier paso entre

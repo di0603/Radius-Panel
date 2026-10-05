@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import {
@@ -11,63 +11,65 @@ import {
   type AccessProfile,
   type ProfileRanges,
 } from './vpnAccessProfiles.js';
-import { GATEWAY_HOST, buildProfilesRuleset, type ProfilesRulesetInput } from './vpnProfilesNft.js';
+import {
+  ALL_SET_NAMES,
+  GATEWAY_HOST,
+  PROFILE_SET,
+  RESTRICTED_DESTS_SET,
+  RESTRICTED_ICMP_SET,
+  buildFragmentParts,
+  buildNftablesFragment,
+  buildSetsFile,
+  type FragmentOptions,
+  type ProfilesSetsInput,
+} from './vpnProfilesNft.js';
+import {
+  EXAMPLE_DESTINATIONS,
+  FIXTURE_NFTABLES_CONF,
+  assembleNftablesConf,
+  exampleRanges,
+} from './vpnProfilesNft.fixture.js';
 import type { RestrictedDestination } from './vpnRestrictedList.js';
 
 /**
- * Generador de vpn-profiles.nft: golden files por perfil (el texto exacto que
- * se carga en la .29 no cambia sin que alguien lo vea en el diff), propiedades
- * de seguridad que no dependen del golden, y `nft -c -f` si hay nft utilizable
- * en el entorno (no se carga nada: -c solo comprueba la sintaxis).
+ * Perfiles de acceso en nftables (diseno v2): fichero de sets (solo flush set +
+ * add element sobre sets que ya existen en inet filter) y fragmento de
+ * nftables.conf (sets vacios + reglas fijas). Golden files, propiedades de
+ * seguridad que no dependen del golden y `nft -c -f` real si hay nft utilizable
+ * (se comprueba el nftables.conf ensamblado: stand-in de la .29 + fragmento +
+ * sets). La prueba funcional con paquetes esta en deploy/test-vpn-profiles-netns.sh
+ * (NFT_FUNCTIONAL=1, solo Linux).
  *
  * Regenerar los golden tras un cambio intencionado: UPDATE_GOLDEN=1 npm test
  */
 
 const GOLDEN_DIR = join(dirname(fileURLToPath(import.meta.url)), '__golden__', 'vpn-profiles');
 const FIXED_DATE = new Date('2026-01-01T00:00:00.000Z');
-
-const PROFILE_RANGES: Record<AccessProfile, [string, string]> = {
-  lan_restricted: ['192.168.10.100', '192.168.10.104'],
-  lan_full: ['192.168.10.105', '192.168.10.109'],
-  internet_only: ['192.168.10.110', '192.168.10.114'],
-  internet_lan_restricted: ['192.168.10.115', '192.168.10.119'],
-  internet_lan_full: ['192.168.10.75', '192.168.10.99'],
+const OPTIONS: FragmentOptions = {
+  lanCidr: '192.168.10.0/24',
+  estPort: 8443,
+  egressInterface: null,
 };
 
-const DESTINATIONS: RestrictedDestination[] = [
-  {
-    id: 1,
-    destCidr: '192.168.10.50',
-    protocol: 'tcp',
-    ports: '22,443,8000-8100',
-    comment: 'Servidor de ficheros',
-  },
-  { id: 2, destCidr: '192.168.10.0/28', protocol: 'udp', ports: '53', comment: '' },
-  { id: 3, destCidr: '192.168.10.60', protocol: 'icmp', ports: null, comment: 'ping al NAS' },
-  { id: 4, destCidr: '192.168.10.70', protocol: 'tcp', ports: null, comment: 'todo tcp' },
-];
-
 function rangesOnly(...profiles: AccessProfile[]): ProfileRanges {
+  const all = exampleRanges();
   const r = emptyRanges();
-  for (const p of profiles)
-    r[p] = { rangeStart: PROFILE_RANGES[p][0], rangeEnd: PROFILE_RANGES[p][1] };
+  for (const p of profiles) r[p] = all[p];
   return r;
 }
 
-function input(overrides: Partial<ProfilesRulesetInput> = {}): ProfilesRulesetInput {
+function setsInput(overrides: Partial<ProfilesSetsInput> = {}): ProfilesSetsInput {
   return {
-    ranges: rangesOnly(...ACCESS_PROFILES),
-    destinations: DESTINATIONS,
+    ranges: exampleRanges(),
+    destinations: EXAMPLE_DESTINATIONS,
     lanCidr: '192.168.10.0/24',
-    estPort: 8443,
-    egressInterface: null,
     generatedAt: FIXED_DATE,
     ...overrides,
   };
 }
 
 function assertGolden(name: string, actual: string) {
-  const file = join(GOLDEN_DIR, `${name}.nft`);
+  const file = join(GOLDEN_DIR, name);
   if (process.env.UPDATE_GOLDEN === '1') {
     mkdirSync(GOLDEN_DIR, { recursive: true });
     writeFileSync(file, actual, 'utf8');
@@ -77,121 +79,105 @@ function assertGolden(name: string, actual: string) {
   assert.equal(actual, readFileSync(file, 'utf8').replace(/\r\n/g, '\n'), `golden ${name}`);
 }
 
-/* ------------------------------- golden por perfil ------------------------------ */
+const lines = (text: string) => text.split('\n').map((l) => l.trim());
+/** Sin las lineas de comentario (las cabeceras mencionan "add element", "accept", "policy"...). */
+const code = (text: string) => text.replace(/^[ \t]*#.*$/gm, '');
+
+/* ------------------------------- golden files ------------------------------- */
 
 for (const profile of ACCESS_PROFILES) {
-  test(`golden: solo el perfil ${profile}`, () => {
+  test(`golden: fichero de sets con solo el perfil ${profile}`, () => {
     assertGolden(
-      `profile-${profile}`,
-      buildProfilesRuleset(input({ ranges: rangesOnly(profile) })),
+      `sets-profile-${profile}.nft`,
+      buildSetsFile(setsInput({ ranges: rangesOnly(profile) })),
     );
   });
 }
 
-test('golden: todos los perfiles, con interfaz de salida', () => {
+test('golden: fichero de sets con todos los perfiles', () => {
+  assertGolden('sets-all-profiles.nft', buildSetsFile(setsInput()));
+});
+
+test('golden: fichero de sets con la lista restringida vacia', () => {
+  assertGolden('sets-empty-list.nft', buildSetsFile(setsInput({ destinations: [] })));
+});
+
+test('golden: fragmento de nftables.conf', () => {
+  assertGolden('nftables-fragment.conf', buildNftablesFragment(OPTIONS, FIXED_DATE));
+});
+
+test('golden: fragmento de nftables.conf con interfaz de salida', () => {
   assertGolden(
-    'all-profiles-egress-eth0',
-    buildProfilesRuleset(input({ egressInterface: 'eth0' })),
+    'nftables-fragment-egress-eth0.conf',
+    buildNftablesFragment({ ...OPTIONS, egressInterface: 'eth0' }, FIXED_DATE),
   );
 });
 
-test('golden: lista restringida vacia', () => {
-  assertGolden('empty-list', buildProfilesRuleset(input({ destinations: [] })));
-});
-
-/* ------------------- propiedades que no dependen del golden -------------------- */
-
-function lines(nft: string): string[] {
-  return nft.split('\n').map((l) => l.trim());
-}
-
-const PRIVATE_SET = '{ 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 }';
-
-test('lan_full e internet_lan_full: toda la LAN en forward y accept en input hacia la .29', () => {
-  const l = lines(buildProfilesRuleset(input()));
-  assert.ok(l.includes('ip saddr @lan_full_ips ip daddr 192.168.10.0/24 accept'));
-  assert.ok(l.includes('ip saddr @internet_lan_full_ips ip daddr 192.168.10.0/24 accept'));
-  assert.ok(l.includes(`ip saddr @lan_full_ips ip daddr ${GATEWAY_HOST} accept`));
-  assert.ok(l.includes(`ip saddr @internet_lan_full_ips ip daddr ${GATEWAY_HOST} accept`));
-});
-
-test('los perfiles NO completos no tienen accept de toda la LAN ni acceso a la .29', () => {
-  const l = lines(buildProfilesRuleset(input()));
-  for (const profile of ['lan_restricted', 'internet_only', 'internet_lan_restricted']) {
-    const mine = l.filter((x) => x.includes(`@${profile}_ips`));
-    assert.ok(mine.length > 0, profile);
-    assert.ok(
-      !mine.some((x) => x.includes('ip daddr 192.168.10.0/24 accept')),
-      `${profile} no debe abrir toda la LAN`,
-    );
-    assert.ok(!mine.some((x) => x.includes(GATEWAY_HOST)), `${profile} no debe llegar a la .29`);
-  }
-});
-
-test('internet_*: Internet = todo menos redes privadas; lan_* sin Internet', () => {
-  const l = lines(buildProfilesRuleset(input()));
-  for (const profile of ['internet_only', 'internet_lan_restricted', 'internet_lan_full']) {
-    assert.ok(l.includes(`ip saddr @${profile}_ips ip daddr != ${PRIVATE_SET} accept`), profile);
-  }
-  for (const profile of ['lan_restricted', 'lan_full']) {
-    assert.ok(
-      !l.some((x) => x.includes(`@${profile}_ips`) && x.includes('!=')),
-      `${profile} no tiene Internet`,
-    );
-  }
-});
-
-test('con interfaz de salida, las reglas internet exigen oifname', () => {
-  const l = lines(buildProfilesRuleset(input({ egressInterface: 'eth0' })));
-  const internet = l.filter((x) => x.includes('ip daddr != {'));
-  assert.equal(internet.length, 3);
-  assert.ok(internet.every((x) => x.endsWith('oifname "eth0" accept')));
-});
-
-test('restringidos: solo la lista (jump a restricted_allow); las entradas salen de la lista', () => {
-  const nft = buildProfilesRuleset(input());
-  const l = lines(nft);
-  assert.ok(l.includes('ip saddr @lan_restricted_ips jump restricted_allow'));
-  assert.ok(l.includes('ip saddr @internet_lan_restricted_ips jump restricted_allow'));
-  assert.ok(l.includes('ip daddr 192.168.10.50 tcp dport { 22, 443, 8000-8100 } accept'));
-  assert.ok(l.includes('ip daddr 192.168.10.0/28 udp dport 53 accept'));
-  assert.ok(l.includes('ip daddr 192.168.10.60 ip protocol icmp accept'));
-  assert.ok(l.includes('ip daddr 192.168.10.70 ip protocol tcp accept'));
-});
-
-test('el accept de EST hacia la .28 va antes que cualquier regla de perfil y cubre a todos', () => {
-  const l = lines(buildProfilesRuleset(input()));
-  const est = l.indexOf('ip saddr @vpn_all_ips ip daddr 192.168.10.28 tcp dport 8443 accept');
-  const firstProfileRule = l.findIndex(
-    (x) => x.startsWith('ip saddr @') && x !== l[est] && !x.includes('@vpn_all_ips'),
+test('golden: nftables.conf ensamblado (stand-in de la .29 + fragmento + sets)', () => {
+  assertGolden(
+    'nftables.conf.assembled',
+    assembleNftablesConf(OPTIONS, buildSetsFile(setsInput())).conf,
   );
-  assert.ok(est >= 0, 'falta el accept de EST');
-  assert.ok(est < firstProfileRule, 'EST tiene que ir antes de los perfiles');
 });
 
-test('todo lo demas: drop con contador, al final de forward y de input', () => {
-  const nft = buildProfilesRuleset(input());
+/* --------------------------- fichero de sets: propiedades --------------------------- */
+
+const ALLOWED_LINE =
+  /^(#.*|flush set inet filter vpn_[a-z_]+|add element inet filter vpn_[a-z_]+ \{ [0-9A-Za-z./, -]+ \}|)$/;
+
+test('fichero de sets: solo comentarios, "flush set" y "add element" (nada de tablas, cadenas ni reglas)', () => {
+  const file = buildSetsFile(setsInput());
+  for (const line of file.split('\n')) assert.match(line, ALLOWED_LINE);
+  assert.ok(!/flush\s+ruleset/.test(file));
+  assert.ok(!/\b(table|chain|rule|delete)\b/.test(file.replace(/^#.*$/gm, '')));
+});
+
+test('fichero de sets: cada set se vacia antes de rellenarse (carga idempotente)', () => {
+  const l = lines(buildSetsFile(setsInput()));
+  for (const name of ALL_SET_NAMES) {
+    const flush = l.indexOf(`flush set inet filter ${name}`);
+    const add = l.findIndex((x) => x.startsWith(`add element inet filter ${name} `));
+    assert.ok(flush >= 0, `falta flush de ${name}`);
+    if (add >= 0) assert.ok(flush < add, `${name}: flush antes de add`);
+  }
+});
+
+test('fichero de sets: cada rango va solo en el set de su perfil', () => {
+  const l = lines(buildSetsFile(setsInput()));
+  const expected: Record<AccessProfile, string> = {
+    lan_restricted: '192.168.10.100-192.168.10.104',
+    lan_full: '192.168.10.105-192.168.10.109',
+    internet_only: '192.168.10.110-192.168.10.114',
+    internet_lan_restricted: '192.168.10.115-192.168.10.119',
+    internet_lan_full: '192.168.10.75-192.168.10.99',
+  };
+  for (const profile of ACCESS_PROFILES) {
+    assert.ok(
+      l.includes(`add element inet filter ${PROFILE_SET[profile]} { ${expected[profile]} }`),
+      profile,
+    );
+  }
+});
+
+test('fichero de sets: destinos (ip . proto . puerto) con rangos, puertos sueltos y "todos"; icmp en su set', () => {
+  const l = lines(buildSetsFile(setsInput()));
   assert.ok(
-    nft.includes('\t\tcounter drop\n\t}\n\n\t# Trafico dirigido'),
-    'forward termina en counter drop',
+    l.includes(
+      `add element inet filter ${RESTRICTED_DESTS_SET} { 192.168.10.50 . tcp . 22, 192.168.10.50 . tcp . 443, 192.168.10.50 . tcp . 8000-8100, 192.168.10.0/28 . udp . 53, 192.168.10.70 . tcp . 1-65535 }`,
+    ),
   );
-  assert.ok(nft.endsWith('\t\tcounter drop\n\t}\n}\n'), 'input termina en counter drop');
+  assert.ok(l.includes(`add element inet filter ${RESTRICTED_ICMP_SET} { 192.168.10.60 }`));
 });
 
-test('no sustituye /etc/nftables.conf: no hace flush ruleset ni toca otras tablas', () => {
-  const nft = buildProfilesRuleset(input());
-  assert.ok(!/flush\s+ruleset/.test(nft));
-  const tables = lines(nft).filter((l) => l.startsWith('table ') || l.startsWith('delete table'));
-  assert.deepEqual(tables, [
-    'table inet vpn_profiles {}',
-    'delete table inet vpn_profiles',
-    'table inet vpn_profiles {',
-  ]);
+test('fichero de sets: sin rangos ni lista solo vacia los sets (no hay "add element")', () => {
+  const file = buildSetsFile(setsInput({ ranges: emptyRanges(), destinations: [] }));
+  assert.ok(!code(file).includes('add element'));
+  assert.equal((file.match(/^flush set /gm) ?? []).length, ALL_SET_NAMES.length);
 });
 
-test('un comentario con texto de regla queda inerte: solo una linea # saneada', () => {
-  const nft = buildProfilesRuleset(
-    input({
+test('fichero de sets: el comentario de la lista nunca se escribe (no hay texto libre)', () => {
+  const file = buildSetsFile(
+    setsInput({
       destinations: [
         {
           id: 1,
@@ -203,37 +189,33 @@ test('un comentario con texto de regla queda inerte: solo una linea # saneada', 
       ],
     }),
   );
-  const noteLine = lines(nft).find((l) => l.startsWith('# x '));
-  assert.ok(noteLine, 'el comentario debe aparecer como linea #');
-  assert.ok(!/[{};"$]/.test(noteLine!.slice(2)), noteLine);
+  assert.ok(!code(file).includes('accept'));
+  assert.ok(!/[$"]/.test(code(file)));
+  assert.ok(!file.includes('drop'));
 });
 
 test('el generador rechaza entradas invalidas aunque no pasen por las rutas', () => {
-  const bad: Partial<ProfilesRulesetInput>[] = [
+  const dest = (overrides: Partial<RestrictedDestination>): RestrictedDestination => ({
+    id: 1,
+    destCidr: '192.168.10.5',
+    protocol: 'tcp',
+    ports: null,
+    comment: '',
+    ...overrides,
+  });
+  const bad: Partial<ProfilesSetsInput>[] = [
+    { destinations: [dest({ destCidr: '192.168.10.5; flush ruleset' })] },
+    { destinations: [dest({ ports: '22; accept' })] },
+    { destinations: [dest({ destCidr: '8.8.8.8' })] },
+    { destinations: [dest({ protocol: 'icmp', ports: '1' })] },
+    // entradas que se solapan (un set de intervalos las rechazaria)
     {
       destinations: [
-        {
-          id: 1,
-          destCidr: '192.168.10.5; flush ruleset',
-          protocol: 'tcp',
-          ports: null,
-          comment: '',
-        },
+        dest({ id: 1, destCidr: '192.168.10.0/28', ports: '22' }),
+        dest({ id: 2, destCidr: '192.168.10.5', ports: '20-30' }),
       ],
     },
-    {
-      destinations: [
-        { id: 1, destCidr: '192.168.10.5', protocol: 'tcp', ports: '22; accept', comment: '' },
-      ],
-    },
-    { destinations: [{ id: 1, destCidr: '8.8.8.8', protocol: 'tcp', ports: null, comment: '' }] },
-    {
-      destinations: [
-        { id: 1, destCidr: '192.168.10.5', protocol: 'icmp', ports: '1', comment: '' },
-      ],
-    },
-    { egressInterface: 'eth0"; drop' },
-    { estPort: 0 },
+    { destinations: [dest({ id: 1, ports: null }), dest({ id: 2, ports: '80' })] },
     {
       ranges: {
         ...rangesOnly(),
@@ -250,17 +232,161 @@ test('el generador rechaza entradas invalidas aunque no pasen por las rutas', ()
   ];
   for (const overrides of bad) {
     assert.throws(
-      () => buildProfilesRuleset(input(overrides)),
+      () => buildSetsFile(setsInput(overrides)),
       Error,
-      JSON.stringify(overrides).slice(0, 80),
+      JSON.stringify(overrides).slice(0, 90),
     );
   }
 });
 
-test('sin rangos configurados: sets vacios y el fichero sigue siendo valido', () => {
-  const nft = buildProfilesRuleset(input({ ranges: emptyRanges(), destinations: [] }));
-  assert.ok(!nft.includes('elements ='));
-  assert.ok(nft.includes('set vpn_all_ips {'));
+test('mismo destino con otro protocolo, o puertos que no se pisan, NO es un solape', () => {
+  assert.doesNotThrow(() =>
+    buildSetsFile(
+      setsInput({
+        destinations: [
+          { id: 1, destCidr: '192.168.10.5', protocol: 'tcp', ports: '53', comment: '' },
+          { id: 2, destCidr: '192.168.10.5', protocol: 'udp', ports: '53', comment: '' },
+          { id: 3, destCidr: '192.168.10.5', protocol: 'icmp', ports: null, comment: '' },
+          { id: 4, destCidr: '192.168.10.5', protocol: 'tcp', ports: '80', comment: '' },
+        ],
+      }),
+    ),
+  );
+});
+
+/* ------------------------------ fragmento: propiedades ------------------------------ */
+
+const PRIVATE_SET = '{ 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 }';
+
+test('fragmento: declara los 7 sets VACIOS (5 por perfil + destinos concatenados + icmp), todos de intervalos', () => {
+  const { sets } = buildFragmentParts(OPTIONS);
+  for (const name of ALL_SET_NAMES) assert.ok(sets.includes(`set ${name} {`), name);
+  assert.ok(!sets.includes('elements'), 'los sets se declaran vacios');
+  assert.equal((sets.match(/flags interval/g) ?? []).length, 7);
+  assert.ok(sets.includes('type ipv4_addr . inet_proto . inet_service'));
+});
+
+test('fragmento: falla cerrando: toda regla de forward/input lleva "ip saddr @set" y ninguna acepta sin pertenecer a un set', () => {
+  const { forward, input } = buildFragmentParts(OPTIONS);
+  for (const line of [...lines(forward), ...lines(input)]) {
+    if (!line || line.startsWith('#')) continue;
+    assert.match(line, /^ip saddr @vpn_[a-z_]+_ips /, line);
+    assert.ok(line.endsWith(' accept'), line);
+  }
+  assert.ok(
+    !/\bdrop\b|policy/.test(code(`${forward}\n${input}`)),
+    'no toca la policy ni mete drops propios',
+  );
+});
+
+test('fragmento: lan_full e internet_lan_full -> toda la LAN en forward y acceso a la .29 en input', () => {
+  const { forward, input } = buildFragmentParts(OPTIONS);
+  const f = lines(forward);
+  assert.ok(f.includes(`ip saddr @${PROFILE_SET.lan_full} ip daddr 192.168.10.0/24 accept`));
+  assert.ok(
+    f.includes(`ip saddr @${PROFILE_SET.internet_lan_full} ip daddr 192.168.10.0/24 accept`),
+  );
+  const i = lines(input);
+  assert.ok(i.includes(`ip saddr @${PROFILE_SET.lan_full} ip daddr ${GATEWAY_HOST} accept`));
+  assert.ok(
+    i.includes(`ip saddr @${PROFILE_SET.internet_lan_full} ip daddr ${GATEWAY_HOST} accept`),
+  );
+});
+
+test('fragmento: los demas perfiles no tienen accept de toda la LAN ni acceso a la .29', () => {
+  const { forward, input } = buildFragmentParts(OPTIONS);
+  for (const profile of ['lan_restricted', 'internet_only', 'internet_lan_restricted'] as const) {
+    const mine = lines(forward + '\n' + input).filter((x) =>
+      x.includes(`@${PROFILE_SET[profile]}`),
+    );
+    assert.ok(mine.length > 0, profile);
+    assert.ok(!mine.some((x) => x.includes('ip daddr 192.168.10.0/24 accept')), profile);
+    assert.ok(!mine.some((x) => x.includes(GATEWAY_HOST)), profile);
+  }
+});
+
+test('fragmento: perfiles con Internet -> todo salvo redes privadas; sin Internet los lan_*', () => {
+  const f = lines(buildFragmentParts(OPTIONS).forward);
+  for (const profile of [
+    'internet_only',
+    'internet_lan_restricted',
+    'internet_lan_full',
+  ] as const) {
+    assert.ok(
+      f.includes(`ip saddr @${PROFILE_SET[profile]} ip daddr != ${PRIVATE_SET} accept`),
+      profile,
+    );
+  }
+  for (const profile of ['lan_restricted', 'lan_full'] as const) {
+    assert.ok(!f.some((x) => x.includes(`@${PROFILE_SET[profile]}`) && x.includes('!=')), profile);
+  }
+});
+
+test('fragmento: restringidos -> accept solo si (daddr, proto, puerto) esta en el set; icmp en su set', () => {
+  const f = lines(buildFragmentParts(OPTIONS).forward);
+  for (const profile of ['lan_restricted', 'internet_lan_restricted'] as const) {
+    assert.ok(
+      f.includes(
+        `ip saddr @${PROFILE_SET[profile]} ip daddr . meta l4proto . th dport @${RESTRICTED_DESTS_SET} accept`,
+      ),
+    );
+    assert.ok(
+      f.includes(
+        `ip saddr @${PROFILE_SET[profile]} ip protocol icmp ip daddr @${RESTRICTED_ICMP_SET} accept`,
+      ),
+    );
+  }
+});
+
+test('fragmento: EST 8443 hacia la .28 para los cinco perfiles, antes de cualquier otra regla', () => {
+  const rules = lines(buildFragmentParts(OPTIONS).forward).filter((x) => x.startsWith('ip saddr'));
+  const est = rules.slice(0, 5);
+  for (const profile of ACCESS_PROFILES) {
+    assert.ok(
+      est.includes(
+        `ip saddr @${PROFILE_SET[profile]} ip daddr 192.168.10.28 tcp dport 8443 accept`,
+      ),
+      profile,
+    );
+  }
+});
+
+test('fragmento: con interfaz de salida, las reglas de Internet exigen oifname (solo esas)', () => {
+  const f = lines(buildFragmentParts({ ...OPTIONS, egressInterface: 'eth0' }).forward);
+  const internet = f.filter((x) => x.includes('ip daddr != {'));
+  assert.equal(internet.length, 3);
+  assert.ok(internet.every((x) => x.endsWith('oifname "eth0" accept')));
+  assert.equal(f.filter((x) => x.includes('oifname')).length, 3);
+});
+
+test('fragmento: la parte 4 es el include del fichero de sets, tras la tabla', () => {
+  assert.equal(buildFragmentParts(OPTIONS).include, 'include "/etc/nftables.d/vpn-profiles.nft"');
+  const text = buildNftablesFragment(OPTIONS, FIXED_DATE);
+  assert.ok(text.indexOf('PARTE 3') < text.indexOf('PARTE 4'));
+  assert.ok(text.includes('ELIMINAR dos lineas actuales'));
+});
+
+test('fragmento: parametros invalidos se rechazan', () => {
+  assert.throws(() => buildFragmentParts({ ...OPTIONS, egressInterface: 'eth0"; drop' }));
+  assert.throws(() => buildFragmentParts({ ...OPTIONS, estPort: 0 }));
+  assert.throws(() => buildFragmentParts({ ...OPTIONS, lanCidr: '192.168.10.0/24; accept' }));
+});
+
+test('integrar el fragmento en el stand-in quita exactamente las dos lineas de forward y conserva IKE, 3799, SSH y MSS', () => {
+  const { conf, removed } = assembleNftablesConf(OPTIONS, null);
+  assert.equal(removed.length, 2);
+  assert.match(removed[0]!, /ip daddr \{ 192\.168\.10\.28, 192\.168\.10\.30 \} drop/);
+  assert.match(removed[1]!, /ip daddr 192\.168\.10\.0\/24 accept/);
+  assert.ok(!conf.includes('# QUITAR'));
+  for (const kept of [
+    'udp dport { 500, 4500 } accept',
+    'ip saddr 192.168.10.28 udp dport 3799 accept',
+    'tcp dport 22 accept',
+    'maxseg size set rt mtu',
+  ]) {
+    assert.ok(conf.includes(kept), kept);
+    assert.ok(FIXTURE_NFTABLES_CONF.includes(kept), kept);
+  }
 });
 
 /* ------------------------------ nft -c -f (opcional) ---------------------------- */
@@ -279,28 +405,100 @@ function findNft(): string[] | null {
 }
 
 const nftRunner = findNft();
+const SKIP_NFT = nftRunner ? false : 'nft no esta disponible en este entorno';
 
-for (const [name, build] of [
-  ['todos los perfiles', () => buildProfilesRuleset(input({ egressInterface: 'eth0' }))],
+function nftCheck(conf: string) {
+  const dir = mkdtempSync(join(tmpdir(), 'vpn-profiles-nft-'));
+  const file = join(dir, 'nftables.conf');
+  writeFileSync(file, conf);
+  const r = spawnSync(nftRunner![0]!, [...nftRunner!.slice(1), '-c', '-f', file], {
+    encoding: 'utf8',
+  });
+  assert.equal(r.status, 0, `${r.stderr}${r.stdout}`);
+}
+
+const NFT_CASES: [string, () => string][] = [
+  ['5 perfiles + lista', () => assembleNftablesConf(OPTIONS, buildSetsFile(setsInput())).conf],
+  [
+    '5 perfiles + interfaz de salida',
+    () =>
+      assembleNftablesConf({ ...OPTIONS, egressInterface: 'eth0' }, buildSetsFile(setsInput()))
+        .conf,
+  ],
+  ['sets vacios (fragmento sin fichero de sets)', () => assembleNftablesConf(OPTIONS, null).conf],
   [
     'sin rangos ni lista',
-    () => buildProfilesRuleset(input({ ranges: emptyRanges(), destinations: [] })),
+    () =>
+      assembleNftablesConf(
+        OPTIONS,
+        buildSetsFile(setsInput({ ranges: emptyRanges(), destinations: [] })),
+      ).conf,
   ],
-  ...ACCESS_PROFILES.map(
-    (p) => [`solo ${p}`, () => buildProfilesRuleset(input({ ranges: rangesOnly(p) }))] as const,
-  ),
-] as const) {
-  test(
-    `nft -c -f acepta el fichero generado: ${name}`,
-    { skip: nftRunner ? false : 'nft no esta disponible en este entorno' },
-    () => {
-      const dir = mkdtempSync(join(tmpdir(), 'vpn-profiles-nft-'));
-      const file = join(dir, 'vpn-profiles.nft');
-      writeFileSync(file, build());
-      const r = spawnSync(nftRunner![0]!, [...nftRunner!.slice(1), '-c', '-f', file], {
-        encoding: 'utf8',
-      });
-      assert.equal(r.status, 0, `${r.stderr}${r.stdout}`);
-    },
+  ...ACCESS_PROFILES.map((p): [string, () => string] => [
+    `solo ${p}`,
+    () => assembleNftablesConf(OPTIONS, buildSetsFile(setsInput({ ranges: rangesOnly(p) }))).conf,
+  ]),
+];
+
+for (const [name, build] of NFT_CASES) {
+  test(`nft -c -f acepta el nftables.conf ensamblado: ${name}`, { skip: SKIP_NFT }, () =>
+    nftCheck(build()),
   );
 }
+
+test(
+  'nft -c -f rechaza un fichero de sets sobre sets que no existen (el script lo detecta antes con un mensaje claro)',
+  { skip: SKIP_NFT },
+  () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vpn-profiles-nft-'));
+    const file = join(dir, 'sets.nft');
+    writeFileSync(file, buildSetsFile(setsInput()));
+    const r = spawnSync(nftRunner![0]!, [...nftRunner!.slice(1), '-c', '-f', file], {
+      encoding: 'utf8',
+    });
+    assert.notEqual(r.status, 0);
+  },
+);
+
+/* ----------------- pruebas funcionales con paquetes (NFT_FUNCTIONAL=1, Linux) ----------------- */
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+
+const FUNCTIONAL_SKIP =
+  process.env.NFT_FUNCTIONAL !== '1'
+    ? 'solo con NFT_FUNCTIONAL=1 (Linux, nft, iproute2, nsenter y python3; tarda un par de minutos)'
+    : process.platform !== 'linux'
+      ? 'solo en Linux'
+      : false;
+
+function runNetnsScript(script: string) {
+  const dir = mkdtempSync(join(tmpdir(), 'vpn-profiles-func-'));
+  const sets = buildSetsFile(setsInput());
+  writeFileSync(join(dir, 'vpn-profiles.nft'), sets);
+  writeFileSync(join(dir, 'nftables.conf.ensamblado'), assembleNftablesConf(OPTIONS, sets).conf);
+  writeFileSync(
+    join(dir, 'nftables.conf.ensamblado-sets-vacios'),
+    assembleNftablesConf(OPTIONS, null).conf,
+  );
+  const r = spawnSync('unshare', ['-rn', 'bash', join(REPO_ROOT, 'deploy', script), dir], {
+    encoding: 'utf8',
+    timeout: 280_000,
+  });
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+}
+
+test(
+  'funcional: veredicto de cada perfil hacia .28/.29/.30, otra IP de la LAN e Internet (netns real)',
+  { skip: FUNCTIONAL_SKIP, timeout: 300_000 },
+  () => {
+    runNetnsScript('test-vpn-profiles-netns.sh');
+  },
+);
+
+test(
+  'funcional: vpn-gateway-apply-profiles.sh con nft real (confirmar, revertir, SSH muerto)',
+  { skip: FUNCTIONAL_SKIP, timeout: 300_000 },
+  () => {
+    runNetnsScript('test-apply-profiles-netns.sh');
+  },
+);

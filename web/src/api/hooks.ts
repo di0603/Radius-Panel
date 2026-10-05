@@ -1072,15 +1072,23 @@ export function useDeleteRestrictedDestination() {
   });
 }
 
-/** Descarga vpn-profiles.nft (se aplica a mano en la VM VPN con deploy/vpn-gateway-apply-profiles.sh). */
+/**
+ * Descarga ficheros nftables de los perfiles: `sets` = vpn-profiles.nft (solo rellena los sets que ya
+ * existen en inet filter; lo aplica a mano deploy/vpn-gateway-apply-profiles.sh) y `fragment` = fragmento
+ * de /etc/nftables.conf (sets vacios + reglas fijas) para revisar e integrar una vez.
+ */
 export function useDownloadProfilesNft() {
   return useMutation({
-    mutationFn: async () => {
-      const res = await api.get<Blob>('/vpn-profiles/nft', { responseType: 'blob' });
+    mutationFn: async (kind: 'sets' | 'fragment') => {
+      const [path, filename] =
+        kind === 'sets'
+          ? ['/vpn-profiles/nft', 'vpn-profiles.nft']
+          : ['/vpn-profiles/nftables-fragment', 'nftables-fragmento-perfiles.conf'];
+      const res = await api.get<Blob>(path, { responseType: 'blob' });
       const url = URL.createObjectURL(res.data);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'vpn-profiles.nft';
+      a.download = filename;
       a.click();
       URL.revokeObjectURL(url);
     },

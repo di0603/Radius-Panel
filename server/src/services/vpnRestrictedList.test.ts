@@ -4,6 +4,7 @@ import * as pools from '../db/pools.js';
 import {
   addRestrictedDestination,
   deleteRestrictedDestination,
+  entriesOverlap,
   normalizePorts,
   updateRestrictedDestination,
   validateRestrictedEntry,
@@ -233,10 +234,10 @@ test('addRestrictedDestination: guarda la entrada normalizada y rechaza duplicad
       { destCidr: '192.168.10.50', protocol: 'tcp', ports: '443, 22' },
       3,
     );
-    assert.equal(entry.ports, '443,22');
+    assert.equal(entry.ports, '22,443'); // ordenado
     assert.equal(rows.size, 1);
     await assert.rejects(
-      addRestrictedDestination({ destCidr: '192.168.10.50', protocol: 'tcp', ports: '443,22' }, 3),
+      addRestrictedDestination({ destCidr: '192.168.10.50', protocol: 'tcp', ports: '22,443' }, 3),
       (err: Error & { status?: number }) => err.status === 409,
     );
     assert.equal(rows.size, 1);
@@ -290,6 +291,91 @@ test('deleteRestrictedDestination: devuelve la entrada borrada y 404 si no exist
       deleteRestrictedDestination(1),
       (err: Error & { status?: number }) => err.status === 404,
     );
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test('normalizePorts: ordena y une puertos repetidos, solapados y contiguos', () => {
+  assert.equal(normalizePorts('443,22'), '22,443');
+  assert.equal(normalizePorts('22,22'), '22');
+  assert.equal(normalizePorts('20-30,25'), '20-30');
+  assert.equal(normalizePorts('20-30,25-40'), '20-40');
+  assert.equal(normalizePorts('80,81,82'), '80-82');
+  assert.equal(normalizePorts('8000-8100,22,9000'), '22,8000-8100,9000');
+});
+
+test('entriesOverlap: mismo protocolo + destino que se pisa + puertos que se pisan', () => {
+  const e = (destCidr: string, protocol: 'tcp' | 'udp' | 'icmp', ports: string | null) => ({
+    destCidr,
+    protocol,
+    ports,
+    comment: '',
+  });
+  assert.equal(
+    entriesOverlap(e('192.168.10.0/28', 'tcp', '22'), e('192.168.10.5', 'tcp', '20-30')),
+    true,
+  );
+  assert.equal(
+    entriesOverlap(e('192.168.10.5', 'tcp', null), e('192.168.10.5', 'tcp', '80')),
+    true,
+  ); // todos los puertos
+  assert.equal(
+    entriesOverlap(e('192.168.10.5', 'icmp', null), e('192.168.10.0/24', 'icmp', null)),
+    true,
+  );
+  assert.equal(
+    entriesOverlap(e('192.168.10.5', 'tcp', '22'), e('192.168.10.5', 'udp', '22')),
+    false,
+  ); // otro protocolo
+  assert.equal(
+    entriesOverlap(e('192.168.10.5', 'tcp', '22'), e('192.168.10.5', 'tcp', '23')),
+    false,
+  ); // otros puertos
+  assert.equal(
+    entriesOverlap(e('192.168.10.16', 'tcp', '22'), e('192.168.10.0/28', 'tcp', '22')),
+    false,
+  ); // otro destino
+});
+
+test('addRestrictedDestination: una entrada que se solapa con otra se rechaza (409) y no se guarda', async () => {
+  const rows = mockDb([
+    { id: 1, dest_cidr: '192.168.10.0/28', protocol: 'tcp', ports: '22-100', comment: '' },
+  ]);
+  try {
+    await assert.rejects(
+      addRestrictedDestination({ destCidr: '192.168.10.5', protocol: 'tcp', ports: '80' }, 3),
+      (err: Error & { status?: number }) =>
+        err.status === 409 && /Se solapa con la entrada #1/.test(err.message),
+    );
+    assert.equal(rows.size, 1);
+    // protocolo distinto: no se solapa
+    await addRestrictedDestination({ destCidr: '192.168.10.5', protocol: 'udp', ports: '80' }, 3);
+    assert.equal(rows.size, 2);
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test('updateRestrictedDestination: editar una entrada para que pise a otra se rechaza (409); editarse a si misma no', async () => {
+  mockDb([
+    { id: 1, dest_cidr: '192.168.10.50', protocol: 'tcp', ports: '22', comment: '' },
+    { id: 2, dest_cidr: '192.168.10.60', protocol: 'tcp', ports: '22', comment: '' },
+  ]);
+  try {
+    await assert.rejects(
+      updateRestrictedDestination(2, {
+        destCidr: '192.168.10.50',
+        protocol: 'tcp',
+        ports: '20-30',
+      }),
+      (err: Error & { status?: number }) => err.status === 409,
+    );
+    await updateRestrictedDestination(1, {
+      destCidr: '192.168.10.50',
+      protocol: 'tcp',
+      ports: '22-25',
+    });
   } finally {
     mock.restoreAll();
   }

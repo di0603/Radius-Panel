@@ -359,11 +359,13 @@ function RestrictedListSection() {
 export function VpnProfilesPage() {
   const download = useDownloadProfilesNft();
 
-  const runDownload = async () => {
+  const runDownload = async (kind: 'sets' | 'fragment') => {
     try {
-      await download.mutateAsync();
+      await download.mutateAsync(kind);
       notifyOk(
-        'vpn-profiles.nft descargado: revisalo y aplicalo en la VM VPN con deploy/vpn-gateway-apply-profiles.sh',
+        kind === 'sets'
+          ? 'vpn-profiles.nft descargado: revisalo y aplicalo en la VM VPN con deploy/vpn-gateway-apply-profiles.sh'
+          : 'Fragmento descargado: revisalo e integralo a mano en /etc/nftables.conf (una vez)',
       );
     } catch (err) {
       notifyError(err, 'No se ha podido generar el fichero');
@@ -376,23 +378,34 @@ export function VpnProfilesPage() {
         title="Perfiles de acceso"
         subtitle="Que puede alcanzar cada dispositivo por el tunel: rangos de IP por perfil y destinos permitidos"
         actions={
-          <Button
-            leftSection={<IconDownload size={16} />}
-            onClick={runDownload}
-            loading={download.isPending}
-          >
-            Descargar vpn-profiles.nft
-          </Button>
+          <Group gap="xs">
+            <Button
+              variant="default"
+              leftSection={<IconDownload size={16} />}
+              onClick={() => runDownload('fragment')}
+              loading={download.isPending && download.variables === 'fragment'}
+            >
+              Fragmento de nftables.conf
+            </Button>
+            <Button
+              leftSection={<IconDownload size={16} />}
+              onClick={() => runDownload('sets')}
+              loading={download.isPending && download.variables === 'sets'}
+            >
+              Descargar vpn-profiles.nft
+            </Button>
+          </Group>
         }
       />
 
       <Alert color="yellow" variant="light" icon={<IconAlertTriangle size={18} />}>
         <Text size="sm">
-          Los cambios de aqui no se aplican solos: el panel genera <Code>vpn-profiles.nft</Code> y
-          lo aplicas tu en la VM VPN (192.168.10.29) con{' '}
-          <Code>deploy/vpn-gateway-apply-profiles.sh</Code> (con confirmacion y reversion automatica
-          en 60 s). Si sigue cargada la tabla <Code>vpn_clients</Code> del agente de permisos por
-          dispositivo, un paquete tiene que pasar las dos tablas.
+          Los cambios de aqui no se aplican solos. Las <b>reglas</b> viven en{' '}
+          <Code>/etc/nftables.conf</Code> de la VM VPN (192.168.10.29): el fragmento se revisa e
+          integra a mano una sola vez (sets vacios + reglas fijas; con los sets vacios no pasa nada
+          de la VPN). Lo que cambia con los rangos y la lista es <Code>vpn-profiles.nft</Code>, que
+          solo rellena esos sets y se aplica con <Code>deploy/vpn-gateway-apply-profiles.sh</Code>{' '}
+          (con confirmacion y reversion automatica en 60 s).
         </Text>
       </Alert>
 

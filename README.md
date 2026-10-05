@@ -604,23 +604,56 @@ quedan en `internet_lan_full` (su comportamiento de antes).
 - Todo cambio (perfil, rangos, lista) se registra en auditoria con quien y el
   antes/despues. Solo rol `admin`.
 
-**Aplicar las reglas en la .29 (a mano, nunca desde el panel):**
+**Como se imponen los perfiles en la .29.** En la .29 solo existe la tabla
+`inet filter` (policy drop en input y forward) y un `accept` en otra tabla no
+anula ese drop, asi que los perfiles viven DENTRO de `inet filter`, en dos
+piezas:
 
-1. Panel → VPN > Perfiles de acceso → **Descargar vpn-profiles.nft** (tabla
-   `inet vpn_profiles`; no sustituye `/etc/nftables.conf`, se incluye desde el:
-   `include "/etc/nftables.d/vpn-profiles.nft"`).
-2. Copialo a la .29 y revisalo. Despues, como root:
-   `deploy/vpn-gateway-apply-profiles.sh --check-only vpn-profiles.nft` y
-   `deploy/vpn-gateway-apply-profiles.sh vpn-profiles.nft`. El script hace
-   copia de seguridad, `nft -c -f`, carga atomica y, **si no escribes
-   `CONFIRMAR` en 60 s (o se te cae el SSH), revierte solo**.
-3. Reversion manual tras confirmar: `nft delete table inet vpn_profiles` y
-   restaurar el fichero de `/var/backups/vpn-gateway/`.
+1. **Fragmento de `/etc/nftables.conf`** (panel → VPN > Perfiles de acceso →
+   *Fragmento de nftables.conf*; se revisa e integra a mano **una sola vez** y
+   no cambia con los rangos): declara siete sets **vacios** (uno `interval
+   ipv4_addr` por perfil, `vpn_restricted_dests` de tipo `ipv4_addr .
+   inet_proto . inet_service` y `vpn_restricted_icmp`) y las reglas **fijas** de
+   forward e input que los usan: EST 8443 hacia la .28 para todos;
+   `lan_full`/`internet_lan_full` → `ip daddr 192.168.10.0/24 accept` (incluye
+   .28, .29 y .30) y accept en input hacia la .29; perfiles con Internet →
+   `ip daddr != redes privadas accept`; restringidos → accept solo si
+   (destino, protocolo, puerto) esta en el set. **Falla cerrando**: con los
+   sets vacios no se acepta nada de la VPN. En `chain forward` hay que
+   **eliminar dos lineas actuales** (el drop de los clientes VPN a .28/.30 y el
+   accept generico de toda la LAN); IKE, 3799 desde la .28, SSH solo desde la LAN
+   fisica y el MSS clamp se quedan como estan. Termina con
+   `include "/etc/nftables.d/vpn-profiles.nft"` para que los sets se rellenen
+   tras un reinicio. Requiere nft >= 0.9.4 y kernel >= 5.6 (sets de intervalos
+   concatenados).
+2. **`vpn-profiles.nft`** (boton *Descargar vpn-profiles.nft*): SOLO
+   `flush set` + `add element` de esos sets, en una carga atomica. Es lo que
+   cambia con los rangos y la lista. El panel no lo aplica: lo haces tu con
+   `deploy/vpn-gateway-apply-profiles.sh` en la .29 (como root):
+   `... --check-only vpn-profiles.nft` y despues `... vpn-profiles.nft`. El
+   script rechaza cualquier linea que no sea `flush set`/`add element` sobre los
+   sets `vpn_*` (adios a `flush ruleset`, tablas, cadenas o reglas), comprueba
+   que los sets **existen** en `inet filter` (si no, aborta con un mensaje claro),
+   hace copia de seguridad, `nft -c -f`, carga atomica y **si no escribes
+   `CONFIRMAR` en 60 s (o se te cae el SSH), restaura los sets solo**.
 
-Importante: si sigue cargada la tabla `inet vpn_clients` del agente de permisos
-por dispositivo (mas abajo), un paquete tiene que pasar las **dos** tablas; los
-perfiles `*_full` seguiran bloqueados hacia .28/.30 por `vpn_clients` hasta que
-la retires.
+La lista restringida no admite entradas que se solapen (mismo protocolo +
+destinos que se pisan + puertos que se pisan): un set de intervalos las
+rechazaria. ICMP va en un set aparte porque `th dport` en un paquete ICMP lee el
+checksum, no un puerto.
+
+Reversion manual tras confirmar: `nft -f /var/backups/vpn-gateway/revert-vpn-profiles.<fecha>.nft`
+(estado anterior de los sets) y restaurar `vpn-profiles.nft.installed.<fecha>`
+en `/etc/nftables.d/`. Para quitar los perfiles del todo, deshacer los cambios
+de `nftables.conf` desde su copia de seguridad.
+
+Pruebas con nft real (sin tocar la maquina, en un netns de usuario):
+`NFT_FUNCTIONAL=1 npm test` (solo Linux) o a mano,
+`node --import tsx server/src/scripts/exportNftExamples.ts /tmp/nft` y
+`unshare -rn bash deploy/test-vpn-profiles-netns.sh /tmp/nft` (veredicto de
+cada perfil hacia .28/.29/.30, otra IP de la LAN e Internet) y
+`unshare -rn bash deploy/test-apply-profiles-netns.sh /tmp/nft` (el script de
+aplicacion).
 
 ### Firewall de la puerta de enlace VPN (192.168.10.29)
 

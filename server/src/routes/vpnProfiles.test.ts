@@ -241,6 +241,7 @@ test('todas las rutas de perfiles exigen sesion y rol admin', async () => {
     ['PUT', '/api/vpn-profiles/destinations/1', { destCidr: '192.168.10.5', protocol: 'tcp' }],
     ['DELETE', '/api/vpn-profiles/destinations/1'],
     ['GET', '/api/vpn-profiles/nft'],
+    ['GET', '/api/vpn-profiles/nftables-fragment'],
     ['PATCH', '/api/vpn-devices/vpn-diego-portatil/access-profile', { accessProfile: 'lan_full' }],
   ];
   for (const [method, path, body] of requests) {
@@ -395,7 +396,7 @@ test('PATCH access-profile: perfil desconocido -> 400', async () => {
   assert.equal(db.audit.length, 0);
 });
 
-test('GET /nft: descarga el fichero generado (solo admin) y audita la descarga', async () => {
+test('GET /nft: descarga el fichero de sets (solo flush set + add element) y audita la descarga', async () => {
   db.ranges.set('internet_only', { range_start: '192.168.10.100', range_end: '192.168.10.109' });
   const res = await call('GET', '/api/vpn-profiles/nft');
   assert.equal(res.status, 200);
@@ -403,11 +404,31 @@ test('GET /nft: descarga el fichero generado (solo admin) y audita la descarga',
     res.headers.get('content-disposition') ?? '',
     /attachment; filename="vpn-profiles\.nft"/,
   );
-  assert.match(res.text, /table inet vpn_profiles \{/);
-  assert.match(res.text, /elements = \{ 192\.168\.10\.100-192\.168\.10\.109 \}/);
+  assert.match(res.text, /^flush set inet filter vpn_internet_only_ips$/m);
+  assert.match(
+    res.text,
+    /^add element inet filter vpn_internet_only_ips \{ 192\.168\.10\.100-192\.168\.10\.109 \}$/m,
+  );
+  assert.doesNotMatch(res.text, /^(table|chain|delete|add rule|flush ruleset)/m);
   assert.deepEqual(
-    db.audit.map((a) => a.entity),
-    ['vpn_profiles_nft'],
+    db.audit.map((a) => a.entity_id),
+    ['download'],
+  );
+});
+
+test('GET /nftables-fragment: descarga el fragmento para revisar (sets vacios + reglas fijas) y lo audita', async () => {
+  const res = await call('GET', '/api/vpn-profiles/nftables-fragment');
+  assert.equal(res.status, 200);
+  assert.match(
+    res.headers.get('content-disposition') ?? '',
+    /filename="nftables-fragmento-perfiles\.conf"/,
+  );
+  assert.match(res.text, /PARTE 1/);
+  assert.match(res.text, /set vpn_lan_full_ips \{/);
+  assert.doesNotMatch(res.text, /elements/);
+  assert.deepEqual(
+    db.audit.map((a) => a.entity_id),
+    ['fragment-download'],
   );
 });
 

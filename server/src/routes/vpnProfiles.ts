@@ -21,13 +21,13 @@ import {
   listRestrictedDestinations,
   updateRestrictedDestination,
 } from '../services/vpnRestrictedList.js';
-import { generateProfilesConfig } from '../services/vpnProfilesNft.js';
+import { generateNftablesFragment, generateProfilesConfig } from '../services/vpnProfilesNft.js';
 import { getVpnSettings } from '../services/vpnSettings.js';
 
 /**
  * Perfiles de acceso VPN (prompt 12.14): rangos de IP por perfil, lista
- * global de destinos de los perfiles restringidos y descarga del
- * vpn-profiles.nft. Solo rol admin. Cada cambio se audita con antes/despues.
+ * global de destinos de los perfiles restringidos y descarga de los ficheros
+ * nftables (sets + fragmento de nftables.conf). Solo rol admin. Cada cambio se audita con antes/despues.
  * Nada de aqui ejecuta nada en la VM VPN: el fichero se descarga y lo aplica
  * a mano deploy/vpn-gateway-apply-profiles.sh.
  */
@@ -133,7 +133,10 @@ vpnProfilesRouter.delete(
   }),
 );
 
-/** Descarga de vpn-profiles.nft (se aplica a mano en la VM VPN, no desde el panel). */
+/**
+ * Descarga del fichero de sets (vpn-profiles.nft): solo `flush set` + `add element`
+ * sobre los sets que ya existen en `inet filter`. Se aplica a mano en la VM VPN.
+ */
 vpnProfilesRouter.get(
   '/nft',
   asyncHandler(async (req, res) => {
@@ -143,5 +146,18 @@ vpnProfilesRouter.get(
       .set('Content-Disposition', 'attachment; filename="vpn-profiles.nft"')
       .type('text/plain')
       .send(nft);
+  }),
+);
+
+/** Fragmento de /etc/nftables.conf (sets vacios + reglas fijas) para revisar; no se aplica solo. */
+vpnProfilesRouter.get(
+  '/nftables-fragment',
+  asyncHandler(async (req, res) => {
+    const fragment = await generateNftablesFragment();
+    await writeAudit(req, 'create', 'vpn_profiles_nft', 'fragment-download');
+    res
+      .set('Content-Disposition', 'attachment; filename="nftables-fragmento-perfiles.conf"')
+      .type('text/plain')
+      .send(fragment);
   }),
 );

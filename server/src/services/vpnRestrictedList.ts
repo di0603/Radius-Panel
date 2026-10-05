@@ -37,13 +37,17 @@ export interface RestrictedDestinationInput {
 
 export type NormalizedRestrictedInput = Omit<RestrictedDestination, 'id'>;
 
-/** "22, 443,8000-8100" -> "22,443,8000-8100". Lanza badRequest si algo no es un puerto o rango valido. */
+/**
+ * "443, 22,8000-8100" -> "22,443,8000-8100". Ordena y une puertos repetidos,
+ * solapados o contiguos (un set nft de intervalos no admite solapes dentro de
+ * una misma entrada). Lanza badRequest si algo no es un puerto o rango valido.
+ */
 export function normalizePorts(raw: string): string {
   const tokens = raw.split(',').map((t) => t.trim());
   if (tokens.length > MAX_PORT_TOKENS) {
     throw badRequest(`Demasiados puertos (maximo ${MAX_PORT_TOKENS} entradas separadas por comas)`);
   }
-  const normalized = tokens.map((token) => {
+  const ranges = tokens.map((token): [number, number] => {
     const match = /^(\d{1,5})(?:-(\d{1,5}))?$/.exec(token);
     if (!match) throw badRequest(`Puerto o rango invalido: "${token}" (usa 22 o 8000-8100)`);
     const from = Number(match[1]);
@@ -52,9 +56,45 @@ export function normalizePorts(raw: string): string {
       throw badRequest(`Puerto fuera de 1-65535: "${token}"`);
     }
     if (to < from) throw badRequest(`Rango de puertos al reves: "${token}"`);
-    return from === to ? String(from) : `${from}-${to}`;
+    return [from, to];
   });
-  return normalized.join(',');
+  ranges.sort((x, y) => x[0] - y[0]);
+  const merged: [number, number][] = [];
+  for (const range of ranges) {
+    const last = merged[merged.length - 1];
+    if (last && range[0] <= last[1] + 1) last[1] = Math.max(last[1], range[1]);
+    else merged.push([range[0], range[1]]);
+  }
+  return merged.map(([from, to]) => (from === to ? String(from) : `${from}-${to}`)).join(',');
+}
+
+/** "22,80-90" -> [[22, 22], [80, 90]]. Solo para cadenas ya normalizadas; sin puertos = todos. */
+export function parsePortRanges(ports: string | null): [number, number][] {
+  if (!ports) return [[1, 65535]];
+  return ports.split(',').map((token): [number, number] => {
+    const [from, to] = token.split('-');
+    return [Number(from), Number(to ?? from)];
+  });
+}
+
+/**
+ * Dos entradas se solapan si comparten protocolo y se pisan tanto el destino
+ * como los puertos (icmp: solo el destino). El set de destinos de nftables es
+ * de intervalos concatenados y rechaza (o interpreta mal) las entradas que se
+ * pisan, asi que la lista no puede tenerlas.
+ */
+export function entriesOverlap(
+  a: NormalizedRestrictedInput,
+  b: NormalizedRestrictedInput,
+): boolean {
+  if (a.protocol !== b.protocol) return false;
+  const da = ipv4OrCidrBounds(a.destCidr);
+  const db = ipv4OrCidrBounds(b.destCidr);
+  if (!da || !db || da.start > db.end || db.start > da.end) return false;
+  if (a.protocol === 'icmp') return true;
+  return parsePortRanges(a.ports).some(([f1, t1]) =>
+    parsePortRanges(b.ports).some(([f2, t2]) => f1 <= t2 && f2 <= t1),
+  );
 }
 
 /** Destino en forma canonica (sin ceros a la izquierda ni bits de host) y dentro de la LAN. */
@@ -136,6 +176,10 @@ export async function listRestrictedDestinations(): Promise<RestrictedDestinatio
   }
 }
 
+function overlapMessage(other: RestrictedDestination): string {
+  return `Se solapa con la entrada #${other.id} (${other.destCidr} ${other.protocol}${other.ports ? ` ${other.ports}` : ''}): unifica ambas o acota destinos/puertos`;
+}
+
 function sameEntry(a: NormalizedRestrictedInput, b: NormalizedRestrictedInput): boolean {
   return a.destCidr === b.destCidr && a.protocol === b.protocol && a.ports === b.ports;
 }
@@ -151,6 +195,8 @@ export async function addRestrictedDestination(
     throw badRequest(`La lista admite hasta ${MAX_RESTRICTED_ENTRIES} entradas`);
   }
   if (existing.some((e) => sameEntry(e, entry))) throw conflict('Esa entrada ya esta en la lista');
+  const overlapAdd = existing.find((e) => entriesOverlap(e, entry));
+  if (overlapAdd) throw conflict(overlapMessage(overlapAdd));
 
   const [result] = await panelPool.query<ResultSetHeader>(
     `INSERT INTO panel_vpn_restricted_destinations (dest_cidr, protocol, ports, comment, created_by)
@@ -172,6 +218,8 @@ export async function updateRestrictedDestination(
   if (existing.some((e) => e.id !== id && sameEntry(e, entry))) {
     throw conflict('Esa entrada ya esta en la lista');
   }
+  const overlapEdit = existing.find((e) => e.id !== id && entriesOverlap(e, entry));
+  if (overlapEdit) throw conflict(overlapMessage(overlapEdit));
   await panelPool.query(
     `UPDATE panel_vpn_restricted_destinations
         SET dest_cidr = :destCidr, protocol = :protocol, ports = :ports, comment = :comment
