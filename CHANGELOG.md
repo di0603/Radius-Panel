@@ -84,7 +84,23 @@ Este proyecto usa versionado semantico.
       `deploy/test-apply-profiles-netns.sh` para el script de aplicacion. Los
       golden files (`services/__golden__/vpn-profiles/`) cubren los ficheros de
       sets por perfil, el fragmento y el conf ensamblado.
-    - **Vigilante de SSH muerto (causa real) y fichero `include` (revision)**:
+    - **Revision del 12.14 (tres arreglos)**:
+    - `setProfileRanges` guarda los cinco rangos en UNA transaccion (conexion
+      dedicada, `beginTransaction`/`commit`/`rollback`); antes eran cinco INSERT
+      sueltos y un fallo a medias dejaba rangos antiguos y nuevos mezclados
+      (posibles solapes). Test: si falla el tercero, no cambia ninguno.
+    - Vigilante: espera `CONFIRM_SECONDS + 10` s mientras el `read -t` espera
+      `CONFIRM_SECONDS`, para que una confirmacion en los ultimos segundos nunca
+      coincida con la reversion. Pruebas del vigilante actualizadas: 50/50 en
+      `asap`, `samesecond`, `fixed` y el modo nuevo `lateconfirm` (confirmacion
+      a `CONFIRM_SECONDS - 0.3 s`: confirmada, sets nuevos, fichero instalado y
+      sin reversion despues).
+    - Perfiles `lan_restricted`/`lan_full`: aviso "sin Internet por el tunel:
+      usa tunel dividido en el dispositivo hasta la fase B" (selector y README).
+      La lista restringida rechaza entradas que incluyan 192.168.10.29 (ese
+      trafico entra por input, no por forward) en el servidor, en el generador y
+      con aviso en la interfaz.
+  - **Vigilante de SSH muerto (causa real) y fichero `include` (revision)**:
     - Causa del fallo intermitente: el script nombraba la copia de seguridad, el
       fichero de reversion y la bandera de confirmacion solo con un sello de 1 s
       (`date +%Y%m%d-%H%M%S`). Dos ejecuciones en el mismo segundo -una confirmada

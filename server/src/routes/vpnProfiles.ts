@@ -8,6 +8,8 @@ import {
   ACCESS_PROFILES,
   ACCESS_PROFILE_INFO,
   INFRASTRUCTURE_WARNING,
+  NO_INTERNET_WARNING,
+  GATEWAY_IP,
   RESERVED_HOSTS,
   dhcpFromConfig,
   getProfileRanges,
@@ -45,6 +47,8 @@ vpnProfilesRouter.get(
     res.json({
       profiles: ACCESS_PROFILES.map((p) => ACCESS_PROFILE_INFO[p]),
       infrastructureWarning: INFRASTRUCTURE_WARNING,
+      noInternetWarning: NO_INTERNET_WARNING,
+      gatewayIp: GATEWAY_IP,
       ranges,
       destinations,
       lanCidr: settings.lanCidr,

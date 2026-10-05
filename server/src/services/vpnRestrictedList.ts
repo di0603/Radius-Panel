@@ -1,6 +1,7 @@
 import type { ResultSetHeader, RowDataPacket } from 'mysql2';
 import { panelPool } from '../db/pools.js';
 import { badRequest, conflict, notFound } from '../lib/http.js';
+import { GATEWAY_IP } from './vpnAccessProfiles.js';
 import { intToIpv4, ipv4OrCidrBounds } from '../lib/ipv4.js';
 import { getVpnSettings } from './vpnSettings.js';
 
@@ -132,6 +133,15 @@ export function validateRestrictedEntry(
     throw badRequest('El protocolo debe ser tcp, udp o icmp');
   }
   const destCidr = normalizeDestination(String(input.destCidr ?? ''), lanCidr);
+  // El trafico hacia la propia VM VPN entra por `input`, no por `forward`: una entrada que la contenga
+  // (ni sola ni dentro de un CIDR) no daria acceso y enganaria. El acceso a la .29 es solo de los perfiles *_full.
+  const gwInt = ipv4OrCidrBounds(GATEWAY_IP)!.start;
+  const destBounds = ipv4OrCidrBounds(destCidr)!;
+  if (destBounds.start <= gwInt && gwInt <= destBounds.end) {
+    throw badRequest(
+      `El destino incluye ${GATEWAY_IP} (la VM VPN): ese trafico entra por input y no por forward, asi que la lista no puede abrirlo. Usa destinos que no la contengan (el acceso a la .29 es solo de los perfiles *_full).`,
+    );
+  }
 
   const rawPorts = input.ports?.trim() ?? '';
   let ports: string | null = null;

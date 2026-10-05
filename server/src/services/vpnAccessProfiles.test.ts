@@ -196,9 +196,13 @@ function mockPanelDb(opts: {
   rangeRows?: RangeRow[];
   deviceRows?: { username: string; access_profile: string; framed_ip: string }[];
   missingRangesTable?: boolean;
+  /** Nº (1..5) del INSERT de rango que falla, para probar la transaccion. */
+  failOnInsert?: number;
 }) {
+  /** Escrituras CONFIRMADAS (solo las de una transaccion con commit). */
   const writes: { sql: string; params: Record<string, unknown> }[] = [];
-  mock.method(pools.panelPool, 'query', (async (sql: string, params?: unknown) => {
+  const tx = { begun: false, committed: false, rolledBack: false, released: false, attempted: 0 };
+  mock.method(pools.panelPool, 'query', (async (sql: string) => {
     if (sql.includes('FROM panel_vpn_profile_ranges')) {
       if (opts.missingRangesTable) {
         const err = new Error('sin tabla') as Error & { code: string };
@@ -213,13 +217,38 @@ function mockPanelDb(opts: {
       throw err;
     }
     if (sql.includes('FROM panel_vpn_devices')) return [opts.deviceRows ?? [], []];
-    if (sql.startsWith('INSERT INTO panel_vpn_profile_ranges')) {
-      writes.push({ sql, params: params as Record<string, unknown> });
-      return [{}, []];
-    }
+    // Los INSERT de rangos YA NO van por el pool: tienen que ir por la conexion de la transaccion.
     throw new Error(`panelPool.query no esperado: ${sql}`);
   }) as never);
-  return writes;
+
+  let pending: { sql: string; params: Record<string, unknown> }[] = [];
+  const conn = {
+    async beginTransaction() {
+      tx.begun = true;
+    },
+    async commit() {
+      tx.committed = true;
+      writes.push(...pending);
+    },
+    async rollback() {
+      tx.rolledBack = true;
+      pending = [];
+    },
+    release() {
+      tx.released = true;
+    },
+    async query(sql: string, params?: unknown) {
+      if (!sql.startsWith('INSERT INTO panel_vpn_profile_ranges')) {
+        throw new Error(`conn.query no esperado: ${sql}`);
+      }
+      tx.attempted++;
+      if (opts.failOnInsert === tx.attempted) throw new Error('fallo simulado en el INSERT');
+      pending.push({ sql, params: params as Record<string, unknown> });
+      return [{}, []];
+    },
+  };
+  mock.method(pools.panelPool, 'getConnection', (async () => conn) as never);
+  return { writes, tx };
 }
 
 test('getProfileRanges: sin la tabla (migracion sin aplicar) devuelve todos los perfiles sin rango', async () => {
@@ -248,7 +277,7 @@ test('requireProfileRange: perfil sin rango configurado -> error claro (409)', a
 });
 
 test('setProfileRanges: rango valido -> guarda los 5 perfiles y devuelve antes/despues', async () => {
-  const writes = mockPanelDb({
+  const { writes, tx } = mockPanelDb({
     rangeRows: [
       { profile: 'internet_lan_full', range_start: '192.168.10.75', range_end: '192.168.10.99' },
     ],
@@ -272,6 +301,9 @@ test('setProfileRanges: rango valido -> guarda los 5 perfiles y devuelve antes/d
       rangeEnd: '192.168.10.109',
     });
     assert.equal(writes.length, ACCESS_PROFILES.length);
+    assert.equal(tx.committed, true);
+    assert.equal(tx.rolledBack, false);
+    assert.equal(tx.released, true);
     assert.ok(writes.every((w) => w.params.by === 7));
   } finally {
     mock.restoreAll();
@@ -279,7 +311,7 @@ test('setProfileRanges: rango valido -> guarda los 5 perfiles y devuelve antes/d
 });
 
 test('setProfileRanges: un solape se rechaza (400) sin escribir nada', async () => {
-  const writes = mockPanelDb({});
+  const { writes } = mockPanelDb({});
   try {
     const next = ranges({
       internet_only: ['192.168.10.100', '192.168.10.110'],
@@ -297,7 +329,7 @@ test('setProfileRanges: un solape se rechaza (400) sin escribir nada', async () 
 });
 
 test('setProfileRanges: un rango fuera de la LAN se rechaza sin escribir nada', async () => {
-  const writes = mockPanelDb({});
+  const { writes } = mockPanelDb({});
   try {
     await assert.rejects(
       setProfileRanges(ranges({ internet_only: ['10.1.1.1', '10.1.1.9'] }), 1),
@@ -310,7 +342,7 @@ test('setProfileRanges: un rango fuera de la LAN se rechaza sin escribir nada', 
 });
 
 test('setProfileRanges: no deja un dispositivo existente fuera del rango de su perfil', async () => {
-  const writes = mockPanelDb({
+  const { writes } = mockPanelDb({
     deviceRows: [
       { username: 'vpn-vps', access_profile: 'internet_lan_full', framed_ip: '192.168.10.77' },
     ],
@@ -321,6 +353,34 @@ test('setProfileRanges: no deja un dispositivo existente fuera del rango de su p
       /vpn-vps.*fuera del rango/,
     );
     assert.equal(writes.length, 0);
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test('setProfileRanges: los cinco rangos van en UNA transaccion: si falla el tercero, no cambia ninguno', async () => {
+  const { writes, tx } = mockPanelDb({
+    rangeRows: [
+      { profile: 'internet_lan_full', range_start: '192.168.10.75', range_end: '192.168.10.99' },
+    ],
+    deviceRows: [
+      { username: 'vpn-vps', access_profile: 'internet_lan_full', framed_ip: '192.168.10.77' },
+    ],
+    failOnInsert: 3,
+  });
+  try {
+    const next = ranges({
+      internet_lan_full: ['192.168.10.75', '192.168.10.99'],
+      internet_only: ['192.168.10.100', '192.168.10.109'],
+      lan_full: ['192.168.10.110', '192.168.10.119'],
+    });
+    await assert.rejects(setProfileRanges(next, 7), /fallo simulado en el INSERT/);
+    assert.equal(tx.begun, true);
+    assert.equal(tx.attempted, 3); // llego al tercero
+    assert.equal(tx.committed, false);
+    assert.equal(tx.rolledBack, true);
+    assert.equal(tx.released, true, 'la conexion se libera aunque falle');
+    assert.equal(writes.length, 0, 'ningun rango confirmado');
   } finally {
     mock.restoreAll();
   }

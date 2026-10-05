@@ -153,11 +153,13 @@ function DestinationModal({
   opened,
   onClose,
   lanCidr,
+  gatewayIp,
 }: {
   entry: RestrictedDestination | null;
   opened: boolean;
   onClose: () => void;
   lanCidr: string;
+  gatewayIp: string;
 }) {
   const save = useSaveRestrictedDestination();
   const [destCidr, setDestCidr] = useState('');
@@ -200,7 +202,7 @@ function DestinationModal({
       <Stack>
         <TextInput
           label="Destino"
-          description={`IPv4 o CIDR dentro de ${lanCidr} (p.ej. 192.168.10.50 o 192.168.10.0/28)`}
+          description={`IPv4 o CIDR dentro de ${lanCidr} (p.ej. 192.168.10.50 o 192.168.10.0/28). No puede incluir ${gatewayIp} (la VM VPN)`}
           value={destCidr}
           onChange={(e) => setDestCidr(e.currentTarget.value)}
           required
@@ -289,6 +291,14 @@ function RestrictedListSection() {
       }
       bodyPadding={false}
     >
+      <Alert color="yellow" variant="light" icon={<IconAlertTriangle size={16} />} m="md" p="xs">
+        <Text size="sm">
+          La lista <b>no puede incluir {profiles.data?.gatewayIp ?? '192.168.10.29'}</b> (la VM
+          VPN): ese trafico entra por <Code>input</Code> y no por <Code>forward</Code>, asi que no
+          se podria abrir desde aqui; el acceso a la .29 es solo de los perfiles{' '}
+          <Code>lan_full</Code> e <Code>internet_lan_full</Code>.
+        </Text>
+      </Alert>
       {profiles.isLoading ? (
         <Skeleton height={120} m="md" />
       ) : destinations.length ? (
@@ -351,6 +361,7 @@ function RestrictedListSection() {
         opened={modalOpen}
         onClose={() => setModalOpen(false)}
         lanCidr={profiles.data?.lanCidr ?? '192.168.10.0/24'}
+        gatewayIp={profiles.data?.gatewayIp ?? '192.168.10.29'}
       />
     </SectionCard>
   );

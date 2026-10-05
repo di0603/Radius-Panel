@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Aplica el fichero de sets de los perfiles de acceso VPN (vpn-profiles.nft) en
-# la VM VPN (192.168.10.29) con "confirmar o revertir": si no confirmas en 60 s
+# la VM VPN (192.168.10.29) con "confirmar o revertir": si no confirmas en 60 s (o, con la
+# sesion muerta, a los 70 s)
 # (o se te cae la sesion SSH porque las reglas te dejaron sin acceso), el estado
 # anterior de los sets se restaura SOLO.
 #
@@ -42,8 +43,10 @@
 #   - ARMA el vigilante (independiente de esta sesion: setsid) ANTES de cargar y
 #     despues carga de forma atomica (nft -f es una unica transaccion). Armarlo
 #     antes elimina la ventana en la que una sesion muerta justo tras la carga
-#     dejaba los sets nuevos sin vigilante. Si no se confirma en $CONFIRM_SECONDS
-#     el vigilante restaura los sets.
+#     dejaba los sets nuevos sin vigilante. El vigilante espera $CONFIRM_SECONDS + 10 s (el prompt espera
+#     $CONFIRM_SECONDS): con la sesion VIVA y sin confirmar, el propio script revierte al agotarse el
+#     prompt; el vigilante (70 s por defecto) solo actua si la sesion ha muerto, y una confirmacion
+#     en los ultimos segundos nunca coincide con su reversion.
 #   - Solo tras CONFIRMAR instala el fichero en $TARGET, de forma atomica
 #     (temporal en el mismo directorio + rename): nunca queda a medias.
 #
@@ -60,6 +63,10 @@ NFTABLES_CONF="${NFTABLES_CONF:-/etc/nftables.conf}"
 TARGET="${TARGET:-/etc/nftables.d/vpn-profiles.nft}"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/vpn-gateway}"
 CONFIRM_SECONDS="${CONFIRM_SECONDS:-60}"
+# El vigilante espera MAS que el prompt: "read -t" espera CONFIRM_SECONDS y el vigilante CONFIRM_SECONDS + 10.
+# Asi una confirmacion en los ultimos segundos (touch de la bandera + kill del vigilante) nunca coincide con la
+# reversion del vigilante: el margen de 10 s cubre la latencia de tocar la bandera, matar y cualquier retraso.
+WATCHDOG_MARGIN_SECONDS=10
 FAMILY="inet"
 TABLE="filter"
 # Sets que este script puede tocar (los mismos que declara el fragmento).
@@ -102,6 +109,7 @@ die() {
 case "$CONFIRM_SECONDS" in
   '' | *[!0-9]*) die "CONFIRM_SECONDS debe ser un numero de segundos (es '$CONFIRM_SECONDS')" ;;
 esac
+WATCHDOG_SECONDS=$((CONFIRM_SECONDS + WATCHDOG_MARGIN_SECONDS))
 
 if [ "${SKIP_ROOT_CHECK:-0}" != "1" ] && [ "$(id -u)" -ne 0 ]; then
   die "ejecutalo como root (sudo): nft necesita privilegios"
@@ -284,7 +292,7 @@ setsid nohup bash -c '
   if [ ! -e "$2" ]; then
     "$3" -f "$4" && echo "[vigilante] sin confirmacion: sets revertidos" || echo "[vigilante] FALLO al revertir; carga a mano $4" >&2
   fi
-' _ "$CONFIRM_SECONDS" "$confirm_flag" "$NFT_BIN" "$revert_file" >>"$BACKUP_DIR/watchdog.log" 2>&1 </dev/null &
+' _ "$WATCHDOG_SECONDS" "$confirm_flag" "$NFT_BIN" "$revert_file" >>"$BACKUP_DIR/watchdog.log" 2>&1 </dev/null &
 watchdog_pid=$!
 
 log "Aplicando $file (carga atomica)..."

@@ -90,8 +90,15 @@ export const ACCESS_PROFILE_INFO: Record<AccessProfile, AccessProfileInfo> = {
 /** Texto del aviso rojo que muestra el panel en los perfiles con acceso a infraestructura. */
 export const INFRASTRUCTURE_WARNING = 'acceso a infraestructura: CA, RADIUS y BD';
 
+/** Aviso de los perfiles sin Internet (lan_restricted, lan_full) hasta que la app de Windows configure el tunel dividido (fase B). */
+export const NO_INTERNET_WARNING =
+  'sin Internet por el tunel: usa tunel dividido en el dispositivo hasta la fase B';
+
 /** IPs de infraestructura que ningun rango de perfil puede contener (arquitectura de la VPN, CLAUDE.md). */
 export const RESERVED_HOSTS = ['192.168.10.28', '192.168.10.29', '192.168.10.30'];
+
+/** La VM VPN: el trafico hacia ella entra por `input` (no por `forward`), asi que la lista restringida no puede abrirla. */
+export const GATEWAY_IP = '192.168.10.29';
 
 export type ProfileRanges = Record<
   AccessProfile,
@@ -298,14 +305,26 @@ export async function setProfileRanges(
   });
   if (problems.length) throw badRequest(problems.join('; '));
 
-  for (const profile of ACCESS_PROFILES) {
-    await panelPool.query(
-      `INSERT INTO panel_vpn_profile_ranges (profile, range_start, range_end, updated_by)
-       VALUES (:profile, :start, :end, :by)
-       ON DUPLICATE KEY UPDATE range_start = VALUES(range_start), range_end = VALUES(range_end),
-                               updated_by = VALUES(updated_by)`,
-      { profile, start: next[profile].rangeStart, end: next[profile].rangeEnd, by: updatedBy },
-    );
+  // Los cinco rangos en UNA transaccion (conexion dedicada): o cambian los cinco o ninguno. Con cinco
+  // INSERT sueltos, un fallo a medias dejaria rangos mezclados -antiguos y nuevos- que pueden solaparse.
+  const conn = await panelPool.getConnection();
+  try {
+    await conn.beginTransaction();
+    for (const profile of ACCESS_PROFILES) {
+      await conn.query(
+        `INSERT INTO panel_vpn_profile_ranges (profile, range_start, range_end, updated_by)
+         VALUES (:profile, :start, :end, :by)
+         ON DUPLICATE KEY UPDATE range_start = VALUES(range_start), range_end = VALUES(range_end),
+                                 updated_by = VALUES(updated_by)`,
+        { profile, start: next[profile].rangeStart, end: next[profile].rangeEnd, by: updatedBy },
+      );
+    }
+    await conn.commit();
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
   }
   return { before, after: next };
 }

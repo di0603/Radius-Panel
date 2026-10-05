@@ -1027,6 +1027,9 @@ export interface RestrictedDestinationInput {
 export interface VpnProfilesView {
   profiles: AccessProfileInfo[];
   infrastructureWarning: string;
+  noInternetWarning: string;
+  /** IP de la VM VPN: la lista restringida no puede incluirla (entra por input, no por forward). */
+  gatewayIp: string;
   ranges: ProfileRangesView;
   destinations: RestrictedDestination[];
   lanCidr: string;

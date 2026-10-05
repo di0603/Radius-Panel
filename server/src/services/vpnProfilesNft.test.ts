@@ -208,6 +208,8 @@ test('el generador rechaza entradas invalidas aunque no pasen por las rutas', ()
     { destinations: [dest({ destCidr: '192.168.10.5; flush ruleset' })] },
     { destinations: [dest({ ports: '22; accept' })] },
     { destinations: [dest({ destCidr: '8.8.8.8' })] },
+    { destinations: [dest({ destCidr: '192.168.10.29' })] },
+    { destinations: [dest({ destCidr: '192.168.10.0/24' })] },
     { destinations: [dest({ protocol: 'icmp', ports: '1' })] },
     // entradas que se solapan (un set de intervalos las rechazaria)
     {

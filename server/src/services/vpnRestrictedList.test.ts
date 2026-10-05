@@ -380,3 +380,31 @@ test('updateRestrictedDestination: editar una entrada para que pise a otra se re
     mock.restoreAll();
   }
 });
+
+test('validateRestrictedEntry: rechaza destinos que incluyan la .29 (entra por input, no por forward)', () => {
+  for (const destCidr of [
+    '192.168.10.29',
+    '192.168.10.28/30',
+    '192.168.10.16/28',
+    '192.168.10.0/24',
+  ]) {
+    assert.throws(
+      () => validateRestrictedEntry({ destCidr, protocol: 'tcp', ports: '22' }, LAN),
+      (err: Error & { status?: number }) =>
+        err.status === 400 && /192\.168\.10\.29 \(la VM VPN\).*input/.test(err.message),
+      destCidr,
+    );
+  }
+  // las vecinas si valen
+  for (const destCidr of [
+    '192.168.10.28',
+    '192.168.10.30',
+    '192.168.10.30/31',
+    '192.168.10.0/28',
+  ]) {
+    assert.doesNotThrow(
+      () => validateRestrictedEntry({ destCidr, protocol: 'tcp', ports: '22' }, LAN),
+      destCidr,
+    );
+  }
+});

@@ -39,6 +39,13 @@ export function AccessProfileSelect({
           {info.description}
         </Text>
       )}
+      {info && !info.internet && (
+        <Alert color="yellow" variant="light" icon={<IconAlertTriangle size={16} />} p="xs">
+          <Text size="sm" fw={600}>
+            {profiles.data?.noInternetWarning}
+          </Text>
+        </Alert>
+      )}
       {info?.infrastructureAccess && (
         <Alert color="red" variant="light" icon={<IconAlertTriangle size={16} />} p="xs">
           <Text size="sm" fw={600}>

@@ -85,6 +85,7 @@ function installMocks() {
       return [[...db.ranges.entries()].map(([profile, r]) => ({ profile, ...r })), []];
     }
     if (sql.startsWith('INSERT INTO panel_vpn_profile_ranges')) {
+      throw new Error('los rangos se guardan por la conexion transaccional, no por el pool');
       db.ranges.set(String(p.profile), {
         range_start: (p.start as string) ?? null,
         range_end: (p.end as string) ?? null,
@@ -154,6 +155,25 @@ function installMocks() {
     }
     throw new Error(`panelPool.query no esperado: ${sql}`);
   }) as never);
+
+  const panelConn = {
+    async beginTransaction() {},
+    async commit() {},
+    async rollback() {},
+    release() {},
+    async query(sql: string, params?: unknown) {
+      const p = (params ?? {}) as Record<string, unknown>;
+      if (sql.startsWith('INSERT INTO panel_vpn_profile_ranges')) {
+        db.ranges.set(String(p.profile), {
+          range_start: (p.start as string) ?? null,
+          range_end: (p.end as string) ?? null,
+        });
+        return [{}, []];
+      }
+      throw new Error(`panelConn.query no esperado: ${sql}`);
+    },
+  };
+  mock.method(pools.panelPool, 'getConnection', (async () => panelConn) as never);
 
   const conn = {
     async beginTransaction() {},
@@ -445,4 +465,9 @@ test('GET /: devuelve perfiles, rangos, lista y avisos para la interfaz', async 
     ['lan_full', 'internet_lan_full'],
   );
   assert.equal(json.infrastructureWarning, 'acceso a infraestructura: CA, RADIUS y BD');
+  assert.match(
+    (json as unknown as { noInternetWarning: string }).noInternetWarning,
+    /sin Internet por el tunel: usa tunel dividido en el dispositivo hasta la fase B/,
+  );
+  assert.equal((json as unknown as { gatewayIp: string }).gatewayIp, '192.168.10.29');
 });

@@ -585,6 +585,12 @@ el tunel, y la VM VPN (192.168.10.29) lo impone con nftables:
 el panel lo avisa en rojo al elegirlos. Los dispositivos que ya existian se
 quedan en `internet_lan_full` (su comportamiento de antes).
 
+**Perfiles sin Internet** (`lan_restricted`, `lan_full`): el panel muestra el aviso
+"sin Internet por el tunel: usa tunel dividido en el dispositivo hasta la fase B". El
+servidor bloquea el Internet de esos perfiles, pero la app aun no configura el tunel
+dividido (fase B): hasta entonces hay que configurarlo en el propio dispositivo para
+que el resto de su trafico no intente salir por la VPN.
+
 - **Rangos de IP por perfil** (VPN > Perfiles de acceso): la IP fija
   (`Framed-IP-Address`) de un dispositivo sale del rango de su perfil. El panel
   rechaza rangos fuera de la LAN, solapados entre perfiles, que incluyan
@@ -631,7 +637,11 @@ piezas:
    sets `vpn_*` (adios a `flush ruleset`, tablas, cadenas o reglas), comprueba
    que los sets **existen** en `inet filter` (si no, aborta con un mensaje claro),
    hace copia de seguridad, `nft -c -f`, carga atomica y **si no escribes
-   `CONFIRMAR` en 60 s (o se te cae el SSH), restaura los sets solo**.
+   `CONFIRMAR` en 60 s (o se te cae el SSH), restaura los sets solo**. El prompt espera
+   `CONFIRM_SECONDS` (60) y el vigilante `CONFIRM_SECONDS + 10` (70 s): con la sesion
+   viva y sin confirmar revierte el propio script al agotarse el prompt; el vigilante
+   solo actua si la sesion ha muerto, y una confirmacion en los ultimos segundos nunca
+   coincide con su reversion.
 
 **Antes de aplicar nada, en la .29** (requisito de los sets concatenados con
 intervalos): `nft --version` (>= 0.9.4) y `uname -r` (>= 5.6).
@@ -682,7 +692,10 @@ intervalos): `nft --version` (>= 0.9.4) y `uname -r` (>= 5.6).
    (Los cambios posteriores de rangos o lista ya no tocan `nftables.conf`: solo
    el script de aplicacion.)
 
-La lista restringida no admite entradas que se solapen (mismo protocolo +
+La lista restringida **no admite ninguna entrada que incluya 192.168.10.29** (ni sola ni
+dentro de un CIDR): el trafico hacia la propia VM VPN entra por `input` y no por
+`forward`, asi que la lista no podria abrirlo y la entrada enganaria. El acceso a la
+.29 es solo de `lan_full` e `internet_lan_full`. Tampoco admite entradas que se solapen (mismo protocolo +
 destinos que se pisan + puertos que se pisan): un set de intervalos las
 rechazaria. ICMP va en un set aparte porque `th dport` en un paquete ICMP lee el
 checksum, no un puerto. Nota: `icmp` en input ya esta aceptado por la regla
@@ -702,8 +715,9 @@ simular y el script sustituye `meta ipsec exists/missing` por la interfaz del
 cliente) y `unshare -rn bash deploy/test-apply-profiles-netns.sh /tmp/nft` (el
 script de aplicacion: include inexistente, `--init-empty`, sustitucion atomica,
 confirmar/revertir) y `unshare -rn bash deploy/test-apply-watchdog-netns.sh /tmp/nft 50`
-(el vigilante con la sesion muerta, 50 veces; `MODE=samesecond` o `MODE=fixed`
-para los otros dos escenarios).
+(el vigilante con la sesion muerta, 50 veces; `MODE=samesecond`, `MODE=fixed` o
+`MODE=lateconfirm` -confirmacion en los ultimos segundos del prompt- para los otros
+escenarios).
 
 ### Firewall de la puerta de enlace VPN (192.168.10.29)
 
