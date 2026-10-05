@@ -23,6 +23,7 @@ import {
   Title,
 } from '@mantine/core';
 import { modals } from '@mantine/modals';
+import { notifications } from '@mantine/notifications';
 import { useSearchParams } from 'react-router-dom';
 import {
   IconAlertTriangle,
@@ -39,8 +40,10 @@ import { SectionCard } from '../components/SectionCard';
 import { TableSkeleton } from '../components/TableSkeleton';
 import { EmptyState } from '../components/EmptyState';
 import { FingerprintDisplay } from '../components/FingerprintDisplay';
+import { AccessProfileSelect } from '../components/AccessProfileSelect';
 import {
   useAddDeviceRule,
+  useChangeDeviceProfile,
   useCreateVpnDevice,
   useDecommissionVpnDevice,
   useDeleteDeviceRule,
@@ -54,6 +57,8 @@ import {
   useUserActivity,
   useVpnDevice,
   useVpnDevices,
+  useVpnProfiles,
+  type AccessProfile,
   type CreateVpnDeviceInput,
   type DevicePlatform,
   type DeviceRuleKind,
@@ -89,6 +94,7 @@ function CreateDeviceModal({ opened, onClose }: { opened: boolean; onClose: () =
   const [ownerName, setOwnerName] = useState('');
   const [platform, setPlatform] = useState<DevicePlatform>('windows');
   const [tunnelMode, setTunnelMode] = useState<TunnelMode | ''>('');
+  const [accessProfile, setAccessProfile] = useState<AccessProfile>('internet_only');
   const [notes, setNotes] = useState('');
   const [certDays, setCertDays] = useState<number | ''>('');
   const [renewAfterDays, setRenewAfterDays] = useState<number | ''>('');
@@ -101,6 +107,7 @@ function CreateDeviceModal({ opened, onClose }: { opened: boolean; onClose: () =
     setOwnerName('');
     setPlatform('windows');
     setTunnelMode('');
+    setAccessProfile('internet_only');
     setNotes('');
     setCertDays('');
     setRenewAfterDays('');
@@ -113,6 +120,7 @@ function CreateDeviceModal({ opened, onClose }: { opened: boolean; onClose: () =
       ownerName: ownerName.trim() || null,
       platform,
       tunnelMode: tunnelMode || undefined,
+      accessProfile,
       notes: notes.trim() || null,
       certDays: certDays === '' ? null : certDays,
       renewAfterDays: renewAfterDays === '' ? null : renewAfterDays,
@@ -186,6 +194,7 @@ function CreateDeviceModal({ opened, onClose }: { opened: boolean; onClose: () =
             clearable
           />
         </Group>
+        <AccessProfileSelect value={accessProfile} onChange={setAccessProfile} />
         <Group grow>
           <NumberInput
             label="Dias de vida del certificado"
@@ -432,6 +441,93 @@ function DeviceRulesSection({
         </Group>
       </Stack>
     </div>
+  );
+}
+
+function DeviceProfileSection({
+  username,
+  accessProfile,
+  framedIp,
+}: {
+  username: string;
+  accessProfile: AccessProfile;
+  framedIp: string | null;
+}) {
+  const profiles = useVpnProfiles();
+  const change = useChangeDeviceProfile();
+  const [selected, setSelected] = useState<AccessProfile>(accessProfile);
+
+  useEffect(() => setSelected(accessProfile), [accessProfile]);
+
+  const apply = async () => {
+    try {
+      const result = await change.mutateAsync({ username, accessProfile: selected });
+      if (!result.changed) return;
+      const ip = result.after.framedIp;
+      if (result.disconnect.ok) {
+        notifyOk(
+          result.disconnect.sessions
+            ? `Perfil cambiado (IP ${ip}). Sesion desconectada: el dispositivo se reconectara con el perfil nuevo.`
+            : `Perfil cambiado (IP ${ip}). No habia sesion activa: aplica en la proxima conexion.`,
+        );
+      } else {
+        notifications.show({
+          color: 'yellow',
+          title: 'Perfil cambiado, pero no se pudo desconectar la sesion',
+          message: `Aplica en la proxima conexion del dispositivo (IP ${ip}). ${result.disconnect.error ?? ''}`,
+          autoClose: 12000,
+        });
+      }
+    } catch (err) {
+      notifyError(err);
+    }
+  };
+
+  const confirmApply = () => {
+    const target = profiles.data?.profiles.find((p) => p.profile === selected);
+    modals.openConfirmModal({
+      title: 'Cambiar el perfil de acceso',
+      children: (
+        <Stack gap="xs">
+          <Text size="sm">
+            Se asignara una IP nueva del rango del perfil y se desconectara la sesion activa del
+            dispositivo (se reconecta solo con el perfil nuevo).
+          </Text>
+          {target?.infrastructureAccess && (
+            <Alert color="red" variant="light" icon={<IconAlertTriangle size={16} />}>
+              <b>{profiles.data?.infrastructureWarning}</b>
+            </Alert>
+          )}
+        </Stack>
+      ),
+      labels: { confirm: 'Cambiar perfil', cancel: 'Cancelar' },
+      confirmProps: { color: target?.infrastructureAccess ? 'red' : undefined },
+      onConfirm: apply,
+    });
+  };
+
+  return (
+    <Card padding="sm">
+      <Stack gap="xs">
+        <Text size="xs" fw={650} c="dimmed" tt="uppercase">
+          Perfil de acceso
+        </Text>
+        <AccessProfileSelect value={selected} onChange={setSelected} label="Perfil" />
+        <Group justify="space-between">
+          <Text size="xs" c="dimmed">
+            IP actual: <span className="mono">{framedIp ?? '—'}</span>
+          </Text>
+          <Button
+            size="xs"
+            onClick={confirmApply}
+            loading={change.isPending}
+            disabled={selected === accessProfile}
+          >
+            Aplicar perfil
+          </Button>
+        </Group>
+      </Stack>
+    </Card>
   );
 }
 
@@ -818,6 +914,14 @@ function DeviceDrawer({ username, onClose }: { username: string | null; onClose:
           )}
 
           {device.status !== 'decommissioned' && (
+            <DeviceProfileSection
+              username={device.username}
+              accessProfile={device.accessProfile}
+              framedIp={device.framedIp}
+            />
+          )}
+
+          {device.status !== 'decommissioned' && (
             <DeviceRulesSection
               username={device.username}
               allowRadiusHost={device.allowRadiusHost}
@@ -962,15 +1066,16 @@ export function VpnDevicesPage() {
                 <Table.Th>Dueno</Table.Th>
                 <Table.Th>Plataforma</Table.Th>
                 <Table.Th>Tunel</Table.Th>
+                <Table.Th>Perfil</Table.Th>
                 <Table.Th>IP</Table.Th>
                 <Table.Th>Estado</Table.Th>
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
-              {list.isLoading && <TableSkeleton rows={4} cols={6} />}
+              {list.isLoading && <TableSkeleton rows={4} cols={7} />}
               {!list.isLoading && !list.data?.length && (
                 <Table.Tr>
-                  <Table.Td colSpan={6}>
+                  <Table.Td colSpan={7}>
                     <EmptyState
                       icon={<IconRouter size={22} />}
                       title="Sin dispositivos"
@@ -989,6 +1094,19 @@ export function VpnDevicesPage() {
                   <Table.Td>{d.ownerName ?? d.ownerUser}</Table.Td>
                   <Table.Td>{d.platform}</Table.Td>
                   <Table.Td>{d.tunnelMode}</Table.Td>
+                  <Table.Td>
+                    <Badge
+                      size="sm"
+                      variant="light"
+                      color={
+                        d.accessProfile === 'lan_full' || d.accessProfile === 'internet_lan_full'
+                          ? 'red'
+                          : 'gray'
+                      }
+                    >
+                      {d.accessProfile}
+                    </Badge>
+                  </Table.Td>
                   <Table.Td className="mono">{d.framedIp ?? '—'}</Table.Td>
                   <Table.Td>
                     <Badge size="sm" variant="light" color={STATUS_COLOR[d.status]}>

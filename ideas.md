@@ -510,3 +510,15 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
   sigue usando la VPN, por retirar la raiz de confianza. En rama
   `feat/vpn-12-windows-wip`, pendiente de revision antes de fusionar en
   `vpn`. Detalle completo en el CHANGELOG.
+- [x] **Prompt 12.14 (fase A): perfiles de acceso por dispositivo VPN**:
+  cinco perfiles (`lan_restricted`, `lan_full`, `internet_only`,
+  `internet_lan_restricted`, `internet_lan_full`), rango de IPs por perfil,
+  lista global de destinos de los perfiles restringidos, selector en el panel,
+  generador de `vpn-profiles.nft` y `deploy/vpn-gateway-apply-profiles.sh`
+  (confirmar o revertir en 60 s). Detalle en el CHANGELOG.
+  - [ ] Fase B (app Windows): leer el perfil en alta y renovacion y configurar el
+    tunel (lan_* solo 192.168.10.0/24 sin ruta por defecto; internet_* completo),
+    sin duplicar entradas ni dejar certificados antiguos. Pendiente de que se
+    confirme la fase A en las maquinas.
+  - [ ] Retirar la tabla `vpn_clients` (permisos por dispositivo) cuando los
+    perfiles esten en produccion.

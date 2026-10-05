@@ -308,6 +308,7 @@ strongSwan (192.168.10.29) ──EAP──► FreeRADIUS (192.168.10.28, virtual
 |--------|----------|
 | **PKI** | Genera la clave+CSR de la CA intermedia (ECDSA P-384), importa el certificado firmado offline por la raiz, rotacion y CRL. |
 | **VPN > Dispositivos** | Alta/baja, activar/desactivar, revocar certificado, token de alta EST, paquete de conexion descargable, permisos de red (firewall) por dispositivo. |
+| **VPN > Perfiles de acceso** | Rango de IPs de cada perfil de acceso, lista de destinos de los perfiles restringidos y descarga de `vpn-profiles.nft`. |
 | **VPN > Ajustes** | Token de la puerta de enlace del firewall (`deploy/vpn-gateway-agent.sh`). El resto de ajustes (`panel_vpn_settings`: FQDN, identidad AAA, rango de IPs, dias de vigencia/renovacion, URL de EST, red LAN) todavia se editan solo por SQL/`npm run menu`, sin pagina propia. |
 
 ### Variables de entorno (server/.env)
@@ -319,6 +320,8 @@ strongSwan (192.168.10.29) ──EAP──► FreeRADIUS (192.168.10.28, virtual
 | `EST_PORT` / `EST_BIND` | Puerto/IP del listener HTTPS de EST (def. `8443` / `0.0.0.0`). Servidor separado de la API principal: necesita TLS mutuo real (`requestCert: true`), que un proxy que termina TLS (nginx) no puede reenviar. |
 | `EST_TLS_CERT` / `EST_TLS_KEY` | Certificado y clave propios del listener EST, para el nombre publico de la PKI (p.ej. `pki.vlc.didev.es`). Los firma la CA raiz offline (EKU `serverAuth`, SAN DNS = ese nombre), **no** Let's Encrypt: los dispositivos confian solo en esa raiz para esta conexion. Sin estas dos, el resto del panel funciona igual, solo que sin alta/renovacion automatica. |
 | `VPN_PROFILE_SIGNING_KEY` | Ruta a la clave privada Ed25519 (PEM, permisos 600) que firma el perfil de aprovisionamiento (`.didevvpn`) de cada token de alta. La clave publica va incrustada en las apps (Windows/Android), para que una app nunca acepte un perfil de otro origen. Sin ella, "Generar token de alta" sigue funcionando igual pero sin perfil firmado ni QR (alta manual con el token por EST). Ver "Aprovisionamiento de apps" mas abajo para como generarla. |
+| `VPN_DHCP_START` / `VPN_DHCP_END` | Opcionales, van juntas. Rango DHCP del router: el panel rechaza que el rango de IPs de un perfil de acceso VPN lo pise. Vacias = sin esa comprobacion. |
+| `VPN_EGRESS_IFACE` | Opcional. Interfaz de salida a Internet de la VM VPN (p.ej. `eth0`). Si se define, las reglas "internet" del `vpn-profiles.nft` generado tambien exigen `oifname`. |
 
 Ver `.env.example` para el resto (comentarios inline).
 
@@ -339,6 +342,7 @@ migraciones** (opciones entre parentesis) o a mano con `mysql -u root -p
 | 12 | `panel-schema-vpn-android.sql` | `radius_panel` | `panel_vpn_settings.lan_cidr`, tabla `panel_vpn_android_downloads` (boton "Emitir certificado" para Android). |
 | 13 | `panel-schema-vpn-firewall.sql` | `radius_panel` | `allow_radius_host`/`allow_mariadb_host`, tabla `panel_vpn_device_rules`, `panel_vpn_settings.gateway_token_sha256` (firewall de la VM VPN). |
 | 24 | `panel-schema-vpn-provisioning.sql` | `radius_panel` | `panel_vpn_settings.min_app_version` (version minima de app, publicada por `GET /.well-known/est/status`). |
+| 26 | `panel-schema-vpn-profiles.sql` | `radius_panel` | `panel_vpn_devices.access_profile` (existentes = `internet_lan_full`), `panel_vpn_profile_ranges`, `panel_vpn_restricted_destinations` (perfiles de acceso por dispositivo). |
 
 `npm run menu` te dice cuales faltan contra tu base real (no solo si la tabla
 existe: tambien si tiene ya las columnas de la version actual). La migracion
@@ -563,6 +567,60 @@ La variante `full` no necesita nada de esto porque ya trae la cadena
 completa firmada — pero tambien lleva `rootCaSha256`, por si una
 implementacion prefiere verificar igual antes de confiar en el `caChainPem`
 del propio fichero.
+
+### Perfiles de acceso por dispositivo (prompt 12.14)
+
+Cada dispositivo VPN tiene un **perfil de acceso** que decide a que llega por
+el tunel, y la VM VPN (192.168.10.29) lo impone con nftables:
+
+| Perfil | Internet por el tunel | LAN 192.168.10.0/24 |
+|--------|-----------------------|---------------------|
+| `lan_restricted` | no | solo los destinos/puertos de la lista restringida |
+| `lan_full` | no | **toda** (incluidas .28, .29 y .30, todos los puertos) |
+| `internet_only` (por defecto en altas nuevas) | si | no |
+| `internet_lan_restricted` | si | solo la lista restringida |
+| `internet_lan_full` | si | **toda** (incluidas .28, .29 y .30) |
+
+`lan_full` e `internet_lan_full` dan acceso a infraestructura (CA, RADIUS y BD):
+el panel lo avisa en rojo al elegirlos. Los dispositivos que ya existian se
+quedan en `internet_lan_full` (su comportamiento de antes).
+
+- **Rangos de IP por perfil** (VPN > Perfiles de acceso): la IP fija
+  (`Framed-IP-Address`) de un dispositivo sale del rango de su perfil. El panel
+  rechaza rangos fuera de la LAN, solapados entre perfiles, que incluyan
+  .28/.29/.30, que pisen el DHCP del router (`VPN_DHCP_START`/`VPN_DHCP_END`) o
+  que dejen fuera la IP de un dispositivo existente. Rango lleno o sin
+  configurar: el alta falla con un mensaje claro (nunca se usa otro rango). La
+  migracion deja el rango `192.168.10.75-99` en `internet_lan_full`; los demas
+  perfiles empiezan **sin rango** hasta que un admin los define.
+- **Lista restringida**: una unica lista global para los dos perfiles
+  restringidos (destino IPv4/CIDR dentro de la LAN, `tcp`/`udp`/`icmp`, puertos,
+  comentario). Cada campo se valida con formatos cerrados; nada de texto libre
+  llega a una regla nft.
+- **Cambiar el perfil** de un dispositivo (ficha del dispositivo): reasigna la
+  IP del rango nuevo y desconecta la sesion activa con el Disconnect de siempre
+  (CoA, puerto 3799). Si no se puede desconectar, el panel avisa de que aplica
+  en la proxima conexion.
+- Todo cambio (perfil, rangos, lista) se registra en auditoria con quien y el
+  antes/despues. Solo rol `admin`.
+
+**Aplicar las reglas en la .29 (a mano, nunca desde el panel):**
+
+1. Panel → VPN > Perfiles de acceso → **Descargar vpn-profiles.nft** (tabla
+   `inet vpn_profiles`; no sustituye `/etc/nftables.conf`, se incluye desde el:
+   `include "/etc/nftables.d/vpn-profiles.nft"`).
+2. Copialo a la .29 y revisalo. Despues, como root:
+   `deploy/vpn-gateway-apply-profiles.sh --check-only vpn-profiles.nft` y
+   `deploy/vpn-gateway-apply-profiles.sh vpn-profiles.nft`. El script hace
+   copia de seguridad, `nft -c -f`, carga atomica y, **si no escribes
+   `CONFIRMAR` en 60 s (o se te cae el SSH), revierte solo**.
+3. Reversion manual tras confirmar: `nft delete table inet vpn_profiles` y
+   restaurar el fichero de `/var/backups/vpn-gateway/`.
+
+Importante: si sigue cargada la tabla `inet vpn_clients` del agente de permisos
+por dispositivo (mas abajo), un paquete tiene que pasar las **dos** tablas; los
+perfiles `*_full` seguiran bloqueados hacia .28/.30 por `vpn_clients` hasta que
+la retires.
 
 ### Firewall de la puerta de enlace VPN (192.168.10.29)
 

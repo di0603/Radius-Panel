@@ -7,6 +7,62 @@ Este proyecto usa versionado semantico.
 
 ### Anadido
 
+- **Prompt 12.14 (fase A: perfiles de acceso por dispositivo)**: cada
+  dispositivo VPN tiene un perfil (`lan_restricted`, `lan_full`,
+  `internet_only`, `internet_lan_restricted`, `internet_lan_full`) configurable
+  desde el panel e impuesto por nftables en la .29. Rama
+  `feat/vpn-12.14-perfiles-acceso`. La fase B (app Windows) queda pendiente de
+  que se confirme la fase A en las maquinas.
+  - **Migracion** `sql/panel-schema-vpn-profiles.sql` (radius_panel, opcion 26
+    del menu): `panel_vpn_devices.access_profile` (existentes =
+    `internet_lan_full`, altas nuevas = `internet_only`),
+    `panel_vpn_profile_ranges` (semilla: `192.168.10.75-99` para
+    `internet_lan_full`; el resto sin rango) y
+    `panel_vpn_restricted_destinations`. No se ha ejecutado en produccion.
+  - **Rangos por perfil** (`services/vpnAccessProfiles.ts`): validacion pura
+    (dentro de la LAN sin red/broadcast, sin solapes, sin .28/.29/.30, sin
+    pisar el DHCP del router si se define `VPN_DHCP_START`/`VPN_DHCP_END`, sin
+    dejar fuera la IP de un dispositivo existente). `createDevice` toma la IP
+    del rango del perfil; rango lleno o sin configurar = error 409 claro, nunca
+    de otro rango.
+  - **Lista restringida** (`services/vpnRestrictedList.ts`): una lista global,
+    destino IPv4/CIDR canonico dentro de la LAN, `tcp`/`udp`/`icmp`, puertos
+    `22,443,8000-8100`, comentario; formatos cerrados (el comentario nunca entra
+    en una regla, solo saneado en una linea `#`).
+  - **Cambio de perfil** (`changeDeviceProfile`, `PATCH
+    /api/vpn-devices/:u/access-profile`): reasigna IP del rango nuevo (radreply
+    en transaccion; si falla la ficha se deshace) y desconecta la sesion activa
+    con el Disconnect existente; si falla, la respuesta lo indica y la interfaz
+    avisa de que aplica en la proxima conexion.
+  - **Generador** `services/vpnProfilesNft.ts` + `GET /api/vpn-profiles/nft`
+    (solo admin): tabla propia `inet vpn_profiles` (sets por perfil, cadenas
+    `forward` e `input`, EST 8443 a la .28 para todos, drop con contador), para
+    incluir desde el `/etc/nftables.conf` existente sin sustituirlo. Validado
+    con `nft -c -f` (nft 1.0.2 en un netns de usuario) y cargado dos veces
+    seguidas para comprobar que es idempotente.
+  - **Script** `deploy/vpn-gateway-apply-profiles.sh` (se lanza a mano en la
+    .29): rechaza ficheros que toquen algo mas que su tabla, `nft -c -f`,
+    copias de seguridad, carga atomica y reversion automatica si no se escribe
+    `CONFIRMAR` en 60 s, tambien con la sesion SSH muerta (vigilante con
+    `setsid`). Probado con nft real: comprobar, confirmar, no confirmar y
+    sesion matada.
+  - **Interfaz**: selector de perfil (alta y ficha) con descripcion y aviso rojo
+    en los perfiles `*_full`, columna de perfil en la tabla, pagina VPN >
+    Perfiles de acceso (rangos, lista, descarga del `.nft`), solo admin.
+  - **Auditoria** con antes/despues en rangos, lista y cambio de perfil.
+  - **Tests** (todos con bases simuladas, sin tocar nada real): asignacion por
+    rango y rango lleno, solapes, validacion de la lista e intentos de
+    inyeccion, golden files por perfil (`services/__golden__/vpn-profiles/`,
+    regenerar con `UPDATE_GOLDEN=1`), cambio de perfil con desconexion
+    simulada y rutas HTTP con rol y auditoria.
+  - **Limitaciones/decisiones**: (1) la tabla `vpn_clients` del agente de
+    permisos por dispositivo sigue existiendo y, si esta cargada, tambien
+    filtra: hay que retirarla para que `*_full` llegue a .28/.30. (2) "Internet"
+    = todo salvo redes privadas (como hoy), con `oifname` solo si se define
+    `VPN_EGRESS_IFACE` (la .29 tiene una sola interfaz y no distinguiria LAN de
+    Internet). (3) Desde un perfil no `*_full` se bloquea todo el trafico
+    dirigido a la propia .29 (SSH, ping, DNS local).
+
 - **Prompt 12.12 (correcciones tras la revision de 12.10/12.11)**:
   - **Rollback del certificado nuevo (1)**: si falla cualquier paso entre
     instalar el certificado nuevo y el final de la confirmacion (credenciales

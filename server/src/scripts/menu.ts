@@ -29,6 +29,7 @@ import {
   vpnAndroidSchemaExists,
   vpnFirewallSchemaExists,
   vpnProvisioningSchemaExists,
+  vpnProfilesSchemaExists,
 } from '../db/pools.js';
 import { createUser, deleteUser, listUsers } from '../services/radiusUsers.js';
 import { createAdmin, listAdmins, updateAdmin } from '../services/admins.js';
@@ -237,6 +238,22 @@ async function vpnProvisioningMigrationStatus(): Promise<void> {
   }
 }
 
+/** Comprueba si esta aplicada la migracion de perfiles de acceso por dispositivo (prompt 12.14). */
+async function vpnProfilesMigrationStatus(): Promise<void> {
+  if (await vpnProfilesSchemaExists()) {
+    console.log(
+      '\x1b[32m✔\x1b[0m panel_vpn_devices.access_profile, panel_vpn_profile_ranges y\n' +
+        '  panel_vpn_restricted_destinations existen',
+    );
+  } else {
+    console.log(
+      '\x1b[33m!\x1b[0m falta el esquema de perfiles de acceso: no se pueden dar de alta dispositivos VPN\n' +
+        '  ni generar vpn-profiles.nft hasta aplicarlo.\n' +
+        `  Aplica: mysql -u root -p ${config.panelDb.database} < sql/panel-schema-vpn-profiles.sql`,
+    );
+  }
+}
+
 async function schemaMenu(): Promise<void> {
   for (;;) {
     heading('Esquema / migraciones');
@@ -266,6 +283,8 @@ async function schemaMenu(): Promise<void> {
         ` 23) Estado del firewall de la VPN\n` +
         ` 24) Aplicar sql/panel-schema-vpn-provisioning.sql (version minima de app, opcional)\n` +
         ` 25) Estado del aprovisionamiento (version minima de app)\n` +
+        ` 26) Aplicar sql/panel-schema-vpn-profiles.sql (perfiles de acceso por dispositivo)\n` +
+        ` 27) Estado de los perfiles de acceso\n` +
         ` 0) Volver`,
     );
     const c = (await ask('> ')).trim();
@@ -363,6 +382,15 @@ async function schemaMenu(): Promise<void> {
         );
         await runSqlFile('panel-schema-vpn-provisioning.sql', config.panelDb, true);
       } else if (c === '25') await vpnProvisioningMigrationStatus();
+      else if (c === '26') {
+        console.log(
+          'Idempotente, base radius_panel. Anade panel_vpn_devices.access_profile (los dispositivos\n' +
+            'existentes quedan en internet_lan_full), y crea panel_vpn_profile_ranges (rango de IPs\n' +
+            'por perfil) y panel_vpn_restricted_destinations (lista de destinos de los perfiles\n' +
+            'restringidos).',
+        );
+        await runSqlFile('panel-schema-vpn-profiles.sql', config.panelDb, true);
+      } else if (c === '27') await vpnProfilesMigrationStatus();
       else if (c === '0') return;
     } catch (err) {
       console.log(`\x1b[31merror:\x1b[0m ${(err as Error).message}`);
@@ -392,6 +420,10 @@ async function schemaMenu(): Promise<void> {
         '21',
         '22',
         '23',
+        '24',
+        '25',
+        '26',
+        '27',
       ].includes(c)
     ) {
       await pause();

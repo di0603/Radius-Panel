@@ -207,6 +207,16 @@ export async function vpnFirewallSchemaExists(): Promise<boolean> {
   return tables.length > 0;
 }
 
+/** Comprueba si esta aplicada sql/panel-schema-vpn-profiles.sql (access_profile + rangos + lista restringida). */
+export async function vpnProfilesSchemaExists(): Promise<boolean> {
+  const [columns] = await panelPool.query<RowDataPacket[]>(
+    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'panel_vpn_devices' AND COLUMN_NAME = 'access_profile'`,
+  );
+  if (!columns.length) return false;
+  return tablesExist(panelPool, ['panel_vpn_profile_ranges', 'panel_vpn_restricted_destinations']);
+}
+
 /** Comprueba si esta aplicada sql/panel-schema-vpn-provisioning.sql (version minima de app). */
 export async function vpnProvisioningSchemaExists(): Promise<boolean> {
   const [columns] = await panelPool.query<RowDataPacket[]>(

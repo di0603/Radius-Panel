@@ -4,10 +4,12 @@ import { asyncHandler } from '../lib/http.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { writeAudit } from '../middleware/audit.js';
 import { issueAndroidCertificate } from '../services/androidCert.js';
+import { ACCESS_PROFILES } from '../services/vpnAccessProfiles.js';
 import { addDeviceRule, deleteDeviceRule, listDeviceRules } from '../services/vpnDeviceRules.js';
 import { buildDevicePackage } from '../services/vpnClientPackages.js';
 import {
   NAME_PART_RE,
+  changeDeviceProfile,
   createDevice,
   decommissionDevice,
   generateEnrollToken,
@@ -34,6 +36,7 @@ const createSchema = z.object({
   ownerName: z.string().max(128).nullable().optional(),
   platform: z.enum(['windows', 'android', 'linux']),
   tunnelMode: z.enum(['full', 'split']).optional(),
+  accessProfile: z.enum(ACCESS_PROFILES).optional(),
   notes: z.string().max(2000).nullable().optional(),
   certDays: z.number().int().positive().max(3650).nullable().optional(),
   renewAfterDays: z.number().int().positive().max(3650).nullable().optional(),
@@ -66,6 +69,7 @@ vpnDevicesRouter.post(
       ownerName: input.ownerName ?? null,
       platform: input.platform,
       tunnelMode,
+      accessProfile: input.accessProfile,
       notes: input.notes ?? null,
       certDays: input.certDays ?? null,
       renewAfterDays: input.renewAfterDays ?? null,
@@ -73,6 +77,7 @@ vpnDevicesRouter.post(
     await writeAudit(req, 'create', 'vpn_device', device.username, {
       platform: device.platform,
       framedIp: device.framedIp,
+      accessProfile: device.accessProfile,
     });
     res.status(201).json(device);
   }),
@@ -120,6 +125,25 @@ vpnDevicesRouter.patch(
     await setDeviceEnabled(req.params.username, enabled);
     await writeAudit(req, 'update', 'vpn_device', req.params.username, { enabled });
     res.json({ ok: true });
+  }),
+);
+
+vpnDevicesRouter.patch(
+  '/:username/access-profile',
+  asyncHandler(async (req, res) => {
+    const { accessProfile } = z.object({ accessProfile: z.enum(ACCESS_PROFILES) }).parse(req.body);
+    const result = await changeDeviceProfile(req.params.username, accessProfile);
+    if (result.changed) {
+      // Decision de seguridad (cambia lo que el dispositivo puede alcanzar): quien, cuando
+      // (la fila de auditoria lleva fecha y administrador), antes/despues y si la sesion
+      // activa se pudo desconectar.
+      await writeAudit(req, 'update', 'vpn_device_access_profile', req.params.username, {
+        before: result.before,
+        after: result.after,
+        disconnect: result.disconnect,
+      });
+    }
+    res.json(result);
   }),
 );
 
