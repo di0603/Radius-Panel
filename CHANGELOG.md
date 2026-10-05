@@ -84,9 +84,21 @@ Este proyecto usa versionado semantico.
       `deploy/test-apply-profiles-netns.sh` para el script de aplicacion. Los
       golden files (`services/__golden__/vpn-profiles/`) cubren los ficheros de
       sets por perfil, el fragmento y el conf ensamblado.
-    - Limitacion: el stand-in de `nftables.conf` de los tests es inventado (el
-      real no esta en el repo); las dos lineas a eliminar de `forward` se
-      describen, no se citan literalmente.
+    - **Ajuste a la salida real de `nft list ruleset` de la .29**: el fragmento
+      cita las TRES lineas literales de `chain forward` a eliminar
+      (`meta ipsec exists ip daddr { 192.168.10.28, 192.168.10.30 } drop`, el
+      accept de `ip saddr 192.168.10.0/24 ip daddr != 192.168.10.0/24` y el de
+      `... ip daddr 192.168.10.0/24`) y el orden de integracion (PARTE 2 justo
+      despues de la regla existente `meta ipsec exists ip daddr 192.168.10.28
+      tcp dport 8443 accept`, PARTE 3 tras la regla de SSH). Ya no genera
+      reglas de EST (existe una; no se duplica) y todas sus reglas llevan
+      `meta ipsec exists`. El nftables.conf de los tests reproduce las reglas
+      reales de input y forward; `nft -c -f` real (con `meta ipsec` literal) y
+      la prueba funcional (156 comprobaciones, con `meta ipsec` sustituido por
+      la interfaz del cliente porque IPsec no existe en un netns) siguen en
+      verde. Limitacion: la sintaxis exacta del MSS clamp y de las reglas icmp,
+      y el orden relativo de la regla de EST y las tres lineas, estan
+      reconstruidos.
 
 - **Prompt 12.12 (correcciones tras la revision de 12.10/12.11)**:
   - **Rollback del certificado nuevo (1)**: si falla cualquier paso entre

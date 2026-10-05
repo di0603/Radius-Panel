@@ -522,4 +522,4 @@ con EAP-TLS, alta y renovación automática por EST (RFC 7030). Solo rol `admin`
     sin duplicar entradas ni dejar certificados antiguos. Pendiente de que se
     confirme la fase A en las maquinas.
   - [ ] Revisar e integrar a mano el fragmento en el `/etc/nftables.conf` real de la
-    .29 (eliminar las dos lineas de forward indicadas) y aplicar el fichero de sets.
+    .29 (eliminar las tres lineas de forward indicadas) y aplicar el fichero de sets.

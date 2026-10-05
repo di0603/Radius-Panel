@@ -21,7 +21,7 @@ import {
 const dir = process.argv[2];
 if (dir) {
   mkdirSync(dir, { recursive: true });
-  const options = { lanCidr: '192.168.10.0/24', estPort: 8443, egressInterface: null };
+  const options = { lanCidr: '192.168.10.0/24', egressInterface: null };
   const generatedAt = new Date();
   const sets = buildSetsFile({
     ranges: exampleRanges(),

@@ -13,6 +13,8 @@ import {
 } from './vpnAccessProfiles.js';
 import {
   ALL_SET_NAMES,
+  EXISTING_EST_FORWARD_LINE,
+  FORWARD_LINES_TO_REMOVE,
   GATEWAY_HOST,
   PROFILE_SET,
   RESTRICTED_DESTS_SET,
@@ -47,7 +49,6 @@ const GOLDEN_DIR = join(dirname(fileURLToPath(import.meta.url)), '__golden__', '
 const FIXED_DATE = new Date('2026-01-01T00:00:00.000Z');
 const OPTIONS: FragmentOptions = {
   lanCidr: '192.168.10.0/24',
-  estPort: 8443,
   egressInterface: null,
 };
 
@@ -270,7 +271,7 @@ test('fragmento: falla cerrando: toda regla de forward/input lleva "ip saddr @se
   const { forward, input } = buildFragmentParts(OPTIONS);
   for (const line of [...lines(forward), ...lines(input)]) {
     if (!line || line.startsWith('#')) continue;
-    assert.match(line, /^ip saddr @vpn_[a-z_]+_ips /, line);
+    assert.match(line, /^meta ipsec exists ip saddr @vpn_[a-z_]+_ips /, line);
     assert.ok(line.endsWith(' accept'), line);
   }
   assert.ok(
@@ -282,14 +283,26 @@ test('fragmento: falla cerrando: toda regla de forward/input lleva "ip saddr @se
 test('fragmento: lan_full e internet_lan_full -> toda la LAN en forward y acceso a la .29 en input', () => {
   const { forward, input } = buildFragmentParts(OPTIONS);
   const f = lines(forward);
-  assert.ok(f.includes(`ip saddr @${PROFILE_SET.lan_full} ip daddr 192.168.10.0/24 accept`));
   assert.ok(
-    f.includes(`ip saddr @${PROFILE_SET.internet_lan_full} ip daddr 192.168.10.0/24 accept`),
+    f.includes(
+      `meta ipsec exists ip saddr @${PROFILE_SET.lan_full} ip daddr 192.168.10.0/24 accept`,
+    ),
+  );
+  assert.ok(
+    f.includes(
+      `meta ipsec exists ip saddr @${PROFILE_SET.internet_lan_full} ip daddr 192.168.10.0/24 accept`,
+    ),
   );
   const i = lines(input);
-  assert.ok(i.includes(`ip saddr @${PROFILE_SET.lan_full} ip daddr ${GATEWAY_HOST} accept`));
   assert.ok(
-    i.includes(`ip saddr @${PROFILE_SET.internet_lan_full} ip daddr ${GATEWAY_HOST} accept`),
+    i.includes(
+      `meta ipsec exists ip saddr @${PROFILE_SET.lan_full} ip daddr ${GATEWAY_HOST} accept`,
+    ),
+  );
+  assert.ok(
+    i.includes(
+      `meta ipsec exists ip saddr @${PROFILE_SET.internet_lan_full} ip daddr ${GATEWAY_HOST} accept`,
+    ),
   );
 });
 
@@ -313,7 +326,9 @@ test('fragmento: perfiles con Internet -> todo salvo redes privadas; sin Interne
     'internet_lan_full',
   ] as const) {
     assert.ok(
-      f.includes(`ip saddr @${PROFILE_SET[profile]} ip daddr != ${PRIVATE_SET} accept`),
+      f.includes(
+        `meta ipsec exists ip saddr @${PROFILE_SET[profile]} ip daddr != ${PRIVATE_SET} accept`,
+      ),
       profile,
     );
   }
@@ -327,28 +342,33 @@ test('fragmento: restringidos -> accept solo si (daddr, proto, puerto) esta en e
   for (const profile of ['lan_restricted', 'internet_lan_restricted'] as const) {
     assert.ok(
       f.includes(
-        `ip saddr @${PROFILE_SET[profile]} ip daddr . meta l4proto . th dport @${RESTRICTED_DESTS_SET} accept`,
+        `meta ipsec exists ip saddr @${PROFILE_SET[profile]} ip daddr . meta l4proto . th dport @${RESTRICTED_DESTS_SET} accept`,
       ),
     );
     assert.ok(
       f.includes(
-        `ip saddr @${PROFILE_SET[profile]} ip protocol icmp ip daddr @${RESTRICTED_ICMP_SET} accept`,
+        `meta ipsec exists ip saddr @${PROFILE_SET[profile]} ip protocol icmp ip daddr @${RESTRICTED_ICMP_SET} accept`,
       ),
     );
   }
 });
 
-test('fragmento: EST 8443 hacia la .28 para los cinco perfiles, antes de cualquier otra regla', () => {
-  const rules = lines(buildFragmentParts(OPTIONS).forward).filter((x) => x.startsWith('ip saddr'));
-  const est = rules.slice(0, 5);
-  for (const profile of ACCESS_PROFILES) {
-    assert.ok(
-      est.includes(
-        `ip saddr @${PROFILE_SET[profile]} ip daddr 192.168.10.28 tcp dport 8443 accept`,
-      ),
-      profile,
-    );
-  }
+test('fragmento: NO duplica la regla de EST 8443 que ya existe en forward (ni ninguna regla hacia la .28:8443)', () => {
+  const { forward, input } = buildFragmentParts(OPTIONS);
+  assert.ok(!code(`${forward}\n${input}`).includes('8443'));
+  assert.ok(!code(`${forward}\n${input}`).includes('ip daddr 192.168.10.28'));
+  const text = buildNftablesFragment(OPTIONS, FIXED_DATE);
+  assert.ok(
+    text.includes(EXISTING_EST_FORWARD_LINE),
+    'la cabecera cita la regla existente tras la que se pega la PARTE 2',
+  );
+});
+
+test('fragmento: todas las reglas llevan "meta ipsec exists" (una IP de origen falsificada desde la LAN fisica no hereda permisos)', () => {
+  const { forward, input } = buildFragmentParts(OPTIONS);
+  const rules = [...lines(code(forward)), ...lines(code(input))].filter(Boolean);
+  assert.ok(rules.length >= 10);
+  for (const rule of rules) assert.ok(rule.startsWith('meta ipsec exists '), rule);
 });
 
 test('fragmento: con interfaz de salida, las reglas de Internet exigen oifname (solo esas)', () => {
@@ -362,31 +382,52 @@ test('fragmento: con interfaz de salida, las reglas de Internet exigen oifname (
 test('fragmento: la parte 4 es el include del fichero de sets, tras la tabla', () => {
   assert.equal(buildFragmentParts(OPTIONS).include, 'include "/etc/nftables.d/vpn-profiles.nft"');
   const text = buildNftablesFragment(OPTIONS, FIXED_DATE);
-  assert.ok(text.indexOf('PARTE 3') < text.indexOf('PARTE 4'));
-  assert.ok(text.includes('ELIMINAR dos lineas actuales'));
+  assert.ok(text.indexOf('===== PARTE 3') < text.indexOf('===== PARTE 4'));
+  assert.ok(text.includes('ELIMINAR estas TRES lineas literales'));
+  for (const line of FORWARD_LINES_TO_REMOVE) assert.ok(text.includes(line), line);
+  assert.ok(text.includes('0. En la .29: nft --version (>= 0.9.4) y uname -r (>= 5.6)'));
 });
 
 test('fragmento: parametros invalidos se rechazan', () => {
   assert.throws(() => buildFragmentParts({ ...OPTIONS, egressInterface: 'eth0"; drop' }));
-  assert.throws(() => buildFragmentParts({ ...OPTIONS, estPort: 0 }));
   assert.throws(() => buildFragmentParts({ ...OPTIONS, lanCidr: '192.168.10.0/24; accept' }));
 });
 
-test('integrar el fragmento en el stand-in quita exactamente las dos lineas de forward y conserva IKE, 3799, SSH y MSS', () => {
+test('integrar el fragmento quita EXACTAMENTE las tres lineas literales de forward y conserva el resto de la .29', () => {
   const { conf, removed } = assembleNftablesConf(OPTIONS, null);
-  assert.equal(removed.length, 2);
-  assert.match(removed[0]!, /ip daddr \{ 192\.168\.10\.28, 192\.168\.10\.30 \} drop/);
-  assert.match(removed[1]!, /ip daddr 192\.168\.10\.0\/24 accept/);
+  assert.deepEqual(removed, [...FORWARD_LINES_TO_REMOVE]);
+  assert.deepEqual(removed, [
+    'meta ipsec exists ip daddr { 192.168.10.28, 192.168.10.30 } drop',
+    'meta ipsec exists ip saddr 192.168.10.0/24 ip daddr != 192.168.10.0/24 accept',
+    'meta ipsec exists ip saddr 192.168.10.0/24 ip daddr 192.168.10.0/24 accept',
+  ]);
   assert.ok(!conf.includes('# QUITAR'));
+  for (const line of removed)
+    assert.ok(!conf.split('\n').some((l) => l.trim() === line), `sigue presente: ${line}`);
+  // Lo que NO se toca: input (lo, ct, icmp/icmpv6, IKE, 3799, SSH) y forward (ct, MSS clamp, EST 8443).
   for (const kept of [
+    'iif lo accept',
+    'ct state invalid drop',
+    'ct state established,related accept',
+    'ip protocol icmp accept',
+    'meta l4proto ipv6-icmp accept',
     'udp dport { 500, 4500 } accept',
     'ip saddr 192.168.10.28 udp dport 3799 accept',
-    'tcp dport 22 accept',
-    'maxseg size set rt mtu',
+    'meta ipsec missing ip saddr 192.168.10.0/24 tcp dport 22 accept',
+    'tcp flags syn tcp option maxseg size set rt mtu',
+    EXISTING_EST_FORWARD_LINE,
   ]) {
     assert.ok(conf.includes(kept), kept);
     assert.ok(FIXTURE_NFTABLES_CONF.includes(kept), kept);
   }
+  // Orden en forward: ct, MSS clamp y EST existentes ANTES de las reglas de perfil
+  const fwd = conf.slice(conf.indexOf('chain forward'), conf.indexOf('chain output'));
+  assert.ok(fwd.indexOf('ct state established,related accept') < fwd.indexOf('maxseg'));
+  assert.ok(fwd.indexOf('maxseg') < fwd.indexOf(EXISTING_EST_FORWARD_LINE));
+  assert.ok(fwd.indexOf(EXISTING_EST_FORWARD_LINE) < fwd.indexOf('@vpn_lan_full_ips'));
+  // En input las reglas de perfil van DESPUES de la de SSH
+  const inp = conf.slice(conf.indexOf('chain input'), conf.indexOf('chain forward'));
+  assert.ok(inp.indexOf('tcp dport 22 accept') < inp.indexOf('@vpn_lan_full_ips'));
 });
 
 /* ------------------------------ nft -c -f (opcional) ---------------------------- */

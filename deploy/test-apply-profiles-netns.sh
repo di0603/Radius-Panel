@@ -31,7 +31,8 @@ expect_rc "falta el fragmento" 1 bash "$SCRIPT" --check-only "$SETS"
 grep -q "NO existe en inet filter" "$T/out" && ok "mensaje: set no existe" || bad "mensaje claro de set inexistente"
 
 echo "== 1) con el fragmento cargado (sets vacios)"
-nft -f "$DIR/nftables.conf.ensamblado-sets-vacios"
+sed -e 's/meta ipsec exists/iifname "gwvpn"/g' -e 's/meta ipsec missing/iifname != "gwvpn"/g' "$DIR/nftables.conf.ensamblado-sets-vacios" >"$T/empty.conf" # IPsec no existe en el netns
+nft -f "$T/empty.conf"
 expect_rc "--check-only valido" 0 bash "$SCRIPT" --check-only "$SETS"
 [ "$(count_elements vpn_lan_full_ips)" = 0 ] && ok "check-only no carga nada" || bad "check-only cargo algo"
 
@@ -79,7 +80,7 @@ export CONFIRM_SECONDS
 sleep 2
 nft list set inet filter vpn_lan_full_ips | grep -q "192.168.10.200" && ok "v2 aplicado (antes del plazo)" || bad "v2 no se aplico"
 pkill -9 -f "bash $SCRIPT"
-sleep 6
+sleep 9
 nft list set inet filter vpn_lan_full_ips | grep -q "192.168.10.105-192.168.10.109" && ok "el vigilante restauro los sets" || bad "el vigilante no restauro"
 
 echo

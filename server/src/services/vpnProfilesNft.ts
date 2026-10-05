@@ -1,6 +1,6 @@
 import { config } from '../config.js';
 import { isValidIpv4 } from '../lib/ipv4.js';
-import { MARIADB_HOST, PRIVATE_RANGES, RADIUS_HOST } from './vpnFirewall.js';
+import { PRIVATE_RANGES, RADIUS_HOST } from './vpnFirewall.js';
 import {
   ACCESS_PROFILES,
   RESERVED_HOSTS,
@@ -76,9 +76,28 @@ export const ALL_SET_NAMES: string[] = [
 
 const IFACE_RE = /^[A-Za-z0-9_.-]{1,15}$/;
 
+/**
+ * Lineas REALES de `chain forward` de la tabla `inet filter` de la .29 (salida de
+ * `nft list ruleset`) que hay que ELIMINAR al integrar el fragmento: las tres, y solo ellas.
+ * Las dos primeras de abajo (accept de Internet y accept de toda la LAN) las sustituyen
+ * las reglas por set del fragmento; la primera (drop a .28/.30) impediria a lan_full e
+ * internet_lan_full llegar a RADIUS y MariaDB.
+ */
+export const FORWARD_LINES_TO_REMOVE = [
+  'meta ipsec exists ip daddr { 192.168.10.28, 192.168.10.30 } drop',
+  'meta ipsec exists ip saddr 192.168.10.0/24 ip daddr != 192.168.10.0/24 accept',
+  'meta ipsec exists ip saddr 192.168.10.0/24 ip daddr 192.168.10.0/24 accept',
+] as const;
+
+/**
+ * Regla EXISTENTE de `chain forward` (EST hacia la CA, para cualquier cliente IPsec): se queda
+ * donde esta y el fragmento NO la duplica; las reglas de perfil van justo despues.
+ */
+export const EXISTING_EST_FORWARD_LINE =
+  'meta ipsec exists ip daddr 192.168.10.28 tcp dport 8443 accept';
+
 export interface FragmentOptions {
   lanCidr: string;
-  estPort: number;
   /** Interfaz de salida a Internet; si se define, las reglas "internet" tambien exigen `oifname`. */
   egressInterface?: string | null;
 }
@@ -96,9 +115,6 @@ function rangeElement(start: string, end: string): string {
 }
 
 function validateFragmentOptions(options: FragmentOptions): void {
-  if (!Number.isInteger(options.estPort) || options.estPort < 1 || options.estPort > 65535) {
-    throw new Error('Puerto EST invalido');
-  }
   if (!isValidIpv4(RADIUS_HOST) || !isValidIpv4(GATEWAY_HOST)) {
     throw new Error('IP de infraestructura invalida');
   }
@@ -139,36 +155,38 @@ export function buildFragmentParts(options: FragmentOptions): NftablesFragmentPa
     setDeclaration(RESTRICTED_ICMP_SET, 'ipv4_addr'),
   ].join('\n\n');
 
+  // "meta ipsec exists": solo trafico que llega descifrado por el tunel IPsec. Sin esto, un equipo de
+  // la LAN fisica que pusiera como origen la IP de un cliente VPN heredaria sus permisos.
+  const ipsec = 'meta ipsec exists';
+
   const forward = [
     '\t\t# --- Perfiles de acceso VPN (generado por Radius Panel) ---',
-    '\t\t# Sets vacios = no se acepta nada de la VPN (lo demas cae en la policy drop).',
-    '',
-    `\t\t# Alta y renovacion EST (CA en ${RADIUS_HOST}): todos los perfiles.`,
-    ...ACCESS_PROFILES.map(
-      (p) => `\t\tip saddr @${set[p]} ip daddr ${RADIUS_HOST} tcp dport ${options.estPort} accept`,
-    ),
+    `\t\t# Justo DESPUES de la regla existente "${EXISTING_EST_FORWARD_LINE}"`,
+    '\t\t# (EST: se queda donde esta, no se duplica). Sets vacios = no se acepta nada de la VPN',
+    '\t\t# (lo demas cae en la policy drop).',
     '',
     `\t\t# lan_full / internet_lan_full: toda la LAN (incluidas .28, .29 y .30), todos los puertos.`,
-    `\t\tip saddr @${set.lan_full} ip daddr ${lan} accept`,
-    `\t\tip saddr @${set.internet_lan_full} ip daddr ${lan} accept`,
+    `\t\t${ipsec} ip saddr @${set.lan_full} ip daddr ${lan} accept`,
+    `\t\t${ipsec} ip saddr @${set.internet_lan_full} ip daddr ${lan} accept`,
     '',
     '\t\t# lan_restricted / internet_lan_restricted: solo (destino, protocolo, puerto) de la lista.',
     ...(['lan_restricted', 'internet_lan_restricted'] as const).flatMap((p) => [
-      `\t\tip saddr @${set[p]} ip daddr . meta l4proto . th dport @${RESTRICTED_DESTS_SET} accept`,
-      `\t\tip saddr @${set[p]} ip protocol icmp ip daddr @${RESTRICTED_ICMP_SET} accept`,
+      `\t\t${ipsec} ip saddr @${set[p]} ip daddr . meta l4proto . th dport @${RESTRICTED_DESTS_SET} accept`,
+      `\t\t${ipsec} ip saddr @${set[p]} ip protocol icmp ip daddr @${RESTRICTED_ICMP_SET} accept`,
     ]),
     '',
     '\t\t# Perfiles con Internet: todo salvo redes privadas (nada de LAN ni de otras redes internas).',
     ...(['internet_only', 'internet_lan_restricted', 'internet_lan_full'] as const).map(
-      (p) => `\t\tip saddr @${set[p]} ip daddr != ${privateSet}${oif} accept`,
+      (p) => `\t\t${ipsec} ip saddr @${set[p]} ip daddr != ${privateSet}${oif} accept`,
     ),
   ].join('\n');
 
   const input = [
     '\t\t# --- Perfiles de acceso VPN (generado por Radius Panel) ---',
+    '\t\t# Al final de la cadena, tras la regla de SSH existente (no hay drop explicito: solo la policy).',
     `\t\t# lan_full / internet_lan_full: acceso a la propia VM VPN (SSH incluido).`,
-    `\t\tip saddr @${set.lan_full} ip daddr ${GATEWAY_HOST} accept`,
-    `\t\tip saddr @${set.internet_lan_full} ip daddr ${GATEWAY_HOST} accept`,
+    `\t\t${ipsec} ip saddr @${set.lan_full} ip daddr ${GATEWAY_HOST} accept`,
+    `\t\t${ipsec} ip saddr @${set.internet_lan_full} ip daddr ${GATEWAY_HOST} accept`,
   ].join('\n');
 
   const include = `include "${SETS_FILE_INSTALL_PATH}"`;
@@ -181,35 +199,45 @@ export function buildFragmentParts(options: FragmentOptions): NftablesFragmentPa
  */
 export function buildNftablesFragment(options: FragmentOptions, generatedAt: Date): string {
   const parts = buildFragmentParts(options);
+  const remove = FORWARD_LINES_TO_REMOVE.map((l, i) => `#     (${i + 1}) ${l}`).join('\n');
   return `# FRAGMENTO PARA /etc/nftables.conf - PARA REVISAR, NO CARGAR TAL CUAL.
 # Generado por Radius Panel (VPN -> Perfiles de acceso). ${generatedAt.toISOString()}
 #
 # En la .29 solo existe la tabla "${FILTER_FAMILY} ${FILTER_TABLE}" (policy drop en input y forward): un accept en otra
-# tabla no anularia ese drop, por eso los perfiles se integran AQUI. Cuatro partes:
+# tabla no anularia ese drop, por eso los perfiles se integran AQUI.
 #
-#   PARTE 1  declaracion de los sets (vacios), dentro de "table ${FILTER_FAMILY} ${FILTER_TABLE} { ... }", antes de las cadenas.
-#   PARTE 2  reglas de "chain forward", tras el "ct state established,related accept" existente.
-#   PARTE 3  reglas de "chain input", antes del final de la cadena.
-#   PARTE 4  una linea "include" al final del fichero, DESPUES de la tabla.
+# ORDEN DE INTEGRACION (siempre en una COPIA de /etc/nftables.conf, nunca sobre el fichero vivo):
+#   0. En la .29: nft --version (>= 0.9.4) y uname -r (>= 5.6): sets concatenados con intervalos.
+#   1. Descargar vpn-profiles.nft del panel e instalarlo en ${SETS_FILE_INSTALL_PATH}
+#      (el include de la PARTE 4 lo necesita para poder cargar la copia).
+#   2. PARTE 1: pegar la declaracion de los sets dentro de "table ${FILTER_FAMILY} ${FILTER_TABLE} { ... }", antes de las cadenas.
+#   3. En "chain forward" ELIMINAR estas TRES lineas literales (y solo ellas):
+${remove}
+#   4. En su lugar (justo despues de la regla existente
+#      "${EXISTING_EST_FORWARD_LINE}", que se queda), pegar la PARTE 2.
+#   5. PARTE 3: al final de "chain input", despues de la regla de SSH existente.
+#   6. PARTE 4: una linea "include" al final del fichero, DESPUES de la tabla.
+#   7. nft -c -f <copia>, y cargarla de una vez (nft -f es atomico: sets y reglas a la vez).
 #
-# En "chain forward" hay que ELIMINAR dos lineas actuales (todo lo demas se queda
-# intacto: IKE, 3799 desde ${RADIUS_HOST}, SSH solo desde la LAN fisica, MSS clamp...):
-#   (1) la que descarta (drop) el trafico de los clientes VPN hacia ${RADIUS_HOST} y ${MARIADB_HOST},
-#   (2) la que acepta de forma generica el trafico de los clientes VPN hacia toda la LAN ${options.lanCidr}.
-# Sin quitarlas, los perfiles lan_full/internet_lan_full no llegan a .28/.30 (el drop va antes) y
-# los restringidos y internet_only veian toda la LAN (el accept generico va antes que los sets).
+# NO tocar (se quedan como estan): iif lo, ct state (invalid drop, established,related accept),
+# el MSS clamp, icmp/icmpv6, udp 500/4500, 3799 desde ${RADIUS_HOST}, la regla de SSH
+# ("meta ipsec missing ip saddr ${options.lanCidr} tcp dport 22 accept") y la de EST 8443 hacia ${RADIUS_HOST}.
 #
-# Falla cerrando: con los sets vacios (arranque, reinicio antes del include, o fallo al cargar el
-# fichero de sets) la VPN solo tendria lo que ya aceptaban otras reglas que NO se tocan, nada de
-# los perfiles. Requiere nft >= 0.9.4 y kernel >= 5.6 (sets de intervalos concatenados).
+# Sin quitar las tres lineas: la (1) impide a lan_full/internet_lan_full llegar a .28/.30 (el drop va antes)
+# y las (2) y (3) dan a TODO cliente IPsec Internet y toda la LAN antes de que se mire ningun set.
+#
+# Falla cerrando: con los sets vacios (arranque, reinicio antes del include, o fallo al cargar el fichero
+# de sets) un cliente IPsec solo tiene lo que dejan pasar las reglas que NO se tocan (EST 8443, icmp en
+# input), nada de los perfiles. Todas las reglas llevan "meta ipsec exists": solo trafico que llega por
+# el tunel, no un equipo de la LAN fisica con la IP de origen de un cliente VPN.
 
 # ===== PARTE 1: dentro de "table ${FILTER_FAMILY} ${FILTER_TABLE} {", antes de las cadenas =====
 ${parts.sets}
 
-# ===== PARTE 2: dentro de "chain forward", tras "ct state established,related accept" =====
+# ===== PARTE 2: dentro de "chain forward", donde estaban las tres lineas eliminadas =====
 ${parts.forward}
 
-# ===== PARTE 3: dentro de "chain input", antes del final de la cadena =====
+# ===== PARTE 3: dentro de "chain input", al final, tras la regla de SSH =====
 ${parts.input}
 
 # ===== PARTE 4: al final de /etc/nftables.conf, fuera de la tabla =====
@@ -326,7 +354,6 @@ export async function generateNftablesFragment(): Promise<string> {
   return buildNftablesFragment(
     {
       lanCidr: settings.lanCidr,
-      estPort: config.est.port,
       egressInterface: config.vpnProfiles.egressInterface ?? null,
     },
     new Date(),

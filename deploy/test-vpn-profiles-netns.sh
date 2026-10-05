@@ -12,7 +12,14 @@
 #   cliente (pool VPN, 6 IPs de origen) --gwvpn-- GATEWAY --gwlan-- lan (.28 .29* .30 .50 ... 8.8.8.8 10.1.1.1)
 # El gateway reenvia (ip_forward) y lleva el nftables.conf ensamblado. Se manda un
 # paquete (tcp/udp/icmp) desde la IP de cada perfil hacia cada destino y se
-# compara el veredicto con el esperado. Con los sets VACIOS no debe pasar nada.
+# compara el veredicto con el esperado. Con los sets VACIOS no debe pasar nada de los
+# perfiles (solo lo que ya dejan pasar las reglas existentes: EST 8443 e icmp a la .29).
+#
+# IPsec no se puede simular en un netns: las reglas reales usan "meta ipsec exists" (trafico
+# descifrado del tunel) y "meta ipsec missing" (LAN fisica). Aqui, y SOLO aqui, el script las
+# sustituye por la interfaz del cliente: iifname "gwvpn" / iifname != "gwvpn". El resto de cada
+# regla es el que genera el panel. (nft -c sobre el conf con "meta ipsec" literal lo hace el
+# test de vitest/node: ver vpnProfilesNft.test.ts.)
 set -uo pipefail
 
 DIR="${1:?Uso: $0 <directorio-con-ficheros>}"
@@ -151,22 +158,23 @@ DESTS=(
   "otra-ip-lan tcp 192.168.10.77 80"
   "internet-443 tcp 8.8.8.8 443"
   "privada-10.x tcp 10.1.1.1 80"
+  "gw-icmp icmp $GW_IP 0"
 )
 # Esperado por perfil, en el orden de DESTS (1 = pasa, 0 = cae)
 declare -A EXPECT=(
-  [lan_full]="1 1 1 1 1 1 1 1 1 1 0 0"
-  [internet_lan_full]="1 1 1 1 1 1 1 1 1 1 1 0"
-  [internet_only]="0 1 0 0 0 0 0 0 0 0 1 0"
-  [lan_restricted]="0 1 0 0 1 0 1 1 1 0 0 0"
-  [internet_lan_restricted]="0 1 0 0 1 0 1 1 1 0 1 0"
-  [sin_perfil]="0 0 0 0 0 0 0 0 0 0 0 0"
+  [lan_full]="1 1 1 1 1 1 1 1 1 1 0 0 1"
+  [internet_lan_full]="1 1 1 1 1 1 1 1 1 1 1 0 1"
+  [internet_only]="0 1 0 0 0 0 0 0 0 0 1 0 1"
+  [lan_restricted]="0 1 0 0 1 0 1 1 1 0 0 0 1"
+  [internet_lan_restricted]="0 1 0 0 1 0 1 1 1 0 1 0 1"
+  [sin_perfil]="0 1 0 0 0 0 0 0 0 0 0 0 1"
 )
 
 run_matrix() { # nombre, 1 = usar EXPECT / 0 = todo cae
   local mode="$1"
   for profile in lan_full internet_lan_full internet_only lan_restricted internet_lan_restricted sin_perfil; do
     read -ra want <<<"${EXPECT[$profile]}"
-    [ "$mode" = empty ] && want=(0 0 0 0 0 0 0 0 0 0 0 0)
+    [ "$mode" = empty ] && want=(0 1 0 0 0 0 0 0 0 0 0 0 1)  # solo EST e icmp a la .29 (reglas existentes)
     i=0
     for d in "${DESTS[@]}"; do
       read -r label proto dst port <<<"$d"
@@ -178,12 +186,19 @@ run_matrix() { # nombre, 1 = usar EXPECT / 0 = todo cae
   done
 }
 
+# IPsec no existe en el netns: ver la cabecera.
+load_conf() {
+  sed -e 's/meta ipsec exists/iifname "gwvpn"/g' -e 's/meta ipsec missing/iifname != "gwvpn"/g' "$1" >"$CONF_TMP"
+  nft -f "$CONF_TMP"
+}
+CONF_TMP="$(mktemp)"
+
 echo "== A) sets rellenos (nftables.conf.ensamblado)"
-nft -f "$DIR/nftables.conf.ensamblado" || { echo "no carga el nftables.conf ensamblado" >&2; exit 2; }
+load_conf "$DIR/nftables.conf.ensamblado" || { echo "no carga el nftables.conf ensamblado" >&2; exit 2; }
 run_matrix full
 
-echo "== B) sets VACIOS (nftables.conf.ensamblado-sets-vacios): falla cerrando, no pasa nada"
-nft -f "$DIR/nftables.conf.ensamblado-sets-vacios" || { echo "no carga el conf con sets vacios" >&2; exit 2; }
+echo "== B) sets VACIOS (nftables.conf.ensamblado-sets-vacios): falla cerrando (solo EST 8443 e icmp a la .29, reglas existentes)"
+load_conf "$DIR/nftables.conf.ensamblado-sets-vacios" || { echo "no carga el conf con sets vacios" >&2; exit 2; }
 run_matrix empty
 
 echo

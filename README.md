@@ -614,18 +614,14 @@ piezas:
    no cambia con los rangos): declara siete sets **vacios** (uno `interval
    ipv4_addr` por perfil, `vpn_restricted_dests` de tipo `ipv4_addr .
    inet_proto . inet_service` y `vpn_restricted_icmp`) y las reglas **fijas** de
-   forward e input que los usan: EST 8443 hacia la .28 para todos;
-   `lan_full`/`internet_lan_full` → `ip daddr 192.168.10.0/24 accept` (incluye
-   .28, .29 y .30) y accept en input hacia la .29; perfiles con Internet →
-   `ip daddr != redes privadas accept`; restringidos → accept solo si
-   (destino, protocolo, puerto) esta en el set. **Falla cerrando**: con los
-   sets vacios no se acepta nada de la VPN. En `chain forward` hay que
-   **eliminar dos lineas actuales** (el drop de los clientes VPN a .28/.30 y el
-   accept generico de toda la LAN); IKE, 3799 desde la .28, SSH solo desde la LAN
-   fisica y el MSS clamp se quedan como estan. Termina con
-   `include "/etc/nftables.d/vpn-profiles.nft"` para que los sets se rellenen
-   tras un reinicio. Requiere nft >= 0.9.4 y kernel >= 5.6 (sets de intervalos
-   concatenados).
+   forward e input que los usan. Todas llevan `meta ipsec exists` (solo trafico
+   que llega por el tunel: un equipo de la LAN fisica no hereda los permisos de
+   un cliente VPN falsificando su IP): `lan_full`/`internet_lan_full` →
+   `ip daddr 192.168.10.0/24 accept` (incluye .28, .29 y .30) y accept en input
+   hacia la .29; perfiles con Internet → `ip daddr != redes privadas accept`;
+   restringidos → accept solo si (destino, protocolo, puerto) esta en el set.
+   **No duplica** la regla de EST que ya existe en forward. **Falla cerrando**:
+   con los sets vacios no se acepta nada de los perfiles.
 2. **`vpn-profiles.nft`** (boton *Descargar vpn-profiles.nft*): SOLO
    `flush set` + `add element` de esos sets, en una carga atomica. Es lo que
    cambia con los rangos y la lista. El panel no lo aplica: lo haces tu con
@@ -637,23 +633,62 @@ piezas:
    hace copia de seguridad, `nft -c -f`, carga atomica y **si no escribes
    `CONFIRMAR` en 60 s (o se te cae el SSH), restaura los sets solo**.
 
+**Antes de aplicar nada, en la .29** (requisito de los sets concatenados con
+intervalos): `nft --version` (>= 0.9.4) y `uname -r` (>= 5.6).
+
+**Orden exacto de integracion (primera vez, en una COPIA de `/etc/nftables.conf`):**
+
+1. Instalar `vpn-profiles.nft` (descargado del panel) en
+   `/etc/nftables.d/vpn-profiles.nft`: el `include` de la PARTE 4 lo necesita.
+   Los dispositivos existentes estan en `internet_lan_full` (rango 75-99 de la
+   migracion): deben estar en ese fichero para no perder acceso.
+2. PARTE 1 (sets) dentro de `table inet filter { ... }`, antes de las cadenas.
+3. En `chain forward`, **eliminar estas tres lineas literales** (y solo ellas):
+   ```
+   meta ipsec exists ip daddr { 192.168.10.28, 192.168.10.30 } drop
+   meta ipsec exists ip saddr 192.168.10.0/24 ip daddr != 192.168.10.0/24 accept
+   meta ipsec exists ip saddr 192.168.10.0/24 ip daddr 192.168.10.0/24 accept
+   ```
+4. En su lugar, **justo despues** de la regla existente
+   `meta ipsec exists ip daddr 192.168.10.28 tcp dport 8443 accept` (que se
+   queda), pegar la PARTE 2. Las reglas `ct state` y el MSS clamp, que ya estan
+   antes, no se tocan ni se mueven.
+5. PARTE 3 al final de `chain input`, despues de la regla de SSH
+   (`meta ipsec missing ip saddr 192.168.10.0/24 tcp dport 22 accept`); en
+   input no hay drop explicito, solo la policy.
+6. PARTE 4 (`include ...`) al final del fichero, fuera de la tabla.
+7. `nft -c -f <copia>`. Para cargarla con red de seguridad (solo afecta al
+   trafico del tunel; SSH desde la LAN fisica no cambia):
+   ```
+   nft list ruleset > /root/ruleset.antes.nft
+   ( sleep 120; nft flush ruleset; nft -f /root/ruleset.antes.nft ) & REVERT=$!
+   nft -f <copia>        # atomico: sets y reglas a la vez
+   # comprueba la VPN desde un cliente; si va bien:
+   kill $REVERT
+   cp <copia> /etc/nftables.conf
+   ```
+   (Los cambios posteriores de rangos o lista ya no tocan `nftables.conf`: solo
+   el script de aplicacion.)
+
 La lista restringida no admite entradas que se solapen (mismo protocolo +
 destinos que se pisan + puertos que se pisan): un set de intervalos las
 rechazaria. ICMP va en un set aparte porque `th dport` en un paquete ICMP lee el
-checksum, no un puerto.
+checksum, no un puerto. Nota: `icmp` en input ya esta aceptado por la regla
+existente, asi que un cliente VPN puede hacer ping a la .29 con cualquier perfil.
 
 Reversion manual tras confirmar: `nft -f /var/backups/vpn-gateway/revert-vpn-profiles.<fecha>.nft`
 (estado anterior de los sets) y restaurar `vpn-profiles.nft.installed.<fecha>`
-en `/etc/nftables.d/`. Para quitar los perfiles del todo, deshacer los cambios
-de `nftables.conf` desde su copia de seguridad.
+en `/etc/nftables.d/`. Para quitar los perfiles del todo, restaurar el
+`nftables.conf` anterior y cargarlo.
 
 Pruebas con nft real (sin tocar la maquina, en un netns de usuario):
 `NFT_FUNCTIONAL=1 npm test` (solo Linux) o a mano,
 `node --import tsx server/src/scripts/exportNftExamples.ts /tmp/nft` y
 `unshare -rn bash deploy/test-vpn-profiles-netns.sh /tmp/nft` (veredicto de
-cada perfil hacia .28/.29/.30, otra IP de la LAN e Internet) y
-`unshare -rn bash deploy/test-apply-profiles-netns.sh /tmp/nft` (el script de
-aplicacion).
+cada perfil hacia .28/.29/.30, otra IP de la LAN e Internet; IPsec no se puede
+simular y el script sustituye `meta ipsec exists/missing` por la interfaz del
+cliente) y `unshare -rn bash deploy/test-apply-profiles-netns.sh /tmp/nft` (el
+script de aplicacion).
 
 ### Firewall de la puerta de enlace VPN (192.168.10.29)
 

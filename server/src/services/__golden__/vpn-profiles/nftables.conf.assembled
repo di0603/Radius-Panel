@@ -39,55 +39,50 @@ table inet filter {
 
 	chain input {
 		type filter hook input priority filter; policy drop;
-		ct state established,related accept
-		ct state invalid drop
 		iif lo accept
-		# IKE (strongSwan)
+		ct state invalid drop
+		ct state established,related accept
+		ip protocol icmp accept
+		meta l4proto ipv6-icmp accept
 		udp dport { 500, 4500 } accept
-		# CoA/Disconnect desde la .28
 		ip saddr 192.168.10.28 udp dport 3799 accept
-		# SSH solo desde la LAN fisica (no desde el pool de la VPN)
-		ip saddr 192.168.10.0/24 ip saddr != 192.168.10.70-192.168.10.129 tcp dport 22 accept
+		meta ipsec missing ip saddr 192.168.10.0/24 tcp dport 22 accept
 		# --- Perfiles de acceso VPN (generado por Radius Panel) ---
+		# Al final de la cadena, tras la regla de SSH existente (no hay drop explicito: solo la policy).
 		# lan_full / internet_lan_full: acceso a la propia VM VPN (SSH incluido).
-		ip saddr @vpn_lan_full_ips ip daddr 192.168.10.29 accept
-		ip saddr @vpn_internet_lan_full_ips ip daddr 192.168.10.29 accept
+		meta ipsec exists ip saddr @vpn_lan_full_ips ip daddr 192.168.10.29 accept
+		meta ipsec exists ip saddr @vpn_internet_lan_full_ips ip daddr 192.168.10.29 accept
 	}
 
 	chain forward {
 		type filter hook forward priority filter; policy drop;
+		ct state invalid drop
 		ct state established,related accept
-		# MSS clamp
 		tcp flags syn tcp option maxseg size set rt mtu
+		meta ipsec exists ip daddr 192.168.10.28 tcp dport 8443 accept
 		# --- Perfiles de acceso VPN (generado por Radius Panel) ---
-		# Sets vacios = no se acepta nada de la VPN (lo demas cae en la policy drop).
-
-		# Alta y renovacion EST (CA en 192.168.10.28): todos los perfiles.
-		ip saddr @vpn_lan_restricted_ips ip daddr 192.168.10.28 tcp dport 8443 accept
-		ip saddr @vpn_lan_full_ips ip daddr 192.168.10.28 tcp dport 8443 accept
-		ip saddr @vpn_internet_only_ips ip daddr 192.168.10.28 tcp dport 8443 accept
-		ip saddr @vpn_internet_lan_restricted_ips ip daddr 192.168.10.28 tcp dport 8443 accept
-		ip saddr @vpn_internet_lan_full_ips ip daddr 192.168.10.28 tcp dport 8443 accept
+		# Justo DESPUES de la regla existente "meta ipsec exists ip daddr 192.168.10.28 tcp dport 8443 accept"
+		# (EST: se queda donde esta, no se duplica). Sets vacios = no se acepta nada de la VPN
+		# (lo demas cae en la policy drop).
 
 		# lan_full / internet_lan_full: toda la LAN (incluidas .28, .29 y .30), todos los puertos.
-		ip saddr @vpn_lan_full_ips ip daddr 192.168.10.0/24 accept
-		ip saddr @vpn_internet_lan_full_ips ip daddr 192.168.10.0/24 accept
+		meta ipsec exists ip saddr @vpn_lan_full_ips ip daddr 192.168.10.0/24 accept
+		meta ipsec exists ip saddr @vpn_internet_lan_full_ips ip daddr 192.168.10.0/24 accept
 
 		# lan_restricted / internet_lan_restricted: solo (destino, protocolo, puerto) de la lista.
-		ip saddr @vpn_lan_restricted_ips ip daddr . meta l4proto . th dport @vpn_restricted_dests accept
-		ip saddr @vpn_lan_restricted_ips ip protocol icmp ip daddr @vpn_restricted_icmp accept
-		ip saddr @vpn_internet_lan_restricted_ips ip daddr . meta l4proto . th dport @vpn_restricted_dests accept
-		ip saddr @vpn_internet_lan_restricted_ips ip protocol icmp ip daddr @vpn_restricted_icmp accept
+		meta ipsec exists ip saddr @vpn_lan_restricted_ips ip daddr . meta l4proto . th dport @vpn_restricted_dests accept
+		meta ipsec exists ip saddr @vpn_lan_restricted_ips ip protocol icmp ip daddr @vpn_restricted_icmp accept
+		meta ipsec exists ip saddr @vpn_internet_lan_restricted_ips ip daddr . meta l4proto . th dport @vpn_restricted_dests accept
+		meta ipsec exists ip saddr @vpn_internet_lan_restricted_ips ip protocol icmp ip daddr @vpn_restricted_icmp accept
 
 		# Perfiles con Internet: todo salvo redes privadas (nada de LAN ni de otras redes internas).
-		ip saddr @vpn_internet_only_ips ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } accept
-		ip saddr @vpn_internet_lan_restricted_ips ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } accept
-		ip saddr @vpn_internet_lan_full_ips ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } accept
+		meta ipsec exists ip saddr @vpn_internet_only_ips ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } accept
+		meta ipsec exists ip saddr @vpn_internet_lan_restricted_ips ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } accept
+		meta ipsec exists ip saddr @vpn_internet_lan_full_ips ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } accept
 	}
 
 	chain output {
-		type filter hook output priority filter; policy drop;
-		accept
+		type filter hook output priority filter; policy accept;
 	}
 }
 
