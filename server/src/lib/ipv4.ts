@@ -50,3 +50,19 @@ export function isValidIpv4OrCidr(value: string): boolean {
   const prefix = Number(prefixText);
   return prefix >= 0 && prefix <= 32;
 }
+
+/**
+ * Limites enteros (inclusive) de una IPv4 suelta o de un CIDR, o `null` si no
+ * es ninguna de las dos. `canonical` es `false` cuando el CIDR trae bits de
+ * host a 1 (p.ej. "192.168.10.5/24"): nftables lo rechaza o lo reinterpreta,
+ * asi que quien genere reglas debe exigir la forma canonica ("192.168.10.0/24").
+ */
+export function ipv4OrCidrBounds(value: string): { start: number; end: number; canonical: boolean } | null {
+  if (!isValidIpv4OrCidr(value)) return null;
+  const [ip, prefixText] = value.split('/') as [string, string | undefined];
+  const prefix = prefixText === undefined ? 32 : Number(prefixText);
+  const blockSize = 2 ** (32 - prefix);
+  const n = ipv4ToInt(ip);
+  const start = Math.floor(n / blockSize) * blockSize;
+  return { start, end: start + blockSize - 1, canonical: start === n };
+}

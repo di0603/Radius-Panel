@@ -7,6 +7,142 @@ Este proyecto usa versionado semantico.
 
 ### Anadido
 
+- **Prompt 12.14 (fase A: perfiles de acceso por dispositivo)**: cada
+  dispositivo VPN tiene un perfil (`lan_restricted`, `lan_full`,
+  `internet_only`, `internet_lan_restricted`, `internet_lan_full`) configurable
+  desde el panel e impuesto por nftables en la .29. Rama
+  `feat/vpn-12.14-perfiles-acceso`. La fase B (app Windows) queda pendiente de
+  que se confirme la fase A en las maquinas.
+  - **Migracion** `sql/panel-schema-vpn-profiles.sql` (radius_panel, opcion 26
+    del menu): `panel_vpn_devices.access_profile` (existentes =
+    `internet_lan_full`, altas nuevas = `internet_only`),
+    `panel_vpn_profile_ranges` (semilla: `192.168.10.75-99` para
+    `internet_lan_full`; el resto sin rango) y
+    `panel_vpn_restricted_destinations`. No se ha ejecutado en produccion.
+  - **Rangos por perfil** (`services/vpnAccessProfiles.ts`): validacion pura
+    (dentro de la LAN sin red/broadcast, sin solapes, sin .28/.29/.30, sin
+    pisar el DHCP del router si se define `VPN_DHCP_START`/`VPN_DHCP_END`, sin
+    dejar fuera la IP de un dispositivo existente). `createDevice` toma la IP
+    del rango del perfil; rango lleno o sin configurar = error 409 claro, nunca
+    de otro rango.
+  - **Lista restringida** (`services/vpnRestrictedList.ts`): una lista global,
+    destino IPv4/CIDR canonico dentro de la LAN, `tcp`/`udp`/`icmp`, puertos
+    `22,443,8000-8100`, comentario; formatos cerrados (el comentario nunca entra
+    en una regla, solo saneado en una linea `#`).
+  - **Cambio de perfil** (`changeDeviceProfile`, `PATCH
+    /api/vpn-devices/:u/access-profile`): reasigna IP del rango nuevo (radreply
+    en transaccion; si falla la ficha se deshace) y desconecta la sesion activa
+    con el Disconnect existente; si falla, la respuesta lo indica y la interfaz
+    avisa de que aplica en la proxima conexion.
+  - **Generador y script**: ver "Rediseno" mas abajo (los ficheros nftables se
+    integran en `inet filter`, no en una tabla propia).
+  - **Interfaz**: selector de perfil (alta y ficha) con descripcion y aviso rojo
+    en los perfiles `*_full`, columna de perfil en la tabla, pagina VPN >
+    Perfiles de acceso (rangos, lista, descarga del `.nft`), solo admin.
+  - **Auditoria** con antes/despues en rangos, lista y cambio de perfil.
+  - **Tests** (todos con bases simuladas, sin tocar nada real): asignacion por
+    rango y rango lleno, solapes, validacion de la lista e intentos de
+    inyeccion, golden files por perfil (`services/__golden__/vpn-profiles/`,
+    regenerar con `UPDATE_GOLDEN=1`), cambio de perfil con desconexion
+    simulada y rutas HTTP con rol y auditoria.
+  - **Limitaciones/decisiones**: (1) "Internet" = todo salvo redes privadas
+    (como hoy), con `oifname` solo si se define `VPN_EGRESS_IFACE` (la .29 tiene
+    una sola interfaz y no distinguiria LAN de Internet). (2) Desde un perfil
+    no `*_full` se bloquea todo el trafico dirigido a la propia .29 (SSH, ping,
+    DNS local). (3) Un accept de input para `*_full` no anula un drop explicito
+    que ya hubiera en `chain input`: hay que revisar la regla de SSH existente.
+  - **Rediseno (tras ver el `nft list ruleset` real de la .29)**: en la .29 solo
+    existe la tabla `inet filter` con policy drop en input y forward; un accept
+    en otra tabla no anula ese drop y, si fallase, quedaria fail-open. Se
+    descarta la tabla propia `inet vpn_profiles`:
+    - `services/vpnProfilesNft.ts` genera (1) un **fragmento de nftables.conf**
+      (`GET /api/vpn-profiles/nftables-fragment`): siete sets vacios dentro de
+      `inet filter` y las reglas fijas de forward/input que los usan, que falla
+      cerrando (sets vacios = nada de la VPN); y (2) el **fichero de sets**
+      (`GET /api/vpn-profiles/nft`): solo `flush set` + `add element`, una carga
+      atomica. Un set `interval ipv4_addr` por perfil, `vpn_restricted_dests`
+      (`ipv4_addr . inet_proto . inet_service`, con intervalos; nft 1.0.2) y
+      `vpn_restricted_icmp` aparte (en ICMP `th dport` lee el checksum).
+    - La lista restringida no admite entradas que se solapen, y los puertos de
+      una entrada se ordenan y unen (un set de intervalos no admite solapes).
+    - `deploy/vpn-gateway-apply-profiles.sh` adaptado: lista blanca estricta de
+      lineas (solo `flush set`/`add element` sobre sets `vpn_*`; rechaza
+      `flush ruleset`, tablas, cadenas, reglas), comprueba que los sets existen
+      en `inet filter` antes de rellenarlos (si no, aborta con mensaje claro),
+      copia de seguridad, `nft -c -f`, carga atomica y reversion automatica de
+      los sets a los 60 s sin `CONFIRMAR` (vigilante `setsid`, tambien con el
+      SSH muerto).
+    - Retirado el parche `vpn-clients-delegar-a-perfiles` y la opcion
+      `VPN_CLIENTS_DELEGATE_TO_PROFILES` (no hacen falta: no existe `vpn_clients`
+      en la .29). `VPN_EGRESS_IFACE` se mantiene (afecta solo al fragmento).
+    - Pruebas con nft real en un netns de usuario: `nft -c -f` sobre el
+      nftables.conf ensamblado (stand-in de la .29 + fragmento + sets) con los 5
+      perfiles y variantes; `deploy/test-vpn-profiles-netns.sh`: 144
+      comprobaciones de paquetes desde un rango de cada perfil (y desde una IP
+      sin perfil) hacia .28, .29, .30, otra IP de la LAN, Internet y una red
+      privada, con sets llenos y con sets vacios; y
+      `deploy/test-apply-profiles-netns.sh` para el script de aplicacion. Los
+      golden files (`services/__golden__/vpn-profiles/`) cubren los ficheros de
+      sets por perfil, el fragmento y el conf ensamblado.
+    - **Revision del 12.14 (tres arreglos)**:
+    - `setProfileRanges` guarda los cinco rangos en UNA transaccion (conexion
+      dedicada, `beginTransaction`/`commit`/`rollback`); antes eran cinco INSERT
+      sueltos y un fallo a medias dejaba rangos antiguos y nuevos mezclados
+      (posibles solapes). Test: si falla el tercero, no cambia ninguno.
+    - Vigilante: espera `CONFIRM_SECONDS + 10` s mientras el `read -t` espera
+      `CONFIRM_SECONDS`, para que una confirmacion en los ultimos segundos nunca
+      coincida con la reversion. Pruebas del vigilante actualizadas: 50/50 en
+      `asap`, `samesecond`, `fixed` y el modo nuevo `lateconfirm` (confirmacion
+      a `CONFIRM_SECONDS - 0.3 s`: confirmada, sets nuevos, fichero instalado y
+      sin reversion despues).
+    - Perfiles `lan_restricted`/`lan_full`: aviso "sin Internet por el tunel:
+      usa tunel dividido en el dispositivo hasta la fase B" (selector y README).
+      La lista restringida rechaza entradas que incluyan 192.168.10.29 (ese
+      trafico entra por input, no por forward) en el servidor, en el generador y
+      con aviso en la interfaz.
+  - **Vigilante de SSH muerto (causa real) y fichero `include` (revision)**:
+    - Causa del fallo intermitente: el script nombraba la copia de seguridad, el
+      fichero de reversion y la bandera de confirmacion solo con un sello de 1 s
+      (`date +%Y%m%d-%H%M%S`). Dos ejecuciones en el mismo segundo -una confirmada
+      y la siguiente- compartian `confirm.<sello>`: el vigilante de la segunda veia
+      la bandera de la primera, daba el cambio por confirmado y NO revertia.
+      Reproducido de forma determinista con un `date` congelado: con el script
+      antiguo, 10 de 10 repeticiones fallan; el escenario original sin ese choque
+      no falla (40/40), que es por lo que parecia aleatorio. Arreglo: un directorio
+      unico por ejecucion (`mktemp -d "$BACKUP_DIR/run.<sello>.XXXXXX"`) con todos
+      los ficheros de esa ejecucion. Ademas, el vigilante se ARMA ANTES de la carga
+      atomica (antes habia una ventana de milisegundos entre la carga y el arranque
+      del vigilante en la que una sesion muerta dejaba los sets nuevos sin
+      vigilante). `deploy/test-apply-watchdog-netns.sh` repite el caso N veces en
+      tres modos (`asap`: kill en el instante en que se ven los sets nuevos;
+      `samesecond`: reloj congelado y sin limpiar entre repeticiones; `fixed`:
+      las temporizaciones de la prueba original): 50/50 en cada uno.
+    - `include "/etc/nftables.d/vpn-profiles.nft"` al final de nftables.conf: si
+      el fichero no existe, `nft -f` aborta TODA la carga y la .29 arranca sin
+      firewall. Nuevo `deploy/vpn-gateway-apply-profiles.sh --init-empty`: crea de
+      forma atomica (temporal + rename) la version vacia valida (solo `flush set`)
+      si no existe, y es el paso 1 del procedimiento, ANTES de integrar el
+      fragmento. El script de aplicacion se niega a continuar si nftables.conf
+      incluye ese fichero y no existe, o si el instalado no es un fichero de sets
+      valido, y siempre lo sustituye de forma atomica (comprobado con un lector
+      concurrente: 0 lecturas a medias). El procedimiento (paso 8) rellena los
+      sets nada mas cargar el conf.
+  - **Ajuste a la salida real de `nft list ruleset` de la .29**: el fragmento
+      cita las TRES lineas literales de `chain forward` a eliminar
+      (`meta ipsec exists ip daddr { 192.168.10.28, 192.168.10.30 } drop`, el
+      accept de `ip saddr 192.168.10.0/24 ip daddr != 192.168.10.0/24` y el de
+      `... ip daddr 192.168.10.0/24`) y el orden de integracion (PARTE 2 justo
+      despues de la regla existente `meta ipsec exists ip daddr 192.168.10.28
+      tcp dport 8443 accept`, PARTE 3 tras la regla de SSH). Ya no genera
+      reglas de EST (existe una; no se duplica) y todas sus reglas llevan
+      `meta ipsec exists`. El nftables.conf de los tests reproduce las reglas
+      reales de input y forward; `nft -c -f` real (con `meta ipsec` literal) y
+      la prueba funcional (156 comprobaciones, con `meta ipsec` sustituido por
+      la interfaz del cliente porque IPsec no existe en un netns) siguen en
+      verde. Limitacion: la sintaxis exacta del MSS clamp y de las reglas icmp,
+      y el orden relativo de la regla de EST y las tres lineas, estan
+      reconstruidos.
+
 - **Prompt 12.12 (correcciones tras la revision de 12.10/12.11)**:
   - **Rollback del certificado nuevo (1)**: si falla cualquier paso entre
     instalar el certificado nuevo y el final de la confirmacion (credenciales

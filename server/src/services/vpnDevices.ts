@@ -4,10 +4,18 @@ import { randomToken, sha256 } from '../lib/crypto.js';
 import { formatUtcDateTime } from '../lib/dates.js';
 import { conflict, notFound } from '../lib/http.js';
 import { formatFingerprint, type FormattedFingerprint } from '../lib/fingerprint.js';
-import { intToIpv4, ipv4ToInt } from '../lib/ipv4.js';
+import { intToIpv4, ipv4ToInt, isIpv4InRange } from '../lib/ipv4.js';
 import { logger } from '../lib/logger.js';
 import type { SignedProfileEnvelope } from '../lib/vpnProfileSigning.js';
 import { disconnectUserSessions } from './coa.js';
+import {
+  DEFAULT_ACCESS_PROFILE,
+  LEGACY_ACCESS_PROFILE,
+  isAccessProfile,
+  pickFreeIpInRange,
+  requireProfileRange,
+  type AccessProfile,
+} from './vpnAccessProfiles.js';
 import { regenerateCrl } from './pki.js';
 import { setUserEnabled, usernameExists } from './radiusUsers.js';
 import { buildProvisioningQrDataUrl, buildSignedProvisioningProfiles } from './vpnProvisioning.js';
@@ -32,6 +40,8 @@ export interface VpnDevice {
   ownerName: string | null;
   platform: DevicePlatform;
   tunnelMode: TunnelMode;
+  /** Perfil de acceso (prompt 12.14): decide a que llega por el tunel; ver vpnAccessProfiles.ts. */
+  accessProfile: AccessProfile;
   notes: string | null;
   certDays: number | null;
   renewAfterDays: number | null;
@@ -90,6 +100,8 @@ function toDevice(row: RowDataPacket): VpnDevice {
     ownerName: row.owner_name ?? null,
     platform: row.platform,
     tunnelMode: row.tunnel_mode,
+    // Sin la columna (migracion sin aplicar) se asume el comportamiento de antes.
+    accessProfile: isAccessProfile(row.access_profile) ? row.access_profile : LEGACY_ACCESS_PROFILE,
     notes: row.notes ?? null,
     certDays: row.cert_days === null || row.cert_days === undefined ? null : Number(row.cert_days),
     renewAfterDays:
@@ -181,6 +193,8 @@ export interface CreateDeviceInput {
   ownerName: string | null;
   platform: DevicePlatform;
   tunnelMode: TunnelMode;
+  /** Por defecto, internet_only. */
+  accessProfile?: AccessProfile;
   notes: string | null;
   certDays: number | null;
   renewAfterDays: number | null;
@@ -188,7 +202,8 @@ export interface CreateDeviceInput {
 
 /**
  * Da de alta un dispositivo: usuario RADIUS (radcheck/radreply/radusergroup,
- * con la primera IP libre del pool, sin repetir ninguna IP ya usada en
+ * con la primera IP libre del rango del perfil de acceso del dispositivo
+ * (nunca de otro rango: si esta lleno o sin configurar, error claro), sin repetir ninguna IP ya usada en
  * radreply por cualquier usuario) + ficha en panel_vpn_devices. username =
  * vpn-<owner_user>-<device_label>, unico.
  *
@@ -205,7 +220,8 @@ export async function createDevice(input: CreateDeviceInput): Promise<VpnDevice>
     throw conflict(`Ya existe un usuario RADIUS "${username}"`);
   }
 
-  const settings = await getVpnSettings();
+  const accessProfile = input.accessProfile ?? DEFAULT_ACCESS_PROFILE;
+  const range = await requireProfileRange(accessProfile);
   let framedIp = '';
 
   const conn = await radiusPool.getConnection();
@@ -219,12 +235,16 @@ export async function createDevice(input: CreateDeviceInput): Promise<VpnDevice>
     const [ipRows] = await conn.query<RowDataPacket[]>(
       `SELECT value FROM radreply WHERE attribute = 'Framed-IP-Address' FOR UPDATE`,
     );
-    const ip = firstFreeIp(
-      settings.poolStart,
-      settings.poolEnd,
+    const ip = pickFreeIpInRange(
+      range.start,
+      range.end,
       ipRows.map((r) => String(r.value)),
     );
-    if (!ip) throw conflict('No quedan IPs libres en el rango configurado para la VPN');
+    if (!ip) {
+      throw conflict(
+        `No quedan IPs libres en el rango del perfil ${accessProfile} (${range.start}-${range.end}): amplialo en VPN -> Perfiles de acceso`,
+      );
+    }
     framedIp = ip;
 
     // Sin esta fila en radcheck, rlm_sql no aplica radreply y el dispositivo
@@ -253,10 +273,10 @@ export async function createDevice(input: CreateDeviceInput): Promise<VpnDevice>
   try {
     const [result] = await panelPool.query<ResultSetHeader>(
       `INSERT INTO panel_vpn_devices
-         (username, owner_user, device_label, owner_name, platform, tunnel_mode, notes, cert_days,
-          renew_after_days, framed_ip, enabled)
-       VALUES (:username, :ownerUser, :deviceLabel, :ownerName, :platform, :tunnelMode, :notes,
-               :certDays, :renewAfterDays, :framedIp, 1)`,
+         (username, owner_user, device_label, owner_name, platform, tunnel_mode, access_profile, notes,
+          cert_days, renew_after_days, framed_ip, enabled)
+       VALUES (:username, :ownerUser, :deviceLabel, :ownerName, :platform, :tunnelMode, :accessProfile,
+               :notes, :certDays, :renewAfterDays, :framedIp, 1)`,
       {
         username,
         ownerUser: input.ownerUser,
@@ -264,6 +284,7 @@ export async function createDevice(input: CreateDeviceInput): Promise<VpnDevice>
         ownerName: input.ownerName,
         platform: input.platform,
         tunnelMode: input.tunnelMode,
+        accessProfile,
         notes: input.notes,
         certDays: input.certDays,
         renewAfterDays: input.renewAfterDays,
@@ -516,4 +537,131 @@ export async function setDeviceOverrides(
     `UPDATE panel_vpn_devices SET ${fields.join(', ')} WHERE username = :u`,
     params as Record<string, string | number>,
   );
+}
+
+export interface ChangeProfileResult {
+  device: VpnDevice;
+  changed: boolean;
+  before: { accessProfile: AccessProfile; framedIp: string | null };
+  after: { accessProfile: AccessProfile; framedIp: string | null };
+  /**
+   * Desconexion de la sesion activa para que el cambio aplique ya (la VM VPN
+   * clasifica por IP: hasta reconectar, la sesion sigue con la IP y el perfil
+   * antiguos). `ok = false` -p.ej. COA_ENABLED=false o el NAS no responde-: el
+   * cambio esta guardado pero aplica en la proxima conexion del dispositivo.
+   */
+  disconnect: { attempted: boolean; ok: boolean; sessions: number; error: string | null };
+}
+
+/**
+ * Cambia el perfil de acceso de un dispositivo: reasigna la IP fija del rango
+ * del perfil nuevo (radreply + panel_vpn_devices.framed_ip) y desconecta la
+ * sesion activa con el mecanismo de siempre (Disconnect-Request al NAS, ver
+ * coa.ts). Mismo reparto de atomicidad que createDevice: radreply en una
+ * transaccion real; si despues falla la ficha del panel, se deshace a mano.
+ * Un perfil sin rango, o con el rango lleno, falla con un error claro sin
+ * tocar nada (nunca se asigna una IP de otro rango).
+ */
+export async function changeDeviceProfile(
+  username: string,
+  newProfile: AccessProfile,
+  /** Solo para tests: sustituye la desconexion real (Disconnect-Request por UDP). */
+  deps: { disconnect?: typeof disconnectUserSessions } = {},
+): Promise<ChangeProfileResult> {
+  const row = await requireDeviceRow(username);
+  const device = toDevice(row);
+  if (!device.framedIp) throw conflict(`El dispositivo "${username}" esta dado de baja`);
+
+  const before = { accessProfile: device.accessProfile, framedIp: device.framedIp };
+  if (device.accessProfile === newProfile) {
+    return {
+      device,
+      changed: false,
+      before,
+      after: before,
+      disconnect: { attempted: false, ok: true, sessions: 0, error: null },
+    };
+  }
+
+  const range = await requireProfileRange(newProfile);
+  const oldIp = device.framedIp;
+  let newIp = oldIp;
+
+  const conn = await radiusPool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const [ipRows] = await conn.query<RowDataPacket[]>(
+      `SELECT value FROM radreply WHERE attribute = 'Framed-IP-Address' FOR UPDATE`,
+    );
+    if (!isIpv4InRange(oldIp, range.start, range.end)) {
+      const ip = pickFreeIpInRange(
+        range.start,
+        range.end,
+        ipRows.map((r) => String(r.value)),
+      );
+      if (!ip) {
+        throw conflict(
+          `No quedan IPs libres en el rango del perfil ${newProfile} (${range.start}-${range.end}): amplialo en VPN -> Perfiles de acceso`,
+        );
+      }
+      newIp = ip;
+      const [updated] = await conn.query<ResultSetHeader>(
+        `UPDATE radreply SET value = :ip WHERE username = :u AND attribute = 'Framed-IP-Address'`,
+        { u: username, ip: newIp },
+      );
+      if (!updated.affectedRows) {
+        await conn.query(
+          `INSERT INTO radreply (username, attribute, op, value) VALUES (:u, 'Framed-IP-Address', ':=', :ip)`,
+          { u: username, ip: newIp },
+        );
+      }
+    }
+    await conn.commit();
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
+
+  try {
+    await panelPool.query(
+      `UPDATE panel_vpn_devices SET access_profile = :profile, framed_ip = :ip WHERE username = :u`,
+      { u: username, profile: newProfile, ip: newIp },
+    );
+  } catch (err) {
+    if (newIp !== oldIp) {
+      await radiusPool
+        .query(
+          `UPDATE radreply SET value = :ip WHERE username = :u AND attribute = 'Framed-IP-Address'`,
+          { u: username, ip: oldIp },
+        )
+        .catch(() => undefined);
+    }
+    throw err;
+  }
+
+  const disconnect: ChangeProfileResult['disconnect'] = {
+    attempted: true,
+    ok: false,
+    sessions: 0,
+    error: null,
+  };
+  try {
+    const outcome = await (deps.disconnect ?? disconnectUserSessions)(username);
+    disconnect.sessions = outcome.total;
+    disconnect.ok = outcome.errors.length === 0;
+    if (outcome.errors.length) disconnect.error = outcome.errors.map((e) => e.error).join('; ');
+  } catch (err) {
+    disconnect.error = (err as Error).message;
+  }
+
+  const updatedDevice = toDevice(await requireDeviceRow(username));
+  return {
+    device: updatedDevice,
+    changed: true,
+    before,
+    after: { accessProfile: newProfile, framedIp: newIp },
+    disconnect,
+  };
 }

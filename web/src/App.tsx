@@ -14,6 +14,7 @@ import { ReportsPage } from './pages/Reports';
 import { PkiPage } from './pages/Pki';
 import { VpnDevicesPage } from './pages/VpnDevices';
 import { VpnSettingsPage } from './pages/VpnSettings';
+import { VpnProfilesPage } from './pages/VpnProfiles';
 import { NotFoundPage } from './pages/NotFound';
 
 export function App() {
@@ -61,6 +62,14 @@ export function App() {
           element={
             <RequireAuth roles={['admin']}>
               <VpnDevicesPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/vpn-profiles"
+          element={
+            <RequireAuth roles={['admin']}>
+              <VpnProfilesPage />
             </RequireAuth>
           }
         />

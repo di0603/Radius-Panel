@@ -308,6 +308,7 @@ strongSwan (192.168.10.29) ──EAP──► FreeRADIUS (192.168.10.28, virtual
 |--------|----------|
 | **PKI** | Genera la clave+CSR de la CA intermedia (ECDSA P-384), importa el certificado firmado offline por la raiz, rotacion y CRL. |
 | **VPN > Dispositivos** | Alta/baja, activar/desactivar, revocar certificado, token de alta EST, paquete de conexion descargable, permisos de red (firewall) por dispositivo. |
+| **VPN > Perfiles de acceso** | Rango de IPs de cada perfil de acceso, lista de destinos de los perfiles restringidos y descarga de `vpn-profiles.nft`. |
 | **VPN > Ajustes** | Token de la puerta de enlace del firewall (`deploy/vpn-gateway-agent.sh`). El resto de ajustes (`panel_vpn_settings`: FQDN, identidad AAA, rango de IPs, dias de vigencia/renovacion, URL de EST, red LAN) todavia se editan solo por SQL/`npm run menu`, sin pagina propia. |
 
 ### Variables de entorno (server/.env)
@@ -319,6 +320,8 @@ strongSwan (192.168.10.29) ──EAP──► FreeRADIUS (192.168.10.28, virtual
 | `EST_PORT` / `EST_BIND` | Puerto/IP del listener HTTPS de EST (def. `8443` / `0.0.0.0`). Servidor separado de la API principal: necesita TLS mutuo real (`requestCert: true`), que un proxy que termina TLS (nginx) no puede reenviar. |
 | `EST_TLS_CERT` / `EST_TLS_KEY` | Certificado y clave propios del listener EST, para el nombre publico de la PKI (p.ej. `pki.vlc.didev.es`). Los firma la CA raiz offline (EKU `serverAuth`, SAN DNS = ese nombre), **no** Let's Encrypt: los dispositivos confian solo en esa raiz para esta conexion. Sin estas dos, el resto del panel funciona igual, solo que sin alta/renovacion automatica. |
 | `VPN_PROFILE_SIGNING_KEY` | Ruta a la clave privada Ed25519 (PEM, permisos 600) que firma el perfil de aprovisionamiento (`.didevvpn`) de cada token de alta. La clave publica va incrustada en las apps (Windows/Android), para que una app nunca acepte un perfil de otro origen. Sin ella, "Generar token de alta" sigue funcionando igual pero sin perfil firmado ni QR (alta manual con el token por EST). Ver "Aprovisionamiento de apps" mas abajo para como generarla. |
+| `VPN_DHCP_START` / `VPN_DHCP_END` | Opcionales, van juntas. Rango DHCP del router: el panel rechaza que el rango de IPs de un perfil de acceso VPN lo pise. Vacias = sin esa comprobacion. |
+| `VPN_EGRESS_IFACE` | Opcional. Interfaz de salida a Internet de la VM VPN (p.ej. `eth0`). Si se define, las reglas "internet" del `vpn-profiles.nft` generado tambien exigen `oifname`. |
 
 Ver `.env.example` para el resto (comentarios inline).
 
@@ -339,6 +342,7 @@ migraciones** (opciones entre parentesis) o a mano con `mysql -u root -p
 | 12 | `panel-schema-vpn-android.sql` | `radius_panel` | `panel_vpn_settings.lan_cidr`, tabla `panel_vpn_android_downloads` (boton "Emitir certificado" para Android). |
 | 13 | `panel-schema-vpn-firewall.sql` | `radius_panel` | `allow_radius_host`/`allow_mariadb_host`, tabla `panel_vpn_device_rules`, `panel_vpn_settings.gateway_token_sha256` (firewall de la VM VPN). |
 | 24 | `panel-schema-vpn-provisioning.sql` | `radius_panel` | `panel_vpn_settings.min_app_version` (version minima de app, publicada por `GET /.well-known/est/status`). |
+| 26 | `panel-schema-vpn-profiles.sql` | `radius_panel` | `panel_vpn_devices.access_profile` (existentes = `internet_lan_full`), `panel_vpn_profile_ranges`, `panel_vpn_restricted_destinations` (perfiles de acceso por dispositivo). |
 
 `npm run menu` te dice cuales faltan contra tu base real (no solo si la tabla
 existe: tambien si tiene ya las columnas de la version actual). La migracion
@@ -563,6 +567,157 @@ La variante `full` no necesita nada de esto porque ya trae la cadena
 completa firmada — pero tambien lleva `rootCaSha256`, por si una
 implementacion prefiere verificar igual antes de confiar en el `caChainPem`
 del propio fichero.
+
+### Perfiles de acceso por dispositivo (prompt 12.14)
+
+Cada dispositivo VPN tiene un **perfil de acceso** que decide a que llega por
+el tunel, y la VM VPN (192.168.10.29) lo impone con nftables:
+
+| Perfil | Internet por el tunel | LAN 192.168.10.0/24 |
+|--------|-----------------------|---------------------|
+| `lan_restricted` | no | solo los destinos/puertos de la lista restringida |
+| `lan_full` | no | **toda** (incluidas .28, .29 y .30, todos los puertos) |
+| `internet_only` (por defecto en altas nuevas) | si | no |
+| `internet_lan_restricted` | si | solo la lista restringida |
+| `internet_lan_full` | si | **toda** (incluidas .28, .29 y .30) |
+
+`lan_full` e `internet_lan_full` dan acceso a infraestructura (CA, RADIUS y BD):
+el panel lo avisa en rojo al elegirlos. Los dispositivos que ya existian se
+quedan en `internet_lan_full` (su comportamiento de antes).
+
+**Perfiles sin Internet** (`lan_restricted`, `lan_full`): el panel muestra el aviso
+"sin Internet por el tunel: usa tunel dividido en el dispositivo hasta la fase B". El
+servidor bloquea el Internet de esos perfiles, pero la app aun no configura el tunel
+dividido (fase B): hasta entonces hay que configurarlo en el propio dispositivo para
+que el resto de su trafico no intente salir por la VPN.
+
+- **Rangos de IP por perfil** (VPN > Perfiles de acceso): la IP fija
+  (`Framed-IP-Address`) de un dispositivo sale del rango de su perfil. El panel
+  rechaza rangos fuera de la LAN, solapados entre perfiles, que incluyan
+  .28/.29/.30, que pisen el DHCP del router (`VPN_DHCP_START`/`VPN_DHCP_END`) o
+  que dejen fuera la IP de un dispositivo existente. Rango lleno o sin
+  configurar: el alta falla con un mensaje claro (nunca se usa otro rango). La
+  migracion deja el rango `192.168.10.75-99` en `internet_lan_full`; los demas
+  perfiles empiezan **sin rango** hasta que un admin los define.
+- **Lista restringida**: una unica lista global para los dos perfiles
+  restringidos (destino IPv4/CIDR dentro de la LAN, `tcp`/`udp`/`icmp`, puertos,
+  comentario). Cada campo se valida con formatos cerrados; nada de texto libre
+  llega a una regla nft.
+- **Cambiar el perfil** de un dispositivo (ficha del dispositivo): reasigna la
+  IP del rango nuevo y desconecta la sesion activa con el Disconnect de siempre
+  (CoA, puerto 3799). Si no se puede desconectar, el panel avisa de que aplica
+  en la proxima conexion.
+- Todo cambio (perfil, rangos, lista) se registra en auditoria con quien y el
+  antes/despues. Solo rol `admin`.
+
+**Como se imponen los perfiles en la .29.** En la .29 solo existe la tabla
+`inet filter` (policy drop en input y forward) y un `accept` en otra tabla no
+anula ese drop, asi que los perfiles viven DENTRO de `inet filter`, en dos
+piezas:
+
+1. **Fragmento de `/etc/nftables.conf`** (panel → VPN > Perfiles de acceso →
+   *Fragmento de nftables.conf*; se revisa e integra a mano **una sola vez** y
+   no cambia con los rangos): declara siete sets **vacios** (uno `interval
+   ipv4_addr` por perfil, `vpn_restricted_dests` de tipo `ipv4_addr .
+   inet_proto . inet_service` y `vpn_restricted_icmp`) y las reglas **fijas** de
+   forward e input que los usan. Todas llevan `meta ipsec exists` (solo trafico
+   que llega por el tunel: un equipo de la LAN fisica no hereda los permisos de
+   un cliente VPN falsificando su IP): `lan_full`/`internet_lan_full` →
+   `ip daddr 192.168.10.0/24 accept` (incluye .28, .29 y .30) y accept en input
+   hacia la .29; perfiles con Internet → `ip daddr != redes privadas accept`;
+   restringidos → accept solo si (destino, protocolo, puerto) esta en el set.
+   **No duplica** la regla de EST que ya existe en forward. **Falla cerrando**:
+   con los sets vacios no se acepta nada de los perfiles.
+2. **`vpn-profiles.nft`** (boton *Descargar vpn-profiles.nft*): SOLO
+   `flush set` + `add element` de esos sets, en una carga atomica. Es lo que
+   cambia con los rangos y la lista. El panel no lo aplica: lo haces tu con
+   `deploy/vpn-gateway-apply-profiles.sh` en la .29 (como root):
+   `... --check-only vpn-profiles.nft` y despues `... vpn-profiles.nft`. El
+   script rechaza cualquier linea que no sea `flush set`/`add element` sobre los
+   sets `vpn_*` (adios a `flush ruleset`, tablas, cadenas o reglas), comprueba
+   que los sets **existen** en `inet filter` (si no, aborta con un mensaje claro),
+   hace copia de seguridad, `nft -c -f`, carga atomica y **si no escribes
+   `CONFIRMAR` en 60 s (o se te cae el SSH), restaura los sets solo**. El prompt espera
+   `CONFIRM_SECONDS` (60) y el vigilante `CONFIRM_SECONDS + 10` (70 s): con la sesion
+   viva y sin confirmar revierte el propio script al agotarse el prompt; el vigilante
+   solo actua si la sesion ha muerto, y una confirmacion en los ultimos segundos nunca
+   coincide con su reversion.
+
+**Antes de aplicar nada, en la .29** (requisito de los sets concatenados con
+intervalos): `nft --version` (>= 0.9.4) y `uname -r` (>= 5.6).
+
+**Orden exacto de integracion (primera vez, en una COPIA de `/etc/nftables.conf`):**
+
+1. **ANTES de tocar `nftables.conf`:** `sudo deploy/vpn-gateway-apply-profiles.sh
+   --init-empty`. Crea, de forma atomica (temporal + rename),
+   `/etc/nftables.d/vpn-profiles.nft` en su version **vacia valida** (solo los
+   `flush set`) si no existe; si ya existe y es valido, no lo toca. Es
+   imprescindible: la PARTE 4 es un `include` de ese fichero y, **si no existe,
+   `nft -f` aborta TODA la carga de `nftables.conf` y la .29 arranca sin
+   firewall**. Comprueba con `test -s /etc/nftables.d/vpn-profiles.nft`. Nunca lo
+   borres ni lo renombres a mano. A partir de aqui el script de aplicacion se
+   niega a continuar si `nftables.conf` incluye un fichero que no existe, o si el
+   instalado no es un fichero de sets valido, y siempre lo reemplaza de forma
+   atomica (temporal en el mismo directorio + rename).
+2. PARTE 1 (sets) dentro de `table inet filter { ... }`, antes de las cadenas.
+3. En `chain forward`, **eliminar estas tres lineas literales** (y solo ellas):
+   ```
+   meta ipsec exists ip daddr { 192.168.10.28, 192.168.10.30 } drop
+   meta ipsec exists ip saddr 192.168.10.0/24 ip daddr != 192.168.10.0/24 accept
+   meta ipsec exists ip saddr 192.168.10.0/24 ip daddr 192.168.10.0/24 accept
+   ```
+4. En su lugar, **justo despues** de la regla existente
+   `meta ipsec exists ip daddr 192.168.10.28 tcp dport 8443 accept` (que se
+   queda), pegar la PARTE 2. Las reglas `ct state` y el MSS clamp, que ya estan
+   antes, no se tocan ni se mueven.
+5. PARTE 3 al final de `chain input`, despues de la regla de SSH
+   (`meta ipsec missing ip saddr 192.168.10.0/24 tcp dport 22 accept`); en
+   input no hay drop explicito, solo la policy.
+6. PARTE 4 (`include ...`) al final del fichero, fuera de la tabla.
+7. `nft -c -f <copia>` (el `include` se resuelve aqui: si el paso 1 no se hizo,
+   falla). Para cargarla con red de seguridad (solo afecta al trafico del
+   tunel; SSH desde la LAN fisica no cambia):
+   ```
+   nft list ruleset > /root/ruleset.antes.nft
+   ( sleep 300; nft flush ruleset; nft -f /root/ruleset.antes.nft ) & REVERT=$!
+   nft -f <copia>        # atomico: sets y reglas a la vez
+   ```
+8. **Nada mas cargar**, rellena los sets con el fichero real descargado del
+   panel: `sudo deploy/vpn-gateway-apply-profiles.sh vpn-profiles.nft` y
+   `CONFIRMAR`. Hasta entonces los sets estan vacios (los clientes VPN solo
+   tienen EST 8443 e icmp: ventana corta, falla cerrando; los dispositivos
+   existentes estan en `internet_lan_full`, rango 75-99 de la migracion, y
+   vuelven al aplicar el fichero). Comprueba la VPN desde un cliente y, si va
+   bien: `kill $REVERT` y `cp <copia> /etc/nftables.conf`.
+   (Los cambios posteriores de rangos o lista ya no tocan `nftables.conf`: solo
+   el script de aplicacion.)
+
+La lista restringida **no admite ninguna entrada que incluya 192.168.10.29** (ni sola ni
+dentro de un CIDR): el trafico hacia la propia VM VPN entra por `input` y no por
+`forward`, asi que la lista no podria abrirlo y la entrada enganaria. El acceso a la
+.29 es solo de `lan_full` e `internet_lan_full`. Tampoco admite entradas que se solapen (mismo protocolo +
+destinos que se pisan + puertos que se pisan): un set de intervalos las
+rechazaria. ICMP va en un set aparte porque `th dport` en un paquete ICMP lee el
+checksum, no un puerto. Nota: `icmp` en input ya esta aceptado por la regla
+existente, asi que un cliente VPN puede hacer ping a la .29 con cualquier perfil.
+
+Reversion manual tras confirmar: `nft -f /var/backups/vpn-gateway/run.<fecha>.<id>/revert-vpn-profiles.nft`
+(estado anterior de los sets; cada ejecucion tiene su propio directorio unico) y
+restaurar `run.<fecha>.<id>/vpn-profiles.nft.installed` en `/etc/nftables.d/`. Para quitar los perfiles del todo, restaurar el
+`nftables.conf` anterior y cargarlo.
+
+Pruebas con nft real (sin tocar la maquina, en un netns de usuario):
+`NFT_FUNCTIONAL=1 npm test` (solo Linux) o a mano,
+`node --import tsx server/src/scripts/exportNftExamples.ts /tmp/nft` y
+`unshare -rn bash deploy/test-vpn-profiles-netns.sh /tmp/nft` (veredicto de
+cada perfil hacia .28/.29/.30, otra IP de la LAN e Internet; IPsec no se puede
+simular y el script sustituye `meta ipsec exists/missing` por la interfaz del
+cliente) y `unshare -rn bash deploy/test-apply-profiles-netns.sh /tmp/nft` (el
+script de aplicacion: include inexistente, `--init-empty`, sustitucion atomica,
+confirmar/revertir) y `unshare -rn bash deploy/test-apply-watchdog-netns.sh /tmp/nft 50`
+(el vigilante con la sesion muerta, 50 veces; `MODE=samesecond`, `MODE=fixed` o
+`MODE=lateconfirm` -confirmacion en los ultimos segundos del prompt- para los otros
+escenarios).
 
 ### Firewall de la puerta de enlace VPN (192.168.10.29)
 

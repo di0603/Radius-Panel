@@ -647,6 +647,13 @@ export type TunnelMode = 'full' | 'split';
 /** Derivado en el servidor de `enabled` + `framedIp`: no hay una columna de estado propia. */
 export type DeviceStatus = 'active' | 'disabled' | 'decommissioned';
 
+export type AccessProfile =
+  | 'lan_restricted'
+  | 'lan_full'
+  | 'internet_only'
+  | 'internet_lan_restricted'
+  | 'internet_lan_full';
+
 export interface VpnDevice {
   id: number;
   username: string;
@@ -655,6 +662,7 @@ export interface VpnDevice {
   ownerName: string | null;
   platform: DevicePlatform;
   tunnelMode: TunnelMode;
+  accessProfile: AccessProfile;
   notes: string | null;
   certDays: number | null;
   renewAfterDays: number | null;
@@ -705,6 +713,7 @@ export interface CreateVpnDeviceInput {
   ownerName: string | null;
   platform: DevicePlatform;
   tunnelMode?: TunnelMode;
+  accessProfile?: AccessProfile;
   notes: string | null;
   certDays: number | null;
   renewAfterDays: number | null;
@@ -979,5 +988,137 @@ export function useGenerateGatewayToken() {
   return useMutation({
     mutationFn: async () => (await api.post<{ token: string }>('/vpn-settings/gateway-token')).data,
     onSuccess: () => qc.invalidateQueries({ queryKey: ['vpn-settings'] }),
+  });
+}
+
+/* ------------------------ Perfiles de acceso VPN (prompt 12.14) ------------------------ */
+
+export interface AccessProfileInfo {
+  profile: AccessProfile;
+  label: string;
+  description: string;
+  internet: boolean;
+  lan: 'none' | 'restricted' | 'full';
+  infrastructureAccess: boolean;
+}
+
+export type ProfileRangesView = Record<
+  AccessProfile,
+  { rangeStart: string | null; rangeEnd: string | null }
+>;
+
+export type RestrictedProtocol = 'tcp' | 'udp' | 'icmp';
+
+export interface RestrictedDestination {
+  id: number;
+  destCidr: string;
+  protocol: RestrictedProtocol;
+  ports: string | null;
+  comment: string;
+}
+
+export interface RestrictedDestinationInput {
+  destCidr: string;
+  protocol: RestrictedProtocol;
+  ports: string | null;
+  comment: string | null;
+}
+
+export interface VpnProfilesView {
+  profiles: AccessProfileInfo[];
+  infrastructureWarning: string;
+  noInternetWarning: string;
+  /** IP de la VM VPN: la lista restringida no puede incluirla (entra por input, no por forward). */
+  gatewayIp: string;
+  ranges: ProfileRangesView;
+  destinations: RestrictedDestination[];
+  lanCidr: string;
+  dhcp: { start: string; end: string } | null;
+  reservedHosts: string[];
+  egressInterface: string | null;
+}
+
+export function useVpnProfiles() {
+  return useQuery({
+    queryKey: ['vpn-profiles'],
+    queryFn: async () => (await api.get<VpnProfilesView>('/vpn-profiles')).data,
+  });
+}
+
+export function useSetProfileRanges() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (ranges: ProfileRangesView) =>
+      (await api.put<{ ranges: ProfileRangesView }>('/vpn-profiles/ranges', { ranges })).data,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['vpn-profiles'] }),
+  });
+}
+
+export function useSaveRestrictedDestination() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, input }: { id: number | null; input: RestrictedDestinationInput }) =>
+      id === null
+        ? (await api.post<RestrictedDestination>('/vpn-profiles/destinations', input)).data
+        : (await api.put<RestrictedDestination>(`/vpn-profiles/destinations/${id}`, input)).data,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['vpn-profiles'] }),
+  });
+}
+
+export function useDeleteRestrictedDestination() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: number) => {
+      await api.delete(`/vpn-profiles/destinations/${id}`);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['vpn-profiles'] }),
+  });
+}
+
+/**
+ * Descarga ficheros nftables de los perfiles: `sets` = vpn-profiles.nft (solo rellena los sets que ya
+ * existen en inet filter; lo aplica a mano deploy/vpn-gateway-apply-profiles.sh) y `fragment` = fragmento
+ * de /etc/nftables.conf (sets vacios + reglas fijas) para revisar e integrar una vez.
+ */
+export function useDownloadProfilesNft() {
+  return useMutation({
+    mutationFn: async (kind: 'sets' | 'fragment') => {
+      const [path, filename] =
+        kind === 'sets'
+          ? ['/vpn-profiles/nft', 'vpn-profiles.nft']
+          : ['/vpn-profiles/nftables-fragment', 'nftables-fragmento-perfiles.conf'];
+      const res = await api.get<Blob>(path, { responseType: 'blob' });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    },
+  });
+}
+
+export interface ChangeDeviceProfileResult {
+  device: VpnDevice;
+  changed: boolean;
+  before: { accessProfile: AccessProfile; framedIp: string | null };
+  after: { accessProfile: AccessProfile; framedIp: string | null };
+  disconnect: { attempted: boolean; ok: boolean; sessions: number; error: string | null };
+}
+
+export function useChangeDeviceProfile() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ username, accessProfile }: { username: string; accessProfile: AccessProfile }) =>
+      (
+        await api.patch<ChangeDeviceProfileResult>(
+          `/vpn-devices/${encodeURIComponent(username)}/access-profile`,
+          { accessProfile },
+        )
+      ).data,
+    onSuccess: (_data, { username }) => {
+      qc.invalidateQueries({ queryKey: ['vpn-devices'] });
+      qc.invalidateQueries({ queryKey: ['vpn-devices', username] });
+    },
   });
 }
