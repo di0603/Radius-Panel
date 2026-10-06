@@ -1,0 +1,17 @@
+#!/usr/sbin/nft -f
+# Generado por Radius Panel (VPN -> Perfiles de acceso) - NO EDITAR A MANO
+# Rellena los sets de los perfiles que YA existen en "inet filter" (ver el fragmento de
+# nftables.conf). Solo "flush set" + "add element": no declara tablas ni cadenas.
+# Se carga en una sola transaccion (nft -f): o cambian todos los sets o ninguno.
+# Aplicar con deploy/vpn-gateway-apply-profiles.sh. Generado: 2026-01-01T00:00:00.000Z
+
+flush set inet filter vpn_lan_restricted_ips
+flush set inet filter vpn_lan_full_ips
+flush set inet filter vpn_internet_only_ips
+add element inet filter vpn_internet_only_ips { 192.168.10.110-192.168.10.114 }
+flush set inet filter vpn_internet_lan_restricted_ips
+flush set inet filter vpn_internet_lan_full_ips
+flush set inet filter vpn_restricted_dests
+add element inet filter vpn_restricted_dests { 192.168.10.50 . tcp . 22, 192.168.10.50 . tcp . 443, 192.168.10.50 . tcp . 8000-8100, 192.168.10.0/28 . udp . 53, 192.168.10.70 . tcp . 1-65535 }
+flush set inet filter vpn_restricted_icmp
+add element inet filter vpn_restricted_icmp { 192.168.10.60 }

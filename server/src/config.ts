@@ -15,6 +15,12 @@ const bool = (fallback: 'true' | 'false') =>
 
 const port = z.coerce.number().int().min(1).max(65535);
 const positiveInt = z.coerce.number().int().positive();
+/** Una variable opcional definida pero vacia (`VPN_X=` en el .env) cuenta como no definida. */
+const emptyToUndefined = (v: unknown) => (v === '' ? undefined : v);
+const ipv4Address = z
+  .string()
+  .regex(/^(\d{1,3}\.){3}\d{1,3}$/, 'debe ser una IPv4 (a.b.c.d)')
+  .refine((v) => v.split('.').every((o) => Number(o) <= 255), 'octeto fuera de 0-255');
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
@@ -95,6 +101,25 @@ const envSchema = z.object({
    * -el alta manual por EST sigue funcionando igual-.
    */
   VPN_PROFILE_SIGNING_KEY: z.string().optional(),
+
+  /**
+   * Perfiles de acceso VPN (prompt 12.14), todo opcional. Rango DHCP del
+   * router: el panel rechaza rangos de perfil que lo pisen. Interfaz de
+   * salida a Internet de la VM VPN: si se define, las reglas "internet" del
+   * vpn-profiles.nft generado tambien exigen `oifname`.
+   */
+  VPN_DHCP_START: z.preprocess(emptyToUndefined, ipv4Address.optional()),
+  VPN_DHCP_END: z.preprocess(emptyToUndefined, ipv4Address.optional()),
+  VPN_EGRESS_IFACE: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .regex(/^[A-Za-z0-9_.-]{1,15}$/, 'nombre de interfaz invalido (1-15 caracteres: letras, numeros, _ . -)')
+      .optional(),
+  ),
+}).refine((e) => (e.VPN_DHCP_START === undefined) === (e.VPN_DHCP_END === undefined), {
+  message: 'VPN_DHCP_START y VPN_DHCP_END van juntas (o ninguna)',
+  path: ['VPN_DHCP_START'],
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -181,6 +206,12 @@ export const config = {
 
   vpnProfileSigning: {
     keyPath: env.VPN_PROFILE_SIGNING_KEY,
+  },
+
+  vpnProfiles: {
+    dhcpStart: env.VPN_DHCP_START,
+    dhcpEnd: env.VPN_DHCP_END,
+    egressInterface: env.VPN_EGRESS_IFACE,
   },
 };
 

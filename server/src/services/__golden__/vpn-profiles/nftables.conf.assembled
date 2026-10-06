@@ -1,0 +1,109 @@
+#!/usr/sbin/nft -f
+flush ruleset
+
+table inet filter {
+	set vpn_lan_restricted_ips {
+		type ipv4_addr
+		flags interval
+	}
+
+	set vpn_lan_full_ips {
+		type ipv4_addr
+		flags interval
+	}
+
+	set vpn_internet_only_ips {
+		type ipv4_addr
+		flags interval
+	}
+
+	set vpn_internet_lan_restricted_ips {
+		type ipv4_addr
+		flags interval
+	}
+
+	set vpn_internet_lan_full_ips {
+		type ipv4_addr
+		flags interval
+	}
+
+	set vpn_restricted_dests {
+		type ipv4_addr . inet_proto . inet_service
+		flags interval
+	}
+
+	set vpn_restricted_icmp {
+		type ipv4_addr
+		flags interval
+	}
+
+	chain input {
+		type filter hook input priority filter; policy drop;
+		iif lo accept
+		ct state invalid drop
+		ct state established,related accept
+		ip protocol icmp accept
+		meta l4proto ipv6-icmp accept
+		udp dport { 500, 4500 } accept
+		ip saddr 192.168.10.28 udp dport 3799 accept
+		meta ipsec missing ip saddr 192.168.10.0/24 tcp dport 22 accept
+		# --- Perfiles de acceso VPN (generado por Radius Panel) ---
+		# Al final de la cadena, tras la regla de SSH existente (no hay drop explicito: solo la policy).
+		# lan_full / internet_lan_full: acceso a la propia VM VPN (SSH incluido).
+		meta ipsec exists ip saddr @vpn_lan_full_ips ip daddr 192.168.10.29 accept
+		meta ipsec exists ip saddr @vpn_internet_lan_full_ips ip daddr 192.168.10.29 accept
+	}
+
+	chain forward {
+		type filter hook forward priority filter; policy drop;
+		ct state invalid drop
+		ct state established,related accept
+		tcp flags syn tcp option maxseg size set rt mtu
+		meta ipsec exists ip daddr 192.168.10.28 tcp dport 8443 accept
+		# --- Perfiles de acceso VPN (generado por Radius Panel) ---
+		# Justo DESPUES de la regla existente "meta ipsec exists ip daddr 192.168.10.28 tcp dport 8443 accept"
+		# (EST: se queda donde esta, no se duplica). Sets vacios = no se acepta nada de la VPN
+		# (lo demas cae en la policy drop).
+
+		# lan_full / internet_lan_full: toda la LAN (incluidas .28, .29 y .30), todos los puertos.
+		meta ipsec exists ip saddr @vpn_lan_full_ips ip daddr 192.168.10.0/24 accept
+		meta ipsec exists ip saddr @vpn_internet_lan_full_ips ip daddr 192.168.10.0/24 accept
+
+		# lan_restricted / internet_lan_restricted: solo (destino, protocolo, puerto) de la lista.
+		meta ipsec exists ip saddr @vpn_lan_restricted_ips ip daddr . meta l4proto . th dport @vpn_restricted_dests accept
+		meta ipsec exists ip saddr @vpn_lan_restricted_ips ip protocol icmp ip daddr @vpn_restricted_icmp accept
+		meta ipsec exists ip saddr @vpn_internet_lan_restricted_ips ip daddr . meta l4proto . th dport @vpn_restricted_dests accept
+		meta ipsec exists ip saddr @vpn_internet_lan_restricted_ips ip protocol icmp ip daddr @vpn_restricted_icmp accept
+
+		# Perfiles con Internet: todo salvo redes privadas (nada de LAN ni de otras redes internas).
+		meta ipsec exists ip saddr @vpn_internet_only_ips ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } accept
+		meta ipsec exists ip saddr @vpn_internet_lan_restricted_ips ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } accept
+		meta ipsec exists ip saddr @vpn_internet_lan_full_ips ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } accept
+	}
+
+	chain output {
+		type filter hook output priority filter; policy accept;
+	}
+}
+
+# Generado por Radius Panel (VPN -> Perfiles de acceso) - NO EDITAR A MANO
+# Rellena los sets de los perfiles que YA existen en "inet filter" (ver el fragmento de
+# nftables.conf). Solo "flush set" + "add element": no declara tablas ni cadenas.
+# Se carga en una sola transaccion (nft -f): o cambian todos los sets o ninguno.
+# Aplicar con deploy/vpn-gateway-apply-profiles.sh. Generado: 2026-01-01T00:00:00.000Z
+
+flush set inet filter vpn_lan_restricted_ips
+add element inet filter vpn_lan_restricted_ips { 192.168.10.100-192.168.10.104 }
+flush set inet filter vpn_lan_full_ips
+add element inet filter vpn_lan_full_ips { 192.168.10.105-192.168.10.109 }
+flush set inet filter vpn_internet_only_ips
+add element inet filter vpn_internet_only_ips { 192.168.10.110-192.168.10.114 }
+flush set inet filter vpn_internet_lan_restricted_ips
+add element inet filter vpn_internet_lan_restricted_ips { 192.168.10.115-192.168.10.119 }
+flush set inet filter vpn_internet_lan_full_ips
+add element inet filter vpn_internet_lan_full_ips { 192.168.10.75-192.168.10.99 }
+flush set inet filter vpn_restricted_dests
+add element inet filter vpn_restricted_dests { 192.168.10.50 . tcp . 22, 192.168.10.50 . tcp . 443, 192.168.10.50 . tcp . 8000-8100, 192.168.10.0/28 . udp . 53, 192.168.10.70 . tcp . 1-65535 }
+flush set inet filter vpn_restricted_icmp
+add element inet filter vpn_restricted_icmp { 192.168.10.60 }
+

@@ -140,6 +140,9 @@ function radiusPoolQueryDispatch(): QueryDispatch {
 
 function panelPoolQueryDispatch(opts: { failDeviceInsert?: boolean }): QueryDispatch {
   return (sql) => {
+    if (sql.includes('FROM panel_vpn_profile_ranges')) {
+      return [[{ profile: 'internet_only', range_start: '192.168.10.75', range_end: '192.168.10.99' }], []];
+    }
     if (sql.includes('FROM panel_vpn_settings')) {
       const err = new Error('sin tabla') as Error & { code: string };
       err.code = 'ER_NO_SUCH_TABLE'; // getVpnSettings se degrada a DEFAULT_VPN_SETTINGS
@@ -307,6 +310,9 @@ test('createDevice: el mismo device_label para dos owner_user distintos crea dos
   }) as never);
   mock.method(pools.radiusPool, 'getConnection', (async () => makeFakeConn(connDispatcher(usedIps))) as never);
   mock.method(pools.panelPool, 'query', ((sql: string, params?: unknown) => {
+    if (sql.includes('FROM panel_vpn_profile_ranges')) {
+      return [[{ profile: 'internet_only', range_start: '192.168.10.75', range_end: '192.168.10.99' }], []];
+    }
     if (sql.includes('FROM panel_vpn_settings')) {
       const err = new Error('sin tabla') as Error & { code: string };
       err.code = 'ER_NO_SUCH_TABLE';
@@ -437,6 +443,9 @@ test('getDeviceDetail: el renewAfterDays del dispositivo sobrescribe el general'
     if (sql.includes('SELECT * FROM panel_vpn_devices')) {
       return [[deviceRow({ renew_after_days: 5 })], []];
     }
+    if (sql.includes('FROM panel_vpn_profile_ranges')) {
+      return [[{ profile: 'internet_only', range_start: '192.168.10.75', range_end: '192.168.10.99' }], []];
+    }
     if (sql.includes('FROM panel_vpn_settings')) {
       return [
         [
@@ -533,6 +542,9 @@ test('generateEnrollToken: con VPN_PROFILE_SIGNING_KEY configurada, incluye un p
     if (sql.startsWith('SELECT * FROM panel_vpn_devices WHERE username')) {
       return [[{ username: 'vpn-juan-laptop-test', tunnel_mode: 'split' }], []];
     }
+    if (sql.includes('FROM panel_vpn_profile_ranges')) {
+      return [[{ profile: 'internet_only', range_start: '192.168.10.75', range_end: '192.168.10.99' }], []];
+    }
     if (sql.includes('FROM panel_vpn_settings')) {
       return [
         [
@@ -606,6 +618,9 @@ test('generateEnrollToken: si falla construir el perfil (p.ej. sin CA configurad
   mock.method(pools.panelPool, 'query', ((sql: string) => {
     if (sql.startsWith('SELECT * FROM panel_vpn_devices WHERE username')) {
       return [[{ username: 'vpn-juan-laptop-test', tunnel_mode: 'full' }], []];
+    }
+    if (sql.includes('FROM panel_vpn_profile_ranges')) {
+      return [[{ profile: 'internet_only', range_start: '192.168.10.75', range_end: '192.168.10.99' }], []];
     }
     if (sql.includes('FROM panel_vpn_settings')) {
       const err = new Error('sin tabla') as Error & { code: string };

@@ -24,6 +24,7 @@ import {
   IconReportAnalytics,
   IconRouter,
   IconSettings,
+  IconShieldCheck,
   IconShieldLock,
   IconUserCog,
   IconUsers,
@@ -64,6 +65,7 @@ const NAV_SECTIONS: { label: string; adminOnly?: boolean; items: NavItem[] }[] =
     adminOnly: true,
     items: [
       { to: '/vpn-devices', label: 'Dispositivos', icon: IconDevices },
+      { to: '/vpn-profiles', label: 'Perfiles de acceso', icon: IconShieldCheck },
       { to: '/pki', label: 'PKI', icon: IconCertificate },
       { to: '/vpn-settings', label: 'Ajustes', icon: IconSettings },
     ],
