@@ -13,5 +13,10 @@ RestartSec=5
 # cwd del proceso: por eso WorkingDirectory apunta a server/ (igual que hace
 # `npm --prefix server run dev` en desarrollo), no a la raiz del repo.
 
+# NO anadir IPAddressAllow=/IPAddressDeny=: el filtro por IP de systemd (cgroup
+# BPF) descarta tambien el trafico ya cifrado por IPsec y el listener EST
+# (EST_BIND) dejaria de responder a los clientes de la VPN en el mismo host. La
+# exposicion se acota con API_BIND, EST_BIND, el firewall y nginx (ver README).
+
 [Install]
 WantedBy=multi-user.target

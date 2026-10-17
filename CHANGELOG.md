@@ -5,6 +5,21 @@ Este proyecto usa versionado semantico.
 
 ## [No publicado]
 
+### Seguridad
+
+- **Prompt 12.17 (despliegue)**: `IPAddressAllow=`/`IPAddressDeny=` de systemd en
+  `radius-panel.service` son incompatibles con EST sobre IPsec en el mismo host
+  (el filtro cgroup BPF descarta el SYN-ACK ya cifrado, porque el paquete
+  externo va a la IP publica variable del cliente). La unidad del repo no los
+  llevaba; ahora lo advierte en un comentario, el README explica que la
+  exposicion se acota con `API_BIND`, `EST_BIND`, firewall y nginx, y un test
+  vigila que la unidad no los active.
+- **Nuevo `API_BIND`** (def. `127.0.0.1`): la API ya no escucha en todas las
+  interfaces, solo nginx local llega a ella. **Cambio de comportamiento**: una
+  instalacion cuyo proxy llegue a la API por otra IP debe fijar `API_BIND`
+  (p. ej. `0.0.0.0`) en `server/.env`. Documentado en `.env.example` y README;
+  el proxy de Vite pasa a `127.0.0.1:4000`. Tests en `apiBind.test.ts`.
+
 ### Anadido
 
 - **Prompt 12.14 (fase A: perfiles de acceso por dispositivo)**: cada

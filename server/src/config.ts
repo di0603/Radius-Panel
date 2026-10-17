@@ -25,6 +25,10 @@ const ipv4Address = z
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: port.default(4000),
+  // IP en la que escucha la API. Por defecto solo loopback: la unica puerta de
+  // entrada es nginx en el mismo host. Poner 0.0.0.0 (o una IP concreta) solo si
+  // el proxy esta en otra maquina.
+  API_BIND: z.string().min(1).default('127.0.0.1'),
   CORS_ORIGIN: z.string().min(1).default('http://localhost:5173'),
 
   JWT_SECRET: z.string().min(16, 'JWT_SECRET debe tener al menos 16 caracteres'),
@@ -138,6 +142,7 @@ export const config = {
   env: env.NODE_ENV,
   isProd,
   port: env.PORT,
+  bind: env.API_BIND,
   corsOrigin: env.CORS_ORIGIN,
   logLevel: env.LOG_LEVEL,
   metricsEnabled: env.METRICS_ENABLED,

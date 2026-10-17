@@ -167,8 +167,8 @@ async function main(): Promise<void> {
     logger.warn({ err }, 'no se pudo comprobar si hay CAs intermedias RSA obsoletas');
   }
 
-  const server = app.listen(config.port, () => {
-    logger.info(`API escuchando en http://localhost:${config.port}`);
+  const server = app.listen(config.port, config.bind, () => {
+    logger.info(`API escuchando en http://${config.bind}:${config.port}`);
   });
 
   let estServer: Awaited<ReturnType<typeof startEstServer>> = null;

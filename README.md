@@ -202,6 +202,7 @@ npm test              # (desde la raiz)  -> tests del backend (node:test + tsx)
 | Variable | Descripcion |
 |----------|-------------|
 | `PORT` | Puerto de la API (def. 4000). |
+| `API_BIND` | IP en la que escucha la API (def. `127.0.0.1`). Solo nginx, en el mismo host, debe llegar a ella; pon `0.0.0.0` unicamente si el proxy esta en otra maquina. Al actualizar, una instalacion cuyo proxy llegue a la API por una IP que no sea loopback debe fijar este valor o la API dejara de responder. |
 | `CORS_ORIGIN` | Origen permitido (la SPA). En dev con el proxy de Vite no hace falta tocarlo. Debe ser exacto: el panel usa cookies con credenciales. |
 | `JWT_SECRET` | **Obligatorio.** Secreto para firmar los tokens y cifrar los secretos TOTP. Minimo 16 caracteres. |
 | `ACCESS_TOKEN_TTL` | Vida del access token, corta a proposito (def. `15m`). Se renueva solo via refresh token. |
@@ -1028,7 +1029,8 @@ systemctl reload nginx
 
 Esto sirve `web/dist` en `/` y proxya `/api` y `/health` a la API en
 `127.0.0.1:1003` (ajusta el puerto en `deploy/nginx-radius-panel.conf` si
-cambiaste `PORT` en `server/.env`). Nginx local escucha en el puerto 80 en
+cambiaste `PORT` en `server/.env`). La API escucha por defecto solo en
+`127.0.0.1` (`API_BIND`). Nginx local escucha en el puerto 80 en
 HTTP plano — el HTTPS y el dominio los termina **Nginx Proxy Manager**, que
 reenvia aqui.
 
@@ -1036,6 +1038,19 @@ En NPM, crea un **Proxy Host**:
 - Domain: tu dominio/subdominio
 - Scheme: `http`, Forward Hostname/IP: la IP de este VPS, Forward Port: `80`
 - SSL: pide certificado Let's Encrypt y activa "Force SSL"
+
+**Acotar la exposicion: que SI y que NO.** Se hace con `API_BIND` (API en
+`127.0.0.1`, solo nginx llega a ella), `EST_BIND` (el listener EST en la IP del
+tunel, p. ej. `10.20.30.1:8443`), el firewall del host y nginx en `127.0.0.1`.
+**No uses `IPAddressAllow=`/`IPAddressDeny=` de systemd en `radius-panel.service`**
+(ni en un drop-in): son incompatibles con EST sobre IPsec en el mismo host. El
+filtro por IP de systemd (cgroup BPF) tambien se aplica al trafico de salida ya
+cifrado por IPsec: el SYN-ACK sale de la IP del tunel hacia el cliente, pero al
+cifrarse el paquete externo va a la IP publica del cliente (variable y no
+incluida en ninguna lista) y el filtro lo descarta. El SYN llega
+(`syn-recv`) y el cliente nunca recibe respuesta, mientras que otros procesos
+sin ese filtro (sshd) funcionan. Si ya las tienes, vacialas
+(`IPAddressAllow=` / `IPAddressDeny=` en el drop-in) y quitalas de la unidad.
 
 Prueba primero sin NPM: `curl -s http://127.0.0.1/health` en el propio VPS
 debe devolver el mismo JSON que en el puerto 1003.
