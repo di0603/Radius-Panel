@@ -5,6 +5,20 @@ Este proyecto usa versionado semantico.
 
 ## [No publicado]
 
+### Corregido
+
+- **Prompt 12.16 (app Windows 0.1.13)**: en modo dividido la app fallaba al
+  crear la conexion con `NamedParameterNotFound`, porque el script generado
+  llamaba a `Add-VpnConnectionRoute` con `-Force` y ese cmdlet no lo tiene.
+  Se quita `-Force` de esa linea. El script se genera ahora en
+  `VpnConnectionService.BuildCreateOrUpdateScript` y el test
+  `VpnScriptParametersTests` lo analiza con el parser de PowerShell y comprueba
+  con `(Get-Command <cmdlet>).Parameters` que cada parametro nombrado (splatting
+  incluido) existe en `Add-VpnConnection`, `Set-VpnConnectionIPsecConfiguration`,
+  `Add-VpnConnectionRoute` y `Remove-VpnConnection`; sin el arreglo falla.
+  La version de la app se fija en cada build con `build.ps1 -Version`; el valor
+  del csproj (solo para builds sueltas) pasa a 0.1.13.
+
 ### Anadido
 
 - **Prompt 12.14 (fase A: perfiles de acceso por dispositivo)**: cada

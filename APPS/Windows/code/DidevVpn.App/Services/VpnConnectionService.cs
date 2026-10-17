@@ -66,47 +66,54 @@ internal sealed class VpnConnectionService : IVpnConnectionService
 
         try
         {
-            var script = new StringBuilder();
-            script.AppendLine("$ErrorActionPreference = 'Stop'");
-            script.AppendLine($"$name = {PsString(spec.ConnectionName)}");
-            script.AppendLine("if (Get-VpnConnection -Name $name -ErrorAction SilentlyContinue) {");
-            script.AppendLine("  Remove-VpnConnection -Name $name -Force -ErrorAction Stop");
-            script.AppendLine("}");
-            script.AppendLine($"$eapXml = [xml](Get-Content -Raw -Path {PsString(eapXmlPath)})");
-            script.AppendLine("$vpnParams = @{");
-            script.AppendLine("  Name = $name");
-            script.AppendLine($"  ServerAddress = {PsString(spec.ServerAddress)}");
-            script.AppendLine("  TunnelType = 'Ikev2'");
-            script.AppendLine("  AuthenticationMethod = 'Eap'");
-            script.AppendLine("  EapConfigXmlStream = $eapXml");
-            script.AppendLine($"  SplitTunneling = {(spec.SplitTunneling ? "$true" : "$false")}");
-            script.AppendLine("  Force = $true");
-            script.AppendLine("}");
-            script.AppendLine("Add-VpnConnection @vpnParams | Out-Null");
-
-            script.AppendLine("$ipsecParams = @{");
-            script.AppendLine("  ConnectionName = $name");
-            script.AppendLine($"  AuthenticationTransformConstants = {PsString(spec.IkeEncryption)}");
-            script.AppendLine($"  CipherTransformConstants = {PsString(spec.IkeEncryption)}");
-            script.AppendLine($"  EncryptionMethod = {PsString(spec.IkeEncryption)}");
-            script.AppendLine($"  IntegrityCheckMethod = {PsString(spec.IkeIntegrity)}");
-            script.AppendLine($"  DHGroup = {PsString(spec.IkeDhGroup)}");
-            script.AppendLine($"  PfsGroup = {PsString(spec.EspPfsGroup)}");
-            script.AppendLine("  Force = $true");
-            script.AppendLine("}");
-            script.AppendLine("Set-VpnConnectionIPsecConfiguration @ipsecParams | Out-Null");
-
-            foreach (var route in spec.SplitRoutes)
-            {
-                script.AppendLine($"Add-VpnConnectionRoute -ConnectionName $name -DestinationPrefix {PsString(route)} -Force | Out-Null");
-            }
-
-            PowerShellRunner.RunScript(script.ToString());
+            var script = BuildCreateOrUpdateScript(spec, eapXmlPath);
+            PowerShellRunner.RunScript(script);
         }
         finally
         {
             try { File.Delete(eapXmlPath); } catch { /* best effort */ }
         }
+    }
+
+    /// <summary>Script de PowerShell que crea la conexion. Interno para poder validar sus parametros con Get-Command.</summary>
+    internal static string BuildCreateOrUpdateScript(VpnConnectionSpec spec, string eapXmlPath)
+    {
+        var script = new StringBuilder();
+        script.AppendLine("$ErrorActionPreference = 'Stop'");
+        script.AppendLine($"$name = {PsString(spec.ConnectionName)}");
+        script.AppendLine("if (Get-VpnConnection -Name $name -ErrorAction SilentlyContinue) {");
+        script.AppendLine("  Remove-VpnConnection -Name $name -Force -ErrorAction Stop");
+        script.AppendLine("}");
+        script.AppendLine($"$eapXml = [xml](Get-Content -Raw -Path {PsString(eapXmlPath)})");
+        script.AppendLine("$vpnParams = @{");
+        script.AppendLine("  Name = $name");
+        script.AppendLine($"  ServerAddress = {PsString(spec.ServerAddress)}");
+        script.AppendLine("  TunnelType = 'Ikev2'");
+        script.AppendLine("  AuthenticationMethod = 'Eap'");
+        script.AppendLine("  EapConfigXmlStream = $eapXml");
+        script.AppendLine($"  SplitTunneling = {(spec.SplitTunneling ? "$true" : "$false")}");
+        script.AppendLine("  Force = $true");
+        script.AppendLine("}");
+        script.AppendLine("Add-VpnConnection @vpnParams | Out-Null");
+
+        script.AppendLine("$ipsecParams = @{");
+        script.AppendLine("  ConnectionName = $name");
+        script.AppendLine($"  AuthenticationTransformConstants = {PsString(spec.IkeEncryption)}");
+        script.AppendLine($"  CipherTransformConstants = {PsString(spec.IkeEncryption)}");
+        script.AppendLine($"  EncryptionMethod = {PsString(spec.IkeEncryption)}");
+        script.AppendLine($"  IntegrityCheckMethod = {PsString(spec.IkeIntegrity)}");
+        script.AppendLine($"  DHGroup = {PsString(spec.IkeDhGroup)}");
+        script.AppendLine($"  PfsGroup = {PsString(spec.EspPfsGroup)}");
+        script.AppendLine("  Force = $true");
+        script.AppendLine("}");
+        script.AppendLine("Set-VpnConnectionIPsecConfiguration @ipsecParams | Out-Null");
+
+        foreach (var route in spec.SplitRoutes)
+        {
+            script.AppendLine($"Add-VpnConnectionRoute -ConnectionName $name -DestinationPrefix {PsString(route)} | Out-Null");
+        }
+
+        return script.ToString();
     }
 
     public void RemoveConnection(string connectionName)

@@ -9,7 +9,7 @@
     <AssemblyName>didev-vpn</AssemblyName>
     <RootNamespace>DidevVpn.App</RootNamespace>
     <!-- build.ps1 sobrescribe esto con -p:Version=X.Y.Z en cada compilacion real; este valor solo se usa en dotnet build/F5 sueltos. -->
-    <Version>0.1.0</Version>
+    <Version>0.1.13</Version>
     <InvariantGlobalization>true</InvariantGlobalization>
     <!-- No usar trimming: no soportado para WinForms (NETSDK1175), ver APPS/Windows/NOTAS-prompt-12-en-pausa.md punto 10. -->
     <PublishTrimmed>false</PublishTrimmed>
